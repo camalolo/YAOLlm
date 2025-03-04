@@ -50,22 +50,10 @@ namespace Gemini
             this.Location = new Point(0, 0);
 
             var topPanel = new Panel { Dock = DockStyle.Top, BackColor = Color.Black, Height = 40 };
-            var modelComboBox = new System.Windows.Forms.ComboBox
-            {
-                DropDownStyle = ComboBoxStyle.DropDownList,
-                Items = { "gemini-2.0-flash" },
-                SelectedIndex = 0,
-                Font = new Font("Consolas", 10),
-                BackColor = Color.Black,
-                ForeColor = Color.White,
-                Dock = DockStyle.Left,
-                Width = 200
-            };
-            modelComboBox.SelectedIndexChanged += (s, e) => _geminiClient.UpdateModel(modelComboBox.SelectedItem?.ToString() ?? string.Empty);
             var closeButton = new System.Windows.Forms.Button
             {
                 Text = "X",
-                Font = new Font("Consolas", 10),
+                Font = new Font("Consolas", 12),
                 BackColor = Color.Black,
                 ForeColor = Color.White,
                 FlatStyle = FlatStyle.Flat,
@@ -74,7 +62,6 @@ namespace Gemini
             };
             closeButton.Click += (s, e) => Application.Exit();
 
-            topPanel.Controls.Add(modelComboBox);
             topPanel.Controls.Add(closeButton);
 
             var chatBox = new RichTextBox
@@ -83,7 +70,7 @@ namespace Gemini
                 ReadOnly = true,
                 BackColor = Color.Black,
                 ForeColor = Color.White,
-                Font = new Font("Consolas", 10),
+                Font = new Font("Consolas", 12),
                 BorderStyle = BorderStyle.None
             };
             _chatBox = chatBox;
@@ -93,9 +80,9 @@ namespace Gemini
                 Dock = DockStyle.Bottom,
                 BackColor = Color.Black,
                 ForeColor = Color.White,
-                Font = new Font("Consolas", 10),
+                Font = new Font("Consolas", 12),
                 BorderStyle = BorderStyle.FixedSingle,
-                Height = 30
+                Height = 35
             };
             inputField.KeyDown += InputField_KeyDown;
             _inputField = inputField;
@@ -103,12 +90,12 @@ namespace Gemini
             var buttonPanel = new Panel { Dock = DockStyle.Bottom, BackColor = Color.Black, Height = 40 };
             var buttons = new[]
             {
-                new System.Windows.Forms.Button { Text = "Send", FlatStyle = FlatStyle.Flat, BackColor = Color.Black, ForeColor = Color.White, Font = new Font("Consolas", 10) },
-                new System.Windows.Forms.Button { Text = "Capture & Send", FlatStyle = FlatStyle.Flat, BackColor = Color.Black, ForeColor = Color.White, Font = new Font("Consolas", 10) },
-                new System.Windows.Forms.Button { Text = "Proceed", FlatStyle = FlatStyle.Flat, BackColor = Color.Black, ForeColor = Color.White, Font = new Font("Consolas", 10) },
-                new System.Windows.Forms.Button { Text = "Search Online", FlatStyle = FlatStyle.Flat, BackColor = Color.Black, ForeColor = Color.White, Font = new Font("Consolas", 10) },
-                new System.Windows.Forms.Button { Text = "Playing", FlatStyle = FlatStyle.Flat, BackColor = Color.Black, ForeColor = Color.White, Font = new Font("Consolas", 10) },
-                new System.Windows.Forms.Button { Text = "Clear", FlatStyle = FlatStyle.Flat, BackColor = Color.Black, ForeColor = Color.White, Font = new Font("Consolas", 10) }
+                new System.Windows.Forms.Button { Text = "Send", FlatStyle = FlatStyle.Flat, BackColor = Color.Black, ForeColor = Color.White, Font = new Font("Consolas", 12) },
+                new System.Windows.Forms.Button { Text = "Capture & Send", FlatStyle = FlatStyle.Flat, BackColor = Color.Black, ForeColor = Color.White, Font = new Font("Consolas", 12) },
+                new System.Windows.Forms.Button { Text = "Proceed", FlatStyle = FlatStyle.Flat, BackColor = Color.Black, ForeColor = Color.White, Font = new Font("Consolas", 12) },
+                new System.Windows.Forms.Button { Text = "Search Online", FlatStyle = FlatStyle.Flat, BackColor = Color.Black, ForeColor = Color.White, Font = new Font("Consolas", 12) },
+                new System.Windows.Forms.Button { Text = "Playing", FlatStyle = FlatStyle.Flat, BackColor = Color.Black, ForeColor = Color.White, Font = new Font("Consolas", 12) },
+                new System.Windows.Forms.Button { Text = "Clear", FlatStyle = FlatStyle.Flat, BackColor = Color.Black, ForeColor = Color.White, Font = new Font("Consolas", 12) }
             };
 
             int x = 10;
@@ -120,11 +107,11 @@ namespace Gemini
                 x += btn.Width + 10;
             }
 
-            var statusLabel = new Label { Text = "Idle", Font = new Font("Consolas", 10), ForeColor = Color.White, BackColor = Color.Black, Location = new Point(x, 10) };
+            var statusLabel = new Label { Text = "Idle", Font = new Font("Consolas", 12), ForeColor = Color.White, BackColor = Color.Black, Location = new Point(x, 10) };
             _statusLabel = statusLabel;
             buttonPanel.Controls.Add(statusLabel);
 
-            var historyLabel = new Label { Text = "History Size: 0 characters", Font = new Font("Consolas", 10), ForeColor = Color.White, BackColor = Color.Black, Dock = DockStyle.Right };
+            var historyLabel = new Label { Text = "History Size: 0 characters", Font = new Font("Consolas", 12), ForeColor = Color.White, BackColor = Color.Black, Dock = DockStyle.Right };
             _historyLabel = historyLabel;
             buttonPanel.Controls.Add(historyLabel);
 
@@ -136,6 +123,8 @@ namespace Gemini
             this.Visible = false;
             _isVisible = false;
 
+            this.Shown += (s, e) => FocusInputField();
+            
             Task.Run(() => MonitorStatusQueue());
         }
 
@@ -201,7 +190,7 @@ namespace Gemini
             string userInput = _inputField.Text.Trim();
             if (!string.IsNullOrEmpty(userInput))
             {
-                UpdateChat($"You: {userInput}\n", "white");
+                UpdateChat($"You: {userInput}\r\n", "white");
                 _geminiClient.OriginalUserQuery = userInput;
                 _inputField.Text = "";
                 Task.Run(() => _geminiClient.ProcessLLMRequest(userInput, string.Empty, string.Empty));
@@ -213,24 +202,24 @@ namespace Gemini
             string userInput = _inputField.Text.Trim();
             if (!string.IsNullOrEmpty(userInput))
             {
-                UpdateChat($"You: {userInput}\n", "white");
+                UpdateChat($"You: {userInput}\r\n", "white");
                 _inputField.Text = "";
             }
             var (imageBase64, activeWindowTitle) = CaptureScreenAndEncode();
             if (imageBase64 != null)
             {
-                UpdateChat("Uploading image...\n", "grey");
+                UpdateChat("Uploading image...\r\n", "grey");
                 Task.Run(() => _geminiClient.ProcessLLMRequest(userInput, imageBase64, activeWindowTitle));
             }
             else
             {
-                UpdateChat("Error: Could not capture screen.\n", "grey");
+                UpdateChat("Error: Could not capture screen.\r\n", "grey");
             }
         }
 
         private void SendPresetMessage(string message)
         {
-            UpdateChat($"You: {message}\n", "white");
+            UpdateChat($"You: {message}\r\n", "white");
             Task.Run(() => _geminiClient.ProcessLLMRequest(message, string.Empty, string.Empty));
         }
 
@@ -244,12 +233,12 @@ namespace Gemini
             if (!string.IsNullOrEmpty(activeWindowTitle) && activeWindowTitle != "Gemini Overlay")
             {
                 string message = $"[I am now playing: {activeWindowTitle}]";
-                UpdateChat($"You: {message}\n", "white");
+                UpdateChat($"You: {message}\r\n", "white");
                 Task.Run(() => _geminiClient.ProcessLLMRequest(message, string.Empty, string.Empty));
             }
             else
             {
-                UpdateChat("Error: Could not get active window title.\n", "grey");
+                UpdateChat("Error: Could not get active window title.\r\n", "grey");
             }
         }
 
@@ -301,7 +290,7 @@ namespace Gemini
             catch (Exception ex)
             {
                 _logger.Log($"Error capturing screen: {ex.Message}");
-                UpdateChat($"Error capturing screen: {ex.Message}\n", "grey");
+                UpdateChat($"Error capturing screen: {ex.Message}\r\n", "grey");
                 return (string.Empty, string.Empty);
             }
         }

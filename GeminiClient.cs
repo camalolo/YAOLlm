@@ -117,17 +117,17 @@ namespace Gemini
             {
                 string describePrompt = GetImageDescriptionPrompt(activeWindowTitle ?? String.Empty);
                 var response = await SendToLLM(describePrompt, imageBase64);
-                if (response != null) UpdateChat("\nImage analysis done.", "model");
+                if (response != null) UpdateChat("\nImage analysis done.\n", "model");
 
                 prompt = string.IsNullOrEmpty(prompt) ? GetImageDescriptionDefaultUserPrompt() : prompt;
-                UpdateChat("\nProcessing image...", "system");
+                UpdateChat("\nProcessing image...\n", "system");
                 response = await SendToLLM(prompt, imageBase64);
-                if (response != null) UpdateChat(response, "model");
+                if (response != null) UpdateChat(response + "\n", "model");
             }
             else
             {
                 var response = await SendToLLM(prompt);
-                if (response != null) UpdateChat(response, "model");
+                if (response != null) UpdateChat(response + "\n", "model");
             }
             UpdateStatus(Status.Idle);
         }
@@ -160,7 +160,7 @@ namespace Gemini
             request.AddHeader("Content-Type", "application/json");
             request.AddJsonBody(payload);
 
-            UpdateChat("\nSystem: Waiting for LLM reply...", "system");
+            UpdateChat("\nSystem: Waiting for LLM reply...\n", "system");
             UpdateStatus(Status.ReceivingData);
 
             try
@@ -185,7 +185,7 @@ namespace Gemini
             }
             catch (Exception ex)
             {
-                UpdateChat($"Error processing LLM request: {ex.Message}", "system");
+                UpdateChat($"Error processing LLM request: {ex.Message}\n", "system");
                 _logger.Log($"Error: {ex.Message}");
                 UpdateStatus(Status.Idle);
                 return null;
@@ -228,7 +228,7 @@ namespace Gemini
                     {
                         var searchTerms = funcCall.Value.args["search_terms"].ToString();
                         _pendingSearchRequest = searchTerms??string.Empty;
-                        await PerformGoogleSearchAndDisplaySummaries();
+                        await PerformSearchAndDisplaySummaries();
                         return llmResponse.message;
                     }
                 }
@@ -262,7 +262,7 @@ namespace Gemini
             _pendingSearchRequest = string.Empty;
             _originalUserQuery ??= "the user's question";
 
-            UpdateChat($"System: Searching for '{searchTerms}'...", "system");
+            UpdateChat($"System: Searching for '{searchTerms}'...\n", "system");
             UpdateStatus(Status.Searching);
 
             List<string> urls;
