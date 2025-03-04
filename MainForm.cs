@@ -45,6 +45,10 @@ namespace Gemini
             _trayIcon = new NotifyIcon();
 
             SetupUI();
+
+            this.Visible = false; // Reinforce hidden state 
+            _logger.Log($"Post-SetupUI: Visible = {this.Visible}, _isVisible = {_isVisible}");
+
             SetupTrayIcon();
             this.FormClosing += MainForm_FormClosing;
 
@@ -91,7 +95,7 @@ namespace Gemini
                 Dock = DockStyle.Right,
                 Width = 40
             };
-            closeButton.Click += (s, e) => Application.Exit();
+            closeButton.Click += (s, e) => HideOverlay();
 
             topPanel.Controls.Add(closeButton);
 
@@ -173,8 +177,6 @@ namespace Gemini
             this.Visible = false;
             _isVisible = false;
 
-            this.Shown += (s, e) => FocusInputField();
-
             Task.Run(() => MonitorStatusQueue());
         }
 
@@ -221,7 +223,6 @@ namespace Gemini
 
             if (_trayIcon.ContextMenuStrip != null)
             {
-                _trayIcon.ContextMenuStrip.Items.Add("Show/Hide", null, (s, e) => ToggleVisibility());
                 _trayIcon.ContextMenuStrip.Items.Add("Quit", null, (s, e) => Application.Exit());
             }
             _trayIcon.DoubleClick += (s, e) => ToggleVisibility();

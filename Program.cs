@@ -14,7 +14,23 @@ namespace Gemini
             var logger = new Logger($"llm_log_{DateTime.Now:yyyyMMdd_HHmmss}.log");
             var statusManager = new StatusManager();
             var geminiClient = new GeminiClient(logger);
-            Application.Run(new MainForm(geminiClient, statusManager));
+            var mainForm = new MainForm(geminiClient, statusManager);
+            
+            // Use a custom ApplicationContext
+            var context = new TrayApplicationContext(mainForm);
+            Application.Run(context);
+        }
+    }
+
+    public class TrayApplicationContext : ApplicationContext
+    {
+        private readonly MainForm _mainForm;
+
+        public TrayApplicationContext(MainForm form)
+        {
+            _mainForm = form;
+            _mainForm.Visible = false; // Ensure it starts hidden
+            _mainForm.FormClosed += (s, e) => Application.Exit(); // Exit when form closes
         }
     }
 }
