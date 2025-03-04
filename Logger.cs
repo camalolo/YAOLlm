@@ -10,7 +10,11 @@ namespace Gemini
         public Logger(string logFile)
         {
             _logFile = Path.Combine("log", logFile);
-            Directory.CreateDirectory(Path.GetDirectoryName(_logFile));
+            string? logDir = Path.GetDirectoryName(_logFile);
+            if (logDir != null)
+            {
+                Directory.CreateDirectory(logDir);
+            }
         }
 
         public void Log(string message)
