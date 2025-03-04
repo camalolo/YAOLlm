@@ -2,12 +2,9 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Net.Http;
 using System.Text.Json;
 using System.Threading.Tasks;
 using RestSharp;
-using HtmlAgilityPack;
-using System.Text;
 using dotenv.net;
 
 namespace Gemini
@@ -16,21 +13,14 @@ namespace Gemini
     {
         private readonly Logger _logger;
         private readonly string _apiKey;
-        private readonly string _googleSearchApiKey;
-        private readonly string _googleSearchEngineId;
+        private readonly Search _search;
         private const int MaxHistoryLength = 32;
-        private const double RelevanceThreshold = 0.33;
-        private const int GoogleSearchNumItems = 10;
         private string _llmApiModel = "gemini-2.0-flash";
         private string _llmApiUrl => $"https://generativelanguage.googleapis.com/v1beta/models/{_llmApiModel}:generateContent?key={_apiKey}";
         private List<Dictionary<string, string>> _conversationHistory;
         private readonly List<object> _tools;
         private string _pendingSearchRequest;
         private string _originalUserQuery;
-        private readonly Dictionary<string, List<string>> _searchResultsCache = new();
-        private readonly Dictionary<string, int> _searchStartIndices = new();
-        private readonly Dictionary<string, int> _searchResultsIndex = new();
-        private readonly Dictionary<string, (string, float[])> _scrapedContentCache = new();
 
         public Action<string, string> UpdateChat { get; set; }
         public Action UpdateHistoryCounter { get; set; }
@@ -47,8 +37,9 @@ namespace Gemini
             {
                 DotEnv.Load(new DotEnvOptions(envFilePaths: new[] { geminiFile }));
                 _apiKey = Environment.GetEnvironmentVariable("GEMINI_API_KEY") ?? throw new ArgumentException("GEMINI_API_KEY is not set");
-                _googleSearchApiKey = Environment.GetEnvironmentVariable("GOOGLE_SEARCH_API_KEY") ?? throw new ArgumentException("GOOGLE_SEARCH_API_KEY is not set");
-                _googleSearchEngineId = Environment.GetEnvironmentVariable("GOOGLE_SEARCH_ENGINE_ID") ?? throw new ArgumentException("GOOGLE_SEARCH_ENGINE_ID is not set");
+                var googleSearchApiKey = Environment.GetEnvironmentVariable("GOOGLE_SEARCH_API_KEY") ?? throw new ArgumentException("GOOGLE_SEARCH_API_KEY is not set");
+                var googleSearchEngineId = Environment.GetEnvironmentVariable("GOOGLE_SEARCH_ENGINE_ID") ?? throw new ArgumentException("GOOGLE_SEARCH_ENGINE_ID is not set");
+                _search = new Search(logger, googleSearchApiKey, googleSearchEngineId);
             }
             catch (Exception ex)
             {
@@ -163,10 +154,10 @@ namespace Gemini
                 {
                     role = m["role"],
                     parts = new List<object>
-                    {
-                        m.ContainsKey("content") ? new { text = m["content"] } : new object(),
-                        m.ContainsKey("image") ? new { inlineData = new { mimeType = "image/png", data = m["image"] } } : new object()
-                    }.Where(p => p.GetType() != typeof(object)).ToList()
+            {
+                m.ContainsKey("content") ? new { text = m["content"] } : new object(),
+                m.ContainsKey("image") ? new { inlineData = new { mimeType = "image/png", data = m["image"] } } : new object()
+            }.Where(p => p.GetType() != typeof(object)).ToList()
                 }),
                 tools = _tools
             };
@@ -179,33 +170,57 @@ namespace Gemini
             UpdateChat("\nSystem: Waiting for LLM reply...\n", "system");
             UpdateStatus(Status.ReceivingData);
 
-            try
-            {
-                var response = await client.ExecuteAsync(request);
-                response.ThrowIfError();
-                _logger.Log($"Raw LLM response: {response.Content}");
-                var data = response.Content != null ? JsonSerializer.Deserialize<JsonElement>(response.Content) : default;
-                var llmResponse = ExtractLLMResponse(data);
+            const int maxRetries = 3;
+            int retryCount = 0;
+            int delaySeconds = 1; // Initial delay for exponential backoff
 
-                var processedResponse = await HandleLLMResponse(llmResponse);
-                if (processedResponse != null)
+            while (true)
+            {
+                try
                 {
-                    _conversationHistory.Add(userMessage);
-                    _conversationHistory.Add(new Dictionary<string, string> { { "role", "model" }, { "content", processedResponse } });
-                    UpdateHistoryCounter();
-                    return processedResponse;
+                    var response = await client.ExecuteAsync(request);
+                    if (response.StatusCode == System.Net.HttpStatusCode.TooManyRequests) // 429
+                    {
+                        if (retryCount >= maxRetries)
+                        {
+                            _logger.Log("Max retries reached for LLM request due to 429 Too Many Requests");
+                            UpdateChat("Error: Too many requests to the server. Please try again later.\n", "system");
+                            return null;
+                        }
+
+                        retryCount++;
+                        int retryDelay = delaySeconds * (int)Math.Pow(2, retryCount - 1); // Exponential backoff: 1s, 2s, 4s
+                        _logger.Log($"Received 429 Too Many Requests. Retrying in {retryDelay} seconds (attempt {retryCount}/{maxRetries})");
+                        UpdateChat($"System: Server busy, retrying in {retryDelay} seconds...\n", "system");
+                        await Task.Delay(retryDelay * 1000);
+                        continue;
+                    }
+
+                    response.ThrowIfError(); // Throws for other HTTP errors (e.g., 400, 500)
+                    _logger.Log($"Raw LLM response: {response.Content}");
+                    var data = response.Content != null ? JsonSerializer.Deserialize<JsonElement>(response.Content) : default;
+                    var llmResponse = ExtractLLMResponse(data);
+
+                    var processedResponse = await HandleLLMResponse(llmResponse);
+                    if (processedResponse != null)
+                    {
+                        _conversationHistory.Add(userMessage);
+                        _conversationHistory.Add(new Dictionary<string, string> { { "role", "model" }, { "content", processedResponse } });
+                        UpdateHistoryCounter();
+                        return processedResponse;
+                    }
+                    return null;
                 }
-                return null;
-            }
-            catch (Exception ex)
-            {
-                _logger.Log($"Error in SendToLLM: {ex.Message}");
-                UpdateChat($"Error processing LLM request: {ex.Message}\n", "system");
-                return null;
-            }
-            finally
-            {
-                UpdateStatus(Status.Idle);
+                catch (Exception ex)
+                {
+                    _logger.Log($"Error in SendToLLM: {ex.Message}");
+                    UpdateChat($"Error processing LLM request: {ex.Message}\n", "system");
+                    return null;
+                }
+                finally
+                {
+                    UpdateStatus(Status.Idle);
+                }
             }
         }
 
@@ -235,8 +250,15 @@ namespace Gemini
         private async Task<string> HandleLLMResponse((string message, List<JsonElement> functionCalls) llmResponse)
         {
             _logger.Log($"Handling LLM response - Message: {llmResponse.message}, Function calls: {llmResponse.functionCalls.Count}");
+
             if (llmResponse.functionCalls?.Any() == true)
             {
+
+                if (!string.IsNullOrEmpty(llmResponse.message))
+                {
+                    UpdateChat($"{llmResponse.message}\n", "model");
+                }
+
                 foreach (var func in llmResponse.functionCalls)
                 {
                     var funcCall = ExtractFunctionCall(func);
@@ -258,14 +280,12 @@ namespace Gemini
             try
             {
                 _logger.Log($"Extracting function call from JSON: {functionCallJson.ToString()}");
-                // Check if "functionCall" exists and get it
                 if (!functionCallJson.TryGetProperty("functionCall", out var funcCallElement))
                 {
                     _logger.Log("No 'functionCall' property found in JSON");
                     return null;
                 }
 
-                // Extract "name" and "args" from the "functionCall" object
                 var name = funcCallElement.GetProperty("name").GetString();
                 var args = JsonSerializer.Deserialize<Dictionary<string, object>>(funcCallElement.GetProperty("args").ToString());
 
@@ -298,107 +318,16 @@ namespace Gemini
             _pendingSearchRequest = string.Empty;
             _originalUserQuery ??= "the user's question";
 
-            UpdateChat($"System: Searching for '{searchTerms}'...\n", "system");
-            UpdateStatus(Status.Searching);
-
-            List<string> urls;
             try
             {
-                if (_searchResultsCache.ContainsKey(searchTerms))
+                var contentUrlPairs = await _search.PerformSearch(searchTerms, _originalUserQuery, UpdateChat, UpdateStatus);
+                if (contentUrlPairs.Any())
                 {
-                    var cachedUrls = _searchResultsCache[searchTerms];
-                    int startIndex = _searchResultsIndex.GetValueOrDefault(searchTerms, 0);
-                    urls = cachedUrls.Skip(startIndex).Take(3).ToList();
-                    _searchResultsIndex[searchTerms] = startIndex + 3;
-
-                    if (!urls.Any())
-                    {
-                        urls = await SearchGoogle(searchTerms);
-                        _searchResultsIndex[searchTerms] = 0;
-                    }
-                    _logger.Log($"Using cached search results for '{searchTerms}', URLs: {string.Join(", ", urls)}");
-                }
-                else
-                {
-                    urls = await SearchGoogle(searchTerms);
-                    _searchResultsIndex[searchTerms] = 0;
-                    _logger.Log($"New search results for '{searchTerms}', URLs: {string.Join(", ", urls)}");
-                }
-
-                if (urls.Any())
-                {
-                    UpdateStatus(Status.Scraping);
-                    var scrapedData = await Task.WhenAll(urls.Select(async url =>
-                    {
-                        if (_scrapedContentCache.TryGetValue(url, out var cached))
-                        {
-                            _logger.Log($"Using cached content for: {url}");
-                            return cached;
-                        }
-
-                        try
-                        {
-                            using var client = new HttpClient();
-                            client.DefaultRequestHeaders.UserAgent.ParseAdd(
-                                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.36");
-                            client.Timeout = TimeSpan.FromSeconds(10);
-                            var html = await client.GetStringAsync(url);
-                            var doc = new HtmlAgilityPack.HtmlDocument();
-                            doc.LoadHtml(html);
-                            foreach (var node in doc.DocumentNode.SelectNodes("//*[@href]") ?? new HtmlNodeCollection(null))
-                                node.Remove();
-                            var text = doc.DocumentNode.InnerText;
-                            var embedding = ComputeEmbedding(text);
-                            _scrapedContentCache[url] = (text, embedding);
-                            _logger.Log($"Scraped content from {url}, length: {text.Length} chars");
-                            return (text, embedding);
-                        }
-                        catch (Exception ex)
-                        {
-                            _logger.Log($"Error scraping {url}: {ex.Message}");
-                            return (string.Empty, new float[0]);
-                        }
-                    }));
-
-                    UpdateStatus(Status.Processing);
-                    var docs = scrapedData.Where(d => !string.IsNullOrEmpty(d.Item1) && d.Item2.Length > 0)
-                                        .Select(d => d.Item1)
-                                        .ToList();
-                    var embeddings = scrapedData.Where(d => !string.IsNullOrEmpty(d.Item1) && d.Item2.Length > 0)
-                                              .Select(d => d.Item2)
-                                              .ToList();
-
-                    if (!docs.Any())
-                    {
-                        _logger.Log("No valid scraped documents found");
-                        await ProcessLLMRequest(GetNoRelevantResultsPrompt());
-                        return;
-                    }
-
-                    var queryEmbedding = ComputeEmbedding(searchTerms);
-                    var scores = embeddings.Select(e => CosineSimilarity(e, queryEmbedding)).ToList();
-                    var relevantDocs = docs.Zip(scores, (d, s) => (d, s))
-                                         .Where(x => x.s > RelevanceThreshold)
-                                         .OrderByDescending(x => x.s)
-                                         .Take(3)
-                                         .Select(x => x.d)
-                                         .ToList();
-
-                    if (!relevantDocs.Any())
-                    {
-                        _logger.Log("No relevant documents found above threshold");
-                        await ProcessLLMRequest(GetNoRelevantResultsPrompt());
-                        return;
-                    }
-
-                    var contentUrlPairs = relevantDocs.Zip(urls, (content, url) => (content, url)).ToList();
-                    _logger.Log($"Found {contentUrlPairs.Count} relevant documents for '{searchTerms}'");
                     var prompt = GetProcessedContentPrompt(searchTerms, _originalUserQuery, contentUrlPairs);
                     await ProcessLLMRequest(prompt);
                 }
                 else
                 {
-                    _logger.Log($"No URLs found for search terms: {searchTerms}");
                     await ProcessLLMRequest(GetNoRelevantResultsPrompt());
                 }
             }
@@ -410,47 +339,6 @@ namespace Gemini
             finally
             {
                 UpdateStatus(Status.Idle);
-            }
-        }
-
-        private async Task<List<string>> SearchGoogle(string searchTerms)
-        {
-            try
-            {
-                _logger.Log($"Search request: {searchTerms}");
-                if (!_searchStartIndices.ContainsKey(searchTerms))
-                    _searchStartIndices[searchTerms] = 1;
-
-                var client = new RestClient("https://www.googleapis.com/customsearch/v1");
-                var request = new RestRequest { Method = Method.Get };
-                request.AddParameter("key", _googleSearchApiKey);
-                request.AddParameter("cx", _googleSearchEngineId);
-                request.AddParameter("q", searchTerms);
-                request.AddParameter("num", GoogleSearchNumItems);
-                request.AddParameter("start", _searchStartIndices[searchTerms]);
-
-                var response = await client.ExecuteAsync(request);
-                response.ThrowIfError();
-
-                var data = response.Content != null ? JsonSerializer.Deserialize<JsonElement>(response.Content) : default;
-                if (data.TryGetProperty("items", out var items))
-                {
-                    _searchStartIndices[searchTerms] += GoogleSearchNumItems;
-                    var urls = items.EnumerateArray()
-                                  .Select(item => item.GetProperty("link").GetString() ?? string.Empty)
-                                  .Where(url => !string.IsNullOrEmpty(url))
-                                  .ToList();
-                    _searchResultsCache[searchTerms] = urls;
-                    _logger.Log($"Google search returned {urls.Count} URLs");
-                    return urls;
-                }
-                _logger.Log("Google search returned no items");
-                return new List<string>();
-            }
-            catch (Exception ex)
-            {
-                _logger.Log($"Google Search error: {ex.Message}");
-                return new List<string>();
             }
         }
 
@@ -485,29 +373,5 @@ namespace Gemini
             "Please help me find the most likely solution to the question/puzzle/enigma, or find the missing collectibles. " +
             "If the screenshot is from another type of application and shows an error message, or a coding language issue, " +
             "please find how to solve it. If it's just a cute or strange picture, please respond to it in a fun and engaging way.";
-
-        private float[] ComputeEmbedding(string text)
-        {
-            // Simplified: average hash codes of first N words for consistency
-            const int maxWords = 100; // Arbitrary limit for document embeddings
-            var words = text.Split().Take(maxWords).Select(w => (float)w.GetHashCode()).ToArray();
-            if (words.Length == 0) return new float[] { 0 };
-            return words;
-        }
-
-        private float CosineSimilarity(float[] a, float[] b)
-        {
-            // Pad or truncate to match lengths
-            int length = Math.Min(a.Length, b.Length);
-            if (length == 0) return 0;
-            
-            var aAdjusted = a.Length > length ? a.Take(length).ToArray() : a.Concat(Enumerable.Repeat(0f, length - a.Length)).ToArray();
-            var bAdjusted = b.Length > length ? b.Take(length).ToArray() : b.Concat(Enumerable.Repeat(0f, length - b.Length)).ToArray();
-
-            float dot = aAdjusted.Zip(bAdjusted, (x, y) => x * y).Sum();
-            float magA = (float)Math.Sqrt(aAdjusted.Sum(x => x * x));
-            float magB = (float)Math.Sqrt(bAdjusted.Sum(x => x * x));
-            return magA * magB == 0 ? 0 : dot / (magA * magB);
-        }
     }
 }
