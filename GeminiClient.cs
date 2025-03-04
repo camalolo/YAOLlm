@@ -167,6 +167,9 @@ namespace Gemini
             request.AddHeader("Content-Type", "application/json");
             request.AddJsonBody(payload);
 
+            var jsonPayload = JsonSerializer.Serialize(payload);
+            _logger.Log($"Full request payload: {jsonPayload}");
+
             UpdateChat("\nSystem: Waiting for LLM reply...\n", "system");
             UpdateStatus(Status.ReceivingData);
 
@@ -196,13 +199,21 @@ namespace Gemini
                         continue;
                     }
 
+                    if (response.StatusCode == System.Net.HttpStatusCode.BadRequest) // 400
+                    {
+                        _logger.Log($"BadRequest (400) received. Response content: {response.Content}");
+                        _logger.Log($"Request sent : {payload}");
+                        UpdateChat("Error: The request was invalid. Please check your input and try again.\n", "system");
+                        return null;
+                    }
+
                     response.ThrowIfError(); // Throws for other HTTP errors (e.g., 400, 500)
                     _logger.Log($"Raw LLM response: {response.Content}");
                     var data = response.Content != null ? JsonSerializer.Deserialize<JsonElement>(response.Content) : default;
                     var llmResponse = ExtractLLMResponse(data);
 
                     var processedResponse = await HandleLLMResponse(llmResponse);
-                    if (processedResponse != null)
+                    if (!string.IsNullOrEmpty(processedResponse))
                     {
                         _conversationHistory.Add(userMessage);
                         _conversationHistory.Add(new Dictionary<string, string> { { "role", "model" }, { "content", processedResponse } });
@@ -359,7 +370,10 @@ namespace Gemini
         }
 
         private string GetNoRelevantResultsPrompt() =>
-            "The search produced no relevant results. You may want to use different search terms.";
+            $"The previous search produced no relevant results for '{_pendingSearchRequest}'. " +
+            "Please use the 'search_google' tool immediately to try again with different, more specific, or refined search terms. " +
+            $"Base your new search terms on the original user query: '{_originalUserQuery}'. " +
+            "Do not ask the user for confirmation or to repeat their question — proceed directly with the new search.";
 
         private string GetImageDescriptionPrompt(string windowTitle) =>
             string.IsNullOrEmpty(windowTitle)

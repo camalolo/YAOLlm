@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Net.Http;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using RestSharp;
 using HtmlAgilityPack;
@@ -131,9 +132,27 @@ namespace Gemini
                     var html = await client.GetStringAsync(url);
                     var doc = new HtmlAgilityPack.HtmlDocument();
                     doc.LoadHtml(html);
-                    foreach (var node in doc.DocumentNode.SelectNodes("//*[@href]") ?? new HtmlNodeCollection(null))
+
+                    // Remove unwanted elements: scripts, styles, navigation, and common web artifacts
+                    foreach (var node in doc.DocumentNode.SelectNodes("//script | //style | //nav | //footer | //*[contains(@class, 'advert')] | //*[contains(@class, 'popup')]") ?? new HtmlNodeCollection(null))
                         node.Remove();
-                    var text = doc.DocumentNode.InnerText;
+
+                    // Extract main content (heuristic: prioritize article, main, or body tags)
+                    var contentNode = doc.DocumentNode.SelectSingleNode("//article") ??
+                                      doc.DocumentNode.SelectSingleNode("//main") ??
+                                      doc.DocumentNode.SelectSingleNode("//body");
+                    var text = contentNode != null ? HtmlEntity.DeEntitize(contentNode.InnerText) : doc.DocumentNode.InnerText;
+
+                    // Basic cleanup: remove excessive whitespace, common error messages, and boilerplate
+                    text = System.Text.RegularExpressions.Regex.Replace(text, @"\s+", " ").Trim();
+                    text = System.Text.RegularExpressions.Regex.Replace(text, @"(Something went wrong|Try again|Please enable Javascript|Subscribe to our newsletter)", "", RegexOptions.IgnoreCase);
+
+                    if (string.IsNullOrWhiteSpace(text))
+                    {
+                        _logger.Log($"No meaningful content scraped from {url}");
+                        return (string.Empty, new float[0]);
+                    }
+
                     var embedding = ComputeEmbedding(text);
                     _scrapedContentCache[url] = (text, embedding);
                     _logger.Log($"Scraped content from {url}, length: {text.Length} chars");
@@ -150,11 +169,11 @@ namespace Gemini
         private List<(string content, string url)> ProcessScrapedData((string, float[])[] scrapedData, string searchTerms, List<string> urls)
         {
             var docs = scrapedData.Where(d => !string.IsNullOrEmpty(d.Item1) && d.Item2.Length > 0)
-                                .Select(d => d.Item1)
-                                .ToList();
+                                  .Select(d => d.Item1)
+                                  .ToList();
             var embeddings = scrapedData.Where(d => !string.IsNullOrEmpty(d.Item1) && d.Item2.Length > 0)
-                                      .Select(d => d.Item2)
-                                      .ToList();
+                                        .Select(d => d.Item2)
+                                        .ToList();
 
             if (!docs.Any())
             {
@@ -164,12 +183,24 @@ namespace Gemini
 
             var queryEmbedding = ComputeEmbedding(searchTerms);
             var scores = embeddings.Select(e => CosineSimilarity(e, queryEmbedding)).ToList();
-            var relevantDocs = docs.Zip(scores, (d, s) => (d, s))
-                                 .Where(x => x.s > RelevanceThreshold)
-                                 .OrderByDescending(x => x.s)
-                                 .Take(3)
-                                 .Select(x => x.d)
-                                 .ToList();
+
+            // Filter and refine documents based on relevance
+            var relevantDocs = docs.Zip(scores, (d, s) => (content: d, score: s))
+                                   .Where(x => x.score > RelevanceThreshold && x.content.Length > 50) // Ensure minimum length for substance
+                                   .OrderByDescending(x => x.score)
+                                   .Select(x =>
+                                   {
+                                       // Trim content to remove remaining noise while keeping substance
+                                       var lines = x.content.Split('\n')
+                                                   .Select(line => line.Trim())
+                                                   .Where(line => line.Length > 20 && // Avoid short, meaningless lines
+                                                                  !line.Contains("login") && // Remove login prompts
+                                                                  !line.Contains("cookie") && // Remove cookie notices
+                                                                  !System.Text.RegularExpressions.Regex.IsMatch(line, @"^\d+$")); // Remove standalone numbers
+                                       return string.Join("\n", lines);
+                                   })
+                                   .Take(3)
+                                   .ToList();
 
             return relevantDocs.Zip(urls, (content, url) => (content, url)).ToList();
         }
