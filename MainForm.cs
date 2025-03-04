@@ -70,7 +70,7 @@ namespace Gemini
                 ReadOnly = true,
                 BackColor = Color.Black,
                 ForeColor = Color.White,
-                Font = new Font("Consolas", 12),
+                Font = new Font("Consolas", 18),
                 BorderStyle = BorderStyle.None
             };
             _chatBox = chatBox;
@@ -87,31 +87,50 @@ namespace Gemini
             inputField.KeyDown += InputField_KeyDown;
             _inputField = inputField;
 
-            var buttonPanel = new Panel { Dock = DockStyle.Bottom, BackColor = Color.Black, Height = 40 };
-            var buttons = new[]
+            var buttonPanel = new Panel { Dock = DockStyle.Bottom, BackColor = Color.Black, Height = 48 };
+            var buttonData = new Dictionary<string, string>
             {
-                new System.Windows.Forms.Button { Text = "Send", FlatStyle = FlatStyle.Flat, BackColor = Color.Black, ForeColor = Color.White, Font = new Font("Consolas", 12) },
-                new System.Windows.Forms.Button { Text = "Capture & Send", FlatStyle = FlatStyle.Flat, BackColor = Color.Black, ForeColor = Color.White, Font = new Font("Consolas", 12) },
-                new System.Windows.Forms.Button { Text = "Proceed", FlatStyle = FlatStyle.Flat, BackColor = Color.Black, ForeColor = Color.White, Font = new Font("Consolas", 12) },
-                new System.Windows.Forms.Button { Text = "Search Online", FlatStyle = FlatStyle.Flat, BackColor = Color.Black, ForeColor = Color.White, Font = new Font("Consolas", 12) },
-                new System.Windows.Forms.Button { Text = "Playing", FlatStyle = FlatStyle.Flat, BackColor = Color.Black, ForeColor = Color.White, Font = new Font("Consolas", 12) },
-                new System.Windows.Forms.Button { Text = "Clear", FlatStyle = FlatStyle.Flat, BackColor = Color.Black, ForeColor = Color.White, Font = new Font("Consolas", 12) }
+                { "send", "Send" },
+                { "capture_send", "Capture && Send" },
+                { "proceed", "Proceed" },
+                { "search_online", "Search Online" },
+                { "playing", "Playing" },
+                { "clear", "Clear" }
             };
 
-            int x = 10;
-            foreach (var btn in buttons)
+            var buttons = new System.Windows.Forms.Button[buttonData.Count];
+            int i = 0;
+            foreach (var data in buttonData)
             {
+                buttons[i] = new System.Windows.Forms.Button
+                {
+                    Text = data.Value,
+                    FlatStyle = FlatStyle.Flat,
+                    BackColor = Color.Black,
+                    ForeColor = Color.White,
+                    Font = new Font("Consolas", 12),
+                    Height = 38,
+                    Width = TextRenderer.MeasureText(data.Value, new Font("Consolas", 12)).Width + 20,
+                    Tag = data.Key // Use Tag property to store the button ID
+                };
+                i++;
+            }
+
+            int x = 10;
+            for (int k = 0; k < buttons.Length; k++)
+            {
+                var btn = buttons[k];
                 btn.Location = new Point(x, 5);
                 btn.Click += Button_Click;
                 buttonPanel.Controls.Add(btn);
                 x += btn.Width + 10;
             }
 
-            var statusLabel = new Label { Text = "Idle", Font = new Font("Consolas", 12), ForeColor = Color.White, BackColor = Color.Black, Location = new Point(x, 10) };
+            var statusLabel = new Label { Text = "Idle", Font = new Font("Consolas", 12), ForeColor = Color.White, BackColor = Color.Black, Location = new Point(x, 10), Height = 38, Width = TextRenderer.MeasureText("Idle", new Font("Consolas", 12)).Width * 2 };
             _statusLabel = statusLabel;
             buttonPanel.Controls.Add(statusLabel);
 
-            var historyLabel = new Label { Text = "History Size: 0 characters", Font = new Font("Consolas", 12), ForeColor = Color.White, BackColor = Color.Black, Dock = DockStyle.Right };
+            var historyLabel = new Label { Text = "[0]", Font = new Font("Consolas", 12), ForeColor = Color.White, BackColor = Color.Black, Dock = DockStyle.Right, Height = 38 };
             _historyLabel = historyLabel;
             buttonPanel.Controls.Add(historyLabel);
 
@@ -124,7 +143,7 @@ namespace Gemini
             _isVisible = false;
 
             this.Shown += (s, e) => FocusInputField();
-            
+
             Task.Run(() => MonitorStatusQueue());
         }
 
@@ -172,15 +191,19 @@ namespace Gemini
         private void Button_Click(object? sender, EventArgs e)
         {
             if (sender is System.Windows.Forms.Button btn)
-            { 
-                switch (btn.Text)
+            {
+                string? buttonId = btn.Tag as string;
+                switch (buttonId)
                 {
-                    case "Send": SendMessage(); break;
-                    case "Capture & Send": CaptureAndSend(); break;
-                    case "Proceed": SendPresetMessage("[Proceed]"); break;
-                    case "Search Online": SendPresetMessage("[Search online]"); break;
-                    case "Playing": SendPlayingMessage(); break;
-                    case "Clear": ClearChat(); break;
+                    case null:
+                        _logger.Log("Error: Button ID is null.");
+                        return;
+                    case "send": SendMessage(); break;
+                    case "capture_send": CaptureAndSend(); break;
+                    case "proceed": SendPresetMessage("[Proceed]"); break;
+                    case "search_online": SendPresetMessage("[Search online]"); break;
+                    case "playing": SendPlayingMessage(); break;
+                    case "clear": ClearChat(); break;
                 }
             }
         }
@@ -263,7 +286,7 @@ namespace Gemini
         private void UpdateHistoryCounter()
         {
             int totalChars = _geminiClient.GetConversationHistoryLength();
-            _historyLabel?.Invoke((MethodInvoker)(() => _historyLabel.Text = $"History Size: {totalChars} characters"));
+            _historyLabel?.Invoke((MethodInvoker)(() => _historyLabel.Text = $"[{totalChars}]"));
         }
 
         private (string, string) CaptureScreenAndEncode()
