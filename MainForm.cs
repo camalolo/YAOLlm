@@ -171,7 +171,7 @@ namespace Gemini
 
         private void MainForm_KeyDown(object? sender, KeyEventArgs e)
         {
-            if (e.KeyCode == Keys.F12)
+            if (e.KeyCode == Keys.F12 && e.Control)
                 ToggleVisibility();
             else if (e.KeyCode == Keys.Escape)
                 HideOverlay();
