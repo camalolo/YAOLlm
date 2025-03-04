@@ -10,6 +10,14 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <None Remove="icon.png" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="icon.png" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="dotenv.net" Version="3.2.1" />
     <PackageReference Include="HtmlAgilityPack" Version="1.11.74" />
     <PackageReference Include="RestSharp" Version="112.1.0" />

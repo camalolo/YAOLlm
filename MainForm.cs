@@ -7,6 +7,7 @@ using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using static System.Windows.Forms.VisualStyles.VisualStyleElement;
+using System.Reflection;
 
 namespace Gemini
 {
@@ -18,6 +19,17 @@ namespace Gemini
         private bool _isVisible = false;
         private readonly Logger _logger;
 
+        // Windows API constants and imports for global hotkey
+        private const int WM_HOTKEY = 0x0312;
+        private const int HOTKEY_ID = 1; // Unique ID for the hotkey
+        private const int MOD_CONTROL = 0x0002; // Modifier for Ctrl
+        private const int VK_F12 = 0x7B; // Virtual key code for F12
+
+        [DllImport("user32.dll")]
+        private static extern bool RegisterHotKey(IntPtr hWnd, int id, int fsModifiers, int vk);
+
+        [DllImport("user32.dll")]
+        private static extern bool UnregisterHotKey(IntPtr hWnd, int id);
         public MainForm(GeminiClient geminiClient, StatusManager statusManager)
         {
             _geminiClient = geminiClient;
@@ -36,8 +48,27 @@ namespace Gemini
             SetupTrayIcon();
             this.FormClosing += MainForm_FormClosing;
 
-            this.KeyPreview = true;
-            this.KeyDown += MainForm_KeyDown;
+            // Register the global hotkey (Ctrl+F12)
+            if (!RegisterHotKey(this.Handle, HOTKEY_ID, MOD_CONTROL, VK_F12))
+            {
+                _logger.Log("Failed to register global hotkey Ctrl+F12. It may be in use by another application.");
+            }
+            else
+            {
+                _logger.Log("Global hotkey Ctrl+F12 registered.");
+            }
+
+            Task.Run(() => MonitorStatusQueue());
+
+        }
+        protected override void WndProc(ref Message m)
+        {
+            base.WndProc(ref m);
+
+            if (m.Msg == WM_HOTKEY && m.WParam.ToInt32() == HOTKEY_ID)
+            {
+                ToggleVisibility();
+            }
         }
 
         private void SetupUI()
@@ -156,11 +187,38 @@ namespace Gemini
         {
             _trayIcon = new NotifyIcon
             {
-                Icon = SystemIcons.Application,
                 Text = "Gemini Overlay",
                 Visible = true,
                 ContextMenuStrip = new ContextMenuStrip()
             };
+
+            try
+            {
+                // Load the embedded icon.png resource
+                using (var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream("Gemini.icon.png"))
+                {
+                    if (stream != null)
+                    {
+                        using (var bitmap = new Bitmap(stream))
+                        {
+                            IntPtr hIcon = bitmap.GetHicon();
+                            _trayIcon.Icon = Icon.FromHandle(hIcon);
+                            _logger.Log("Embedded tray icon loaded from icon.png.");
+                        }
+                    }
+                    else
+                    {
+                        _logger.Log("Embedded resource 'icon.png' not found. Using default icon.");
+                        _trayIcon.Icon = SystemIcons.Application; // Fallback to default
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.Log($"Error loading embedded tray icon: {ex.Message}");
+                _trayIcon.Icon = SystemIcons.Application; // Fallback to default on error
+            }
+
             if (_trayIcon.ContextMenuStrip != null)
             {
                 _trayIcon.ContextMenuStrip.Items.Add("Show/Hide", null, (s, e) => ToggleVisibility());
@@ -168,13 +226,12 @@ namespace Gemini
             }
             _trayIcon.DoubleClick += (s, e) => ToggleVisibility();
         }
-
-        private void MainForm_KeyDown(object? sender, KeyEventArgs e)
+        private void MainForm_FormClosing(object? sender, FormClosingEventArgs e)
         {
-            if (e.KeyCode == Keys.F12 && e.Control)
-                ToggleVisibility();
-            else if (e.KeyCode == Keys.Escape)
-                HideOverlay();
+            // Unregister the hotkey when the form closes
+            UnregisterHotKey(this.Handle, HOTKEY_ID);
+            _logger.Log("Global hotkey Ctrl+F12 unregistered.");
+            _trayIcon.Dispose();
         }
 
         private void InputField_KeyDown(object? sender, KeyEventArgs e)
@@ -275,7 +332,7 @@ namespace Gemini
         private void UpdateChat(string message, string role)
         {
             Color color = role == "model" ? Color.Yellow : role == "system" ? Color.Gray : Color.White;
-            _chatBox?.Invoke((MethodInvoker)(() =>
+            _chatBox?.Invoke((System.Windows.Forms.MethodInvoker)(() =>
             {
                 _chatBox.SelectionColor = color;
                 _chatBox.AppendText(message);
@@ -286,7 +343,7 @@ namespace Gemini
         private void UpdateHistoryCounter()
         {
             int totalChars = _geminiClient.GetConversationHistoryLength();
-            _historyLabel?.Invoke((MethodInvoker)(() => _historyLabel.Text = $"[{totalChars}]"));
+            _historyLabel?.Invoke((System.Windows.Forms.MethodInvoker)(() => _historyLabel.Text = $"[{totalChars}]"));
         }
 
         private (string, string) CaptureScreenAndEncode()
@@ -363,16 +420,12 @@ namespace Gemini
                 try
                 {
                     Status status = _statusManager.GetQueue().Dequeue();
-                    _statusLabel.Invoke((MethodInvoker)(() => _statusLabel.Text = status.ToString()));
+                    _statusLabel.Invoke((System.Windows.Forms.MethodInvoker)(() => _statusLabel.Text = status.ToString()));
                 }
                 catch (InvalidOperationException) { Thread.Sleep(100); }
             }
         }
 
-        private void MainForm_FormClosing(object? sender, FormClosingEventArgs e)
-        {
-            _trayIcon.Dispose();
-        }
     }
 
     public static class BitmapExtensions
