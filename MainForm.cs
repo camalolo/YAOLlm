@@ -83,6 +83,7 @@ namespace Gemini
             this.BackColor = Color.Black;
             this.Size = new Size(Screen.PrimaryScreen?.Bounds.Width ?? 0, Screen.PrimaryScreen?.Bounds.Height ?? 0);
             this.Location = new Point(0, 0);
+            this.Padding = new Padding(32, 0, 32, 0);
 
             var topPanel = new Panel { Dock = DockStyle.Top, BackColor = Color.Black, Height = 40 };
             var closeButton = new System.Windows.Forms.Button
@@ -93,7 +94,8 @@ namespace Gemini
                 ForeColor = Color.White,
                 FlatStyle = FlatStyle.Flat,
                 Dock = DockStyle.Right,
-                Width = 40
+                Width = 40,
+                FlatAppearance = { BorderSize = 0 }
             };
             closeButton.Click += (s, e) => HideOverlay();
 
@@ -106,9 +108,18 @@ namespace Gemini
                 BackColor = Color.Black,
                 ForeColor = Color.White,
                 Font = new Font("Consolas", 18),
-                BorderStyle = BorderStyle.None
+                BorderStyle = BorderStyle.FixedSingle,
+                Padding = new Padding(10)
             };
-            _chatBox = chatBox;
+            _chatBox = chatBox;  // Store the reference
+
+            // Add spacer panel between chat and input
+            var spacerPanel = new Panel
+            {
+                Height = 10,
+                Dock = DockStyle.Bottom,
+                BackColor = Color.Black
+            };
 
             var inputField = new System.Windows.Forms.TextBox
             {
@@ -117,7 +128,10 @@ namespace Gemini
                 ForeColor = Color.White,
                 Font = new Font("Consolas", 12),
                 BorderStyle = BorderStyle.FixedSingle,
-                Height = 35
+                Height = 75,
+                Padding = new Padding(10),
+                Multiline = true,
+                AcceptsReturn = true
             };
             inputField.KeyDown += InputField_KeyDown;
             _inputField = inputField;
@@ -151,7 +165,7 @@ namespace Gemini
                 i++;
             }
 
-            int x = 10;
+            int x = 0;
             for (int k = 0; k < buttons.Length; k++)
             {
                 var btn = buttons[k];
@@ -170,6 +184,7 @@ namespace Gemini
             buttonPanel.Controls.Add(historyLabel);
 
             this.Controls.Add(chatBox);
+            this.Controls.Add(spacerPanel);
             this.Controls.Add(inputField);
             this.Controls.Add(buttonPanel);
             this.Controls.Add(topPanel);

@@ -7,6 +7,7 @@ using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using RestSharp;
 using HtmlAgilityPack;
+using System.Collections.Concurrent;
 
 namespace Gemini
 {
@@ -16,11 +17,13 @@ namespace Gemini
         private readonly string _googleSearchApiKey;
         private readonly string _googleSearchEngineId;
         private const int GoogleSearchNumItems = 10;
-        private const double RelevanceThreshold = 0.33;
+        private const double RelevanceThreshold = 0.45;
         private readonly Dictionary<string, List<string>> _searchResultsCache = new();
         private readonly Dictionary<string, int> _searchStartIndices = new();
         private readonly Dictionary<string, int> _searchResultsIndex = new();
         private readonly Dictionary<string, (string, float[])> _scrapedContentCache = new();
+        private readonly ConcurrentDictionary<string, int> _vocabulary = new();
+        private readonly object _vocabularyLock = new();
 
         public Search(Logger logger, string googleSearchApiKey, string googleSearchEngineId)
         {
@@ -31,6 +34,13 @@ namespace Gemini
 
         public async Task<List<(string content, string url)>> PerformSearch(string searchTerms, string originalUserQuery, Action<string, string> updateChat, Action<Status> updateStatus)
         {
+            if (string.IsNullOrWhiteSpace(searchTerms))
+            {
+                _logger.Log("Error: Search terms are empty");
+                updateChat($"System: Cannot perform search with empty search terms.\n", "system");
+                return new List<(string, string)>();
+            }
+
             updateChat($"System: Searching for '{searchTerms}'...\n", "system");
             updateStatus(Status.Searching);
 
@@ -38,6 +48,7 @@ namespace Gemini
             if (!urls.Any())
             {
                 _logger.Log($"No URLs found for search terms: {searchTerms}");
+                updateChat($"System: No results found for '{searchTerms}'.\n", "system");
                 return new List<(string, string)>();
             }
 
@@ -45,7 +56,14 @@ namespace Gemini
             var scrapedData = await ScrapeUrls(urls);
 
             updateStatus(Status.Processing);
-            return ProcessScrapedData(scrapedData, searchTerms, urls);
+            var results = ProcessScrapedData(scrapedData, searchTerms, urls);
+
+            if (!results.Any())
+            {
+                updateChat($"System: No relevant results found for '{searchTerms}'.\n", "system");
+            }
+
+            return results;
         }
 
         private async Task<List<string>> GetSearchResults(string searchTerms)
@@ -166,8 +184,91 @@ namespace Gemini
             }));
         }
 
+        private float[] ComputeEmbedding(string text)
+        {
+            try
+            {
+                // Improved text preprocessing
+                var words = text.ToLower()
+                    .Split(new[] { ' ', '\n', '\r', '\t', '.', ',', ';', ':', '!', '?', '(', ')', '[', ']', '{', '}', '"', '\'', '/', '\\' }, 
+                        StringSplitOptions.RemoveEmptyEntries)
+                    .Where(w => w.Length > 2 && !IsStopWord(w))
+                    .ToList();
+
+                // Update vocabulary
+                lock (_vocabularyLock)
+                {
+                    foreach (var word in words.Distinct())
+                    {
+                        if (!_vocabulary.ContainsKey(word))
+                        {
+                            _vocabulary.TryAdd(word, _vocabulary.Count);
+                        }
+                    }
+                }
+
+                // Compute TF-IDF vector with improved weighting
+                var vector = new float[_vocabulary.Count];
+                var wordCounts = words.GroupBy(w => w)
+                    .ToDictionary(g => g.Key, g => g.Count());
+
+                foreach (var (word, count) in wordCounts)
+                {
+                    if (_vocabulary.TryGetValue(word, out int index))
+                    {
+                        // TF = logarithmically scaled term frequency
+                        float tf = 1 + (float)Math.Log(count);
+                        vector[index] = tf;
+                    }
+                }
+
+                // L2 normalization
+                float magnitude = (float)Math.Sqrt(vector.Sum(x => x * x));
+                if (magnitude > 0)
+                {
+                    for (int i = 0; i < vector.Length; i++)
+                    {
+                        vector[i] /= magnitude;
+                    }
+                }
+
+                return vector;
+            }
+            catch (Exception ex)
+            {
+                _logger.Log($"Error computing embeddings: {ex.Message}");
+                return Array.Empty<float>();
+            }
+        }
+
+        private bool IsStopWord(string word)
+        {
+            // Common English stop words that don't contribute to meaning
+            var stopWords = new HashSet<string>
+            {
+                "the", "be", "to", "of", "and", "a", "in", "that", "have",
+                "for", "not", "on", "with", "he", "as", "you", "do", "at",
+                "this", "but", "his", "by", "from", "they", "we", "say", "her",
+                "she", "or", "an", "will", "my", "one", "all", "would", "there",
+                "their", "what", "so", "up", "out", "if", "about", "who", "get",
+                "which", "go", "me", "when", "make", "can", "like", "time", "no",
+                "just", "him", "know", "take", "into", "your", "some", "could",
+                "them", "see", "other", "than", "then", "now", "look", "only",
+                "come", "its", "over", "think", "also", "back", "after", "use",
+                "two", "how", "our", "work", "first", "well", "way", "even",
+                "new", "want", "because", "any", "these", "give", "day", "most"
+            };
+            return stopWords.Contains(word);
+        }
+
         private List<(string content, string url)> ProcessScrapedData((string, float[])[] scrapedData, string searchTerms, List<string> urls)
         {
+            if (string.IsNullOrWhiteSpace(searchTerms))
+            {
+                _logger.Log("Error: Search terms are empty");
+                return new List<(string, string)>();
+            }
+
             var docs = scrapedData.Where(d => !string.IsNullOrEmpty(d.Item1) && d.Item2.Length > 0)
                                   .Select(d => d.Item1)
                                   .ToList();
@@ -177,39 +278,48 @@ namespace Gemini
 
             if (!docs.Any())
             {
-                _logger.Log("No valid scraped documents found");
+                _logger.Log($"No valid scraped documents found for search terms: '{searchTerms}'");
                 return new List<(string, string)>();
             }
 
             var queryEmbedding = ComputeEmbedding(searchTerms);
-            var scores = embeddings.Select(e => CosineSimilarity(e, queryEmbedding)).ToList();
+            if (queryEmbedding.Length == 0)
+            {
+                _logger.Log($"Failed to compute embeddings for search terms: '{searchTerms}'");
+                return new List<(string, string)>();
+            }
+            
+            // Calculate scores with content length penalty
+            var scores = embeddings.Select((e, i) => {
+                var similarity = CosineSimilarity(e, queryEmbedding);
+                var lengthPenalty = Math.Min(1.0f, docs[i].Length / 10000.0f);
+                return similarity * lengthPenalty;
+            }).ToList();
 
-            // Filter and refine documents based on relevance
+            _logger.Log($"Processing search results for terms: '{searchTerms}'");
+            _logger.Log($"Found {docs.Count} documents with scores: {string.Join(", ", scores)}");
+
+            // Lower threshold and ensure we get at least some results
+            const float MinThreshold = 0.1f;
+            var threshold = Math.Min(RelevanceThreshold, 
+                scores.OrderByDescending(s => s).Skip(2).FirstOrDefault() > 0 ? scores.OrderByDescending(s => s).Skip(2).First() : MinThreshold);
+
+            // Get top 3 most relevant results
             var relevantDocs = docs.Zip(scores, (d, s) => (content: d, score: s))
-                                   .Where(x => x.score > RelevanceThreshold && x.content.Length > 50) // Ensure minimum length for substance
+                                   .Where(x => x.score > threshold)
                                    .OrderByDescending(x => x.score)
-                                   .Select(x =>
-                                   {
-                                       // Trim content to remove remaining noise while keeping substance
-                                       var lines = x.content.Split('\n')
-                                                   .Select(line => line.Trim())
-                                                   .Where(line => line.Length > 20 && // Avoid short, meaningless lines
-                                                                  !line.Contains("login") && // Remove login prompts
-                                                                  !line.Contains("cookie") && // Remove cookie notices
-                                                                  !System.Text.RegularExpressions.Regex.IsMatch(line, @"^\d+$")); // Remove standalone numbers
-                                       return string.Join("\n", lines);
-                                   })
                                    .Take(3)
                                    .ToList();
 
-            return relevantDocs.Zip(urls, (content, url) => (content, url)).ToList();
-        }
+            if (!relevantDocs.Any())
+            {
+                _logger.Log($"No relevant documents found above threshold {threshold} for search terms: '{searchTerms}'");
+                return new List<(string, string)>();
+            }
 
-        private float[] ComputeEmbedding(string text)
-        {
-            const int maxWords = 100;
-            var words = text.Split().Take(maxWords).Select(w => (float)w.GetHashCode()).ToArray();
-            return words.Length == 0 ? new float[] { 0 } : words;
+            _logger.Log($"Returning {relevantDocs.Count} relevant documents with scores: {string.Join(", ", relevantDocs.Select(d => d.score))}");
+
+            return relevantDocs.Zip(urls.Take(relevantDocs.Count), (content, url) => (content.content, url)).ToList();
         }
 
         private float CosineSimilarity(float[] a, float[] b)
