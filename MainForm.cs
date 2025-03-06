@@ -226,8 +226,8 @@ namespace Gemini
 
             try
             {
-                // Load the embedded icon.png resource
-                using (var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream("Gemini.icon.png"))
+                // Load the embedded icon.ico resource
+                using (var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream("Gemini.icon.ico"))
                 {
                     if (stream != null)
                     {
@@ -235,12 +235,12 @@ namespace Gemini
                         {
                             IntPtr hIcon = bitmap.GetHicon();
                             _trayIcon.Icon = Icon.FromHandle(hIcon);
-                            _logger.Log("Embedded tray icon loaded from icon.png.");
+                            _logger.Log("Embedded tray icon loaded from icon.ico.");
                         }
                     }
                     else
                     {
-                        _logger.Log("Embedded resource 'icon.png' not found. Using default icon.");
+                        _logger.Log("Embedded resource 'icon.ico' not found. Using default icon.");
                         _trayIcon.Icon = SystemIcons.Application; // Fallback to default
                     }
                 }
