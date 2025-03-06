@@ -46,7 +46,7 @@ namespace Gemini
 
             SetupUI();
 
-            this.Visible = false; // Reinforce hidden state 
+            this.Visible = false; // Reinforce hidden state
             _logger.Log($"Post-SetupUI: Visible = {this.Visible}, _isVisible = {_isVisible}");
 
             SetupTrayIcon();
@@ -86,6 +86,20 @@ namespace Gemini
             this.Padding = new Padding(32, 0, 32, 0);
 
             var topPanel = new Panel { Dock = DockStyle.Top, BackColor = Color.Black, Height = 40 };
+
+            var hideButton = new System.Windows.Forms.Button
+            {
+                Text = "-",
+                Font = new Font("Consolas", 12),
+                BackColor = Color.Black,
+                ForeColor = Color.White,
+                FlatStyle = FlatStyle.Flat,
+                Dock = DockStyle.Right,
+                Width = 20,
+                FlatAppearance = { BorderSize = 0 }
+            };
+            hideButton.Click += (s, e) => HideOverlay();
+
             var closeButton = new System.Windows.Forms.Button
             {
                 Text = "X",
@@ -94,11 +108,12 @@ namespace Gemini
                 ForeColor = Color.White,
                 FlatStyle = FlatStyle.Flat,
                 Dock = DockStyle.Right,
-                Width = 40,
+                Width = 20,
                 FlatAppearance = { BorderSize = 0 }
             };
             closeButton.Click += (s, e) => Application.Exit();
 
+            topPanel.Controls.Add(hideButton);
             topPanel.Controls.Add(closeButton);
 
             var chatBox = new RichTextBox
@@ -233,6 +248,7 @@ namespace Gemini
             catch (Exception ex)
             {
                 _logger.Log($"Error loading embedded tray icon: {ex.Message}");
+
                 _trayIcon.Icon = SystemIcons.Application; // Fallback to default on error
             }
 
@@ -242,6 +258,7 @@ namespace Gemini
             }
             _trayIcon.DoubleClick += (s, e) => ToggleVisibility();
         }
+
         private void MainForm_FormClosing(object? sender, FormClosingEventArgs e)
         {
             // Unregister the hotkey when the form closes
@@ -386,6 +403,7 @@ namespace Gemini
             catch (Exception ex)
             {
                 _logger.Log($"Error capturing screen: {ex.Message}");
+
                 UpdateChat($"Error capturing screen: {ex.Message}\r\n", "grey");
                 return (string.Empty, string.Empty);
             }
@@ -441,7 +459,6 @@ namespace Gemini
                 catch (InvalidOperationException) { Thread.Sleep(100); }
             }
         }
-
     }
 
     public static class BitmapExtensions
