@@ -408,7 +408,7 @@ namespace Gemini
                             else
                             {
                                 _logger.Log($"No relevant memories found for query '{query}'");
-                                return $"No relevant memories found for '{query}'.";
+                                return await Task.FromResult("No relevant memories found.");
                             }
                         }
                     }
@@ -490,7 +490,7 @@ namespace Gemini
             "First, use the 'search_memory' tool to check for relevant local memories before using 'search_google', as memory searches are faster.\n" +
             "If no relevant memories are found, fall back to 'search_google'.\n" +
             "NEVER ask for user confirmation to use tools. Use them when needed.\n" +
-            "Use tools to complete your answer unless you are confident you can answer the question.";
+            "Use tools to complete your answer unless you are confident you can answer the question with your base knowledge.";
 
         private string GetProcessedContentPrompt(string searchTerms, string originalUserQuery, List<(string content, string url)> contentUrlPairs)
         {
