@@ -97,7 +97,7 @@ namespace Gemini
                 Width = 40,
                 FlatAppearance = { BorderSize = 0 }
             };
-            closeButton.Click += (s, e) => HideOverlay();
+            closeButton.Click += (s, e) => Application.Exit();
 
             topPanel.Controls.Add(closeButton);
 

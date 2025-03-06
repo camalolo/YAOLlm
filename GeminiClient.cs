@@ -14,6 +14,7 @@ namespace Gemini
         private readonly Logger _logger;
         private readonly string _apiKey;
         private readonly Search _search;
+        private readonly MemoryManager _memoryManager;
         private const int MaxHistoryLength = 32;
         private string _llmApiModel = "gemini-2.0-flash";
         private string _llmApiUrl => $"https://generativelanguage.googleapis.com/v1beta/models/{_llmApiModel}:generateContent?key={_apiKey}";
@@ -39,7 +40,8 @@ namespace Gemini
                 _apiKey = Environment.GetEnvironmentVariable("GEMINI_API_KEY") ?? throw new ArgumentException("GEMINI_API_KEY is not set");
                 var googleSearchApiKey = Environment.GetEnvironmentVariable("GOOGLE_SEARCH_API_KEY") ?? throw new ArgumentException("GOOGLE_SEARCH_API_KEY is not set");
                 var googleSearchEngineId = Environment.GetEnvironmentVariable("GOOGLE_SEARCH_ENGINE_ID") ?? throw new ArgumentException("GOOGLE_SEARCH_ENGINE_ID is not set");
-                _search = new Search(logger, googleSearchApiKey, googleSearchEngineId);
+                _memoryManager = new MemoryManager(logger);
+                _search = new Search(logger, googleSearchApiKey, googleSearchEngineId, CreateMemoryFromSearchResults);
             }
             catch (Exception ex)
             {
@@ -86,7 +88,7 @@ namespace Gemini
             {
                 new
                 {
-                    function_declarations = new[]
+                    function_declarations = new object[]
                     {
                         new
                         {
@@ -97,6 +99,17 @@ namespace Gemini
                                 type = "object",
                                 properties = new { search_terms = new { type = "string", description = "The search query to use." } },
                                 required = new[] { "search_terms" }
+                            }
+                        },
+                        new
+                        {
+                            name = "search_memory",
+                            description = "Searches for relevant memories stored locally before performing an online search. Should be used first.",
+                            parameters = new
+                            {
+                                type = "object",
+                                properties = new { query = new { type = "string", description = "The query to search for in memories." } },
+                                required = new[] { "query" }
                             }
                         }
                     }
@@ -154,10 +167,10 @@ namespace Gemini
                 {
                     role = m["role"],
                     parts = new List<object>
-            {
-                m.ContainsKey("content") ? new { text = m["content"] } : new object(),
-                m.ContainsKey("image") ? new { inlineData = new { mimeType = "image/png", data = m["image"] } } : new object()
-            }.Where(p => p.GetType() != typeof(object)).ToList()
+                    {
+                        m.ContainsKey("content") ? new { text = m["content"] } : new object(),
+                        m.ContainsKey("image") ? new { inlineData = new { mimeType = "image/png", data = m["image"] } } : new object()
+                    }.Where(p => p.GetType() != typeof(object)).ToList()
                 }),
                 tools = _tools
             };
@@ -175,14 +188,14 @@ namespace Gemini
 
             const int maxRetries = 3;
             int retryCount = 0;
-            int delaySeconds = 1; // Initial delay for exponential backoff
+            int delaySeconds = 1;
 
             while (true)
             {
                 try
                 {
                     var response = await client.ExecuteAsync(request);
-                    if (response.StatusCode == System.Net.HttpStatusCode.TooManyRequests) // 429
+                    if (response.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
                     {
                         if (retryCount >= maxRetries)
                         {
@@ -192,14 +205,14 @@ namespace Gemini
                         }
 
                         retryCount++;
-                        int retryDelay = delaySeconds * (int)Math.Pow(2, retryCount - 1); // Exponential backoff: 1s, 2s, 4s
+                        int retryDelay = delaySeconds * (int)Math.Pow(2, retryCount - 1);
                         _logger.Log($"Received 429 Too Many Requests. Retrying in {retryDelay} seconds (attempt {retryCount}/{maxRetries})");
                         UpdateChat($"System: Server busy, retrying in {retryDelay} seconds...\n", "system");
                         await Task.Delay(retryDelay * 1000);
                         continue;
                     }
 
-                    if (response.StatusCode == System.Net.HttpStatusCode.BadRequest) // 400
+                    if (response.StatusCode == System.Net.HttpStatusCode.BadRequest)
                     {
                         _logger.Log($"BadRequest (400) received. Response content: {response.Content}");
                         _logger.Log($"Request sent : {payload}");
@@ -207,7 +220,7 @@ namespace Gemini
                         return null;
                     }
 
-                    response.ThrowIfError(); // Throws for other HTTP errors (e.g., 400, 500)
+                    response.ThrowIfError();
                     _logger.Log($"Raw LLM response: {response.Content}");
                     var data = response.Content != null ? JsonSerializer.Deserialize<JsonElement>(response.Content) : default;
                     var llmResponse = ExtractLLMResponse(data);
@@ -232,6 +245,96 @@ namespace Gemini
                 {
                     UpdateStatus(Status.Idle);
                 }
+            }
+        }
+
+        private async Task<string?> SendToLLMWithNoContext(string prompt)
+        {
+            try
+            {
+                // Ensure the prompt is not empty
+                if (string.IsNullOrEmpty(prompt))
+                {
+                    _logger.Log("Prompt cannot be empty in SendToLLMWithNoContext");
+                    return null;
+                }
+
+                // Create a single user message with the prompt
+                var messages = new List<Dictionary<string, string>>
+        {
+            new Dictionary<string, string> { { "role", "user" }, { "content", prompt } }
+        };
+
+                // Construct the payload
+                var payload = new
+                {
+                    contents = messages.Select(m => new
+                    {
+                        role = m["role"],
+                        parts = new[] { new { text = m["content"] } }
+                    }).ToList()
+                };
+
+                // Log the payload for debugging
+                var jsonPayload = JsonSerializer.Serialize(payload);
+                _logger.Log($"Sending payload to LLM in SendToLLMWithNoContext: {jsonPayload}");
+
+                var client = new RestClient(_llmApiUrl);
+                var request = new RestRequest { Method = Method.Post };
+                request.AddHeader("Content-Type", "application/json");
+                request.AddJsonBody(payload);
+
+                UpdateStatus(Status.ReceivingData);
+
+                var response = await client.ExecuteAsync(request);
+                if (response.StatusCode == System.Net.HttpStatusCode.BadRequest)
+                {
+                    _logger.Log($"BadRequest (400) received in SendToLLMWithNoContext. Response content: {response.Content}");
+                    _logger.Log($"Request payload: {jsonPayload}");
+                    return null;
+                }
+
+                response.ThrowIfError();
+                _logger.Log($"Raw LLM response in SendToLLMWithNoContext: {response.Content}");
+
+                var data = response.Content != null ? JsonSerializer.Deserialize<JsonElement>(response.Content) : default;
+                var (message, _) = ExtractLLMResponse(data);
+                return message;
+            }
+            catch (Exception ex)
+            {
+                _logger.Log($"Error in SendToLLMWithNoContext: {ex.Message}");
+                return null;
+            }
+            finally
+            {
+                UpdateStatus(Status.Idle);
+            }
+        }
+
+        private async void CreateMemoryFromSearchResults(List<(string content, string url)> results)
+        {
+            try
+            {
+                // Prepare the content to summarize
+                var contentWithUrls = string.Join("\n\n", results.Select(p => $"Content from: {p.url}\n\n{p.content}"));
+                var prompt = $"Summarize and organize the following search results into a concise, well-structured memory entry. Focus on key information and clarity, and enhance with your own knowledge if relevant.\n\n{contentWithUrls}";
+
+                // Since we don't need a special context for summarization, pass an empty context
+                var summary = await SendToLLMWithNoContext(prompt);
+                if (!string.IsNullOrEmpty(summary))
+                {
+                    _memoryManager.StoreMemory(summary);
+                    _logger.Log("Successfully created and stored memory from search results");
+                }
+                else
+                {
+                    _logger.Log("Failed to create memory: LLM returned empty summary");
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.Log($"Error creating memory from search results: {ex.Message}");
             }
         }
 
@@ -264,7 +367,6 @@ namespace Gemini
 
             if (llmResponse.functionCalls?.Any() == true)
             {
-
                 if (!string.IsNullOrEmpty(llmResponse.message))
                 {
                     UpdateChat($"{llmResponse.message}\n", "model");
@@ -273,13 +375,33 @@ namespace Gemini
                 foreach (var func in llmResponse.functionCalls)
                 {
                     var funcCall = ExtractFunctionCall(func);
-                    if (funcCall.HasValue && funcCall.Value.name == "search_google")
+                    if (funcCall.HasValue)
                     {
-                        var searchTerms = funcCall.Value.args["search_terms"].ToString();
-                        _pendingSearchRequest = searchTerms ?? string.Empty;
-                        _logger.Log($"Initiating search for terms: {searchTerms}");
-                        await PerformSearchAndDisplaySummaries();
-                        return llmResponse.message;
+                        if (funcCall.Value.name == "search_google")
+                        {
+                            var searchTerms = funcCall.Value.args["search_terms"].ToString();
+                            _pendingSearchRequest = searchTerms ?? string.Empty;
+                            _logger.Log($"Initiating search for terms: {searchTerms}");
+                            await PerformSearchAndDisplaySummaries();
+                            return llmResponse.message;
+                        }
+                        else if (funcCall.Value.name == "search_memory")
+                        {
+                            var query = funcCall.Value.args["query"]?.ToString();
+                            _logger.Log($"Initiating memory search for query: {query}");
+                            var memories = string.IsNullOrEmpty(query) ? new List<(string content, float score)>() : _memoryManager.SearchMemories(query);
+                            if (memories.Any())
+                            {
+                                var memoryContent = string.Join("\n\n", memories.Select(m => $"Memory (score: {m.score:F2}):\n{m.content}"));
+                                var prompt = $"Found the following relevant memories:\n\n{memoryContent}\n\nBased on these memories, please provide a helpful response to '{query}'.";
+                                return await SendToLLM(prompt) ?? "No relevant information found in memories.";
+                            }
+                            else
+                            {
+                                _logger.Log($"No relevant memories found for query '{query}'");
+                                return $"No relevant memories found for '{query}'.";
+                            }
+                        }
                     }
                 }
             }
@@ -355,7 +477,9 @@ namespace Gemini
 
         private string GetInitialPrompt() =>
             $"Current Date: {DateTime.Now:yyyy-MM-dd}\n" +
-            "You have access to tools that perform google search when your internal knowledge is insufficient.\n" +
+            "You have access to tools to search local memories and perform Google searches.\n" +
+            "First, use the 'search_memory' tool to check for relevant local memories before using 'search_google', as memory searches are faster.\n" +
+            "If no relevant memories are found, fall back to 'search_google'.\n" +
             "NEVER ask for user confirmation to use tools. Use them when needed.\n" +
             "Use tools to complete your answer unless you are confident you can answer the question.";
 

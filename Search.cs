@@ -22,14 +22,15 @@ namespace Gemini
         private readonly Dictionary<string, int> _searchStartIndices = new();
         private readonly Dictionary<string, int> _searchResultsIndex = new();
         private readonly Dictionary<string, (string, float[])> _scrapedContentCache = new();
-        private readonly ConcurrentDictionary<string, int> _vocabulary = new();
-        private readonly object _vocabularyLock = new();
+        private readonly Action<List<(string content, string url)>>? _onSearchComplete; // Callback for memory creation
 
-        public Search(Logger logger, string googleSearchApiKey, string googleSearchEngineId)
+        public Search(Logger logger, string googleSearchApiKey, string googleSearchEngineId, Action<List<(string content, string url)>>? onSearchComplete = null)
         {
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
             _googleSearchApiKey = googleSearchApiKey ?? throw new ArgumentNullException(nameof(googleSearchApiKey));
             _googleSearchEngineId = googleSearchEngineId ?? throw new ArgumentNullException(nameof(googleSearchEngineId));
+            Action<List<(string content, string url)>>? localOnSearchComplete = onSearchComplete;
+            _onSearchComplete = localOnSearchComplete ?? (_ => { });
         }
 
         public async Task<List<(string content, string url)>> PerformSearch(string searchTerms, string originalUserQuery, Action<string, string> updateChat, Action<Status> updateStatus)
@@ -61,6 +62,11 @@ namespace Gemini
             if (!results.Any())
             {
                 updateChat($"System: No relevant results found for '{searchTerms}'.\n", "system");
+            }
+            else
+            {
+                // Trigger memory creation via callback
+                _onSearchComplete?.Invoke(results);
             }
 
             return results;
@@ -151,19 +157,16 @@ namespace Gemini
                     var doc = new HtmlAgilityPack.HtmlDocument();
                     doc.LoadHtml(html);
 
-                    // Remove unwanted elements: scripts, styles, navigation, and common web artifacts
                     foreach (var node in doc.DocumentNode.SelectNodes("//script | //style | //nav | //footer | //*[contains(@class, 'advert')] | //*[contains(@class, 'popup')]") ?? new HtmlNodeCollection(null))
                         node.Remove();
 
-                    // Extract main content (heuristic: prioritize article, main, or body tags)
                     var contentNode = doc.DocumentNode.SelectSingleNode("//article") ??
                                       doc.DocumentNode.SelectSingleNode("//main") ??
                                       doc.DocumentNode.SelectSingleNode("//body");
                     var text = contentNode != null ? HtmlEntity.DeEntitize(contentNode.InnerText) : doc.DocumentNode.InnerText;
 
-                    // Basic cleanup: remove excessive whitespace, common error messages, and boilerplate
-                    text = System.Text.RegularExpressions.Regex.Replace(text, @"\s+", " ").Trim();
-                    text = System.Text.RegularExpressions.Regex.Replace(text, @"(Something went wrong|Try again|Please enable Javascript|Subscribe to our newsletter)", "", RegexOptions.IgnoreCase);
+                    text = Regex.Replace(text, @"\s+", " ").Trim();
+                    text = Regex.Replace(text, @"(Something went wrong|Try again|Please enable Javascript|Subscribe to our newsletter)", "", RegexOptions.IgnoreCase);
 
                     if (string.IsNullOrWhiteSpace(text))
                     {
@@ -171,7 +174,7 @@ namespace Gemini
                         return (string.Empty, new float[0]);
                     }
 
-                    var embedding = ComputeEmbedding(text);
+                    var embedding = Embeddings.ComputeEmbedding(text);
                     _scrapedContentCache[url] = (text, embedding);
                     _logger.Log($"Scraped content from {url}, length: {text.Length} chars");
                     return (text, embedding);
@@ -182,83 +185,6 @@ namespace Gemini
                     return (string.Empty, new float[0]);
                 }
             }));
-        }
-
-        private float[] ComputeEmbedding(string text)
-        {
-            try
-            {
-                // Improved text preprocessing
-                var words = text.ToLower()
-                    .Split(new[] { ' ', '\n', '\r', '\t', '.', ',', ';', ':', '!', '?', '(', ')', '[', ']', '{', '}', '"', '\'', '/', '\\' }, 
-                        StringSplitOptions.RemoveEmptyEntries)
-                    .Where(w => w.Length > 2 && !IsStopWord(w))
-                    .ToList();
-
-                // Update vocabulary
-                lock (_vocabularyLock)
-                {
-                    foreach (var word in words.Distinct())
-                    {
-                        if (!_vocabulary.ContainsKey(word))
-                        {
-                            _vocabulary.TryAdd(word, _vocabulary.Count);
-                        }
-                    }
-                }
-
-                // Compute TF-IDF vector with improved weighting
-                var vector = new float[_vocabulary.Count];
-                var wordCounts = words.GroupBy(w => w)
-                    .ToDictionary(g => g.Key, g => g.Count());
-
-                foreach (var (word, count) in wordCounts)
-                {
-                    if (_vocabulary.TryGetValue(word, out int index))
-                    {
-                        // TF = logarithmically scaled term frequency
-                        float tf = 1 + (float)Math.Log(count);
-                        vector[index] = tf;
-                    }
-                }
-
-                // L2 normalization
-                float magnitude = (float)Math.Sqrt(vector.Sum(x => x * x));
-                if (magnitude > 0)
-                {
-                    for (int i = 0; i < vector.Length; i++)
-                    {
-                        vector[i] /= magnitude;
-                    }
-                }
-
-                return vector;
-            }
-            catch (Exception ex)
-            {
-                _logger.Log($"Error computing embeddings: {ex.Message}");
-                return Array.Empty<float>();
-            }
-        }
-
-        private bool IsStopWord(string word)
-        {
-            // Common English stop words that don't contribute to meaning
-            var stopWords = new HashSet<string>
-            {
-                "the", "be", "to", "of", "and", "a", "in", "that", "have",
-                "for", "not", "on", "with", "he", "as", "you", "do", "at",
-                "this", "but", "his", "by", "from", "they", "we", "say", "her",
-                "she", "or", "an", "will", "my", "one", "all", "would", "there",
-                "their", "what", "so", "up", "out", "if", "about", "who", "get",
-                "which", "go", "me", "when", "make", "can", "like", "time", "no",
-                "just", "him", "know", "take", "into", "your", "some", "could",
-                "them", "see", "other", "than", "then", "now", "look", "only",
-                "come", "its", "over", "think", "also", "back", "after", "use",
-                "two", "how", "our", "work", "first", "well", "way", "even",
-                "new", "want", "because", "any", "these", "give", "day", "most"
-            };
-            return stopWords.Contains(word);
         }
 
         private List<(string content, string url)> ProcessScrapedData((string, float[])[] scrapedData, string searchTerms, List<string> urls)
@@ -282,16 +208,16 @@ namespace Gemini
                 return new List<(string, string)>();
             }
 
-            var queryEmbedding = ComputeEmbedding(searchTerms);
+            var queryEmbedding = Embeddings.ComputeEmbedding(searchTerms);
             if (queryEmbedding.Length == 0)
             {
                 _logger.Log($"Failed to compute embeddings for search terms: '{searchTerms}'");
                 return new List<(string, string)>();
             }
-            
-            // Calculate scores with content length penalty
-            var scores = embeddings.Select((e, i) => {
-                var similarity = CosineSimilarity(e, queryEmbedding);
+
+            var scores = embeddings.Select((e, i) =>
+            {
+                var similarity = Embeddings.CosineSimilarity(e, queryEmbedding);
                 var lengthPenalty = Math.Min(1.0f, docs[i].Length / 10000.0f);
                 return similarity * lengthPenalty;
             }).ToList();
@@ -299,12 +225,10 @@ namespace Gemini
             _logger.Log($"Processing search results for terms: '{searchTerms}'");
             _logger.Log($"Found {docs.Count} documents with scores: {string.Join(", ", scores)}");
 
-            // Lower threshold and ensure we get at least some results
             const float MinThreshold = 0.1f;
-            var threshold = Math.Min(RelevanceThreshold, 
+            var threshold = Math.Min(RelevanceThreshold,
                 scores.OrderByDescending(s => s).Skip(2).FirstOrDefault() > 0 ? scores.OrderByDescending(s => s).Skip(2).First() : MinThreshold);
 
-            // Get top 3 most relevant results
             var relevantDocs = docs.Zip(scores, (d, s) => (content: d, score: s))
                                    .Where(x => x.score > threshold)
                                    .OrderByDescending(x => x.score)
@@ -318,22 +242,7 @@ namespace Gemini
             }
 
             _logger.Log($"Returning {relevantDocs.Count} relevant documents with scores: {string.Join(", ", relevantDocs.Select(d => d.score))}");
-
             return relevantDocs.Zip(urls.Take(relevantDocs.Count), (content, url) => (content.content, url)).ToList();
-        }
-
-        private float CosineSimilarity(float[] a, float[] b)
-        {
-            int length = Math.Min(a.Length, b.Length);
-            if (length == 0) return 0;
-
-            var aAdjusted = a.Length > length ? a.Take(length).ToArray() : a.Concat(Enumerable.Repeat(0f, length - a.Length)).ToArray();
-            var bAdjusted = b.Length > length ? b.Take(length).ToArray() : b.Concat(Enumerable.Repeat(0f, length - b.Length)).ToArray();
-
-            float dot = aAdjusted.Zip(bAdjusted, (x, y) => x * y).Sum();
-            float magA = (float)Math.Sqrt(aAdjusted.Sum(x => x * x));
-            float magB = (float)Math.Sqrt(bAdjusted.Sum(x => x * x));
-            return magA * magB == 0 ? 0 : dot / (magA * magB);
         }
     }
 }
