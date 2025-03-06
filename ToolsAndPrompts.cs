@@ -15,17 +15,6 @@ namespace Gemini
                     {
                         new
                         {
-                            name = "search_google",
-                            description = "Useful when you need to answer questions you don't have the answer to, especially real-time information.",
-                            parameters = new
-                            {
-                                type = "object",
-                                properties = new { search_terms = new { type = "string", description = "The search query to use." } },
-                                required = new[] { "search_terms" }
-                            }
-                        },
-                        new
-                        {
                             name = "search_memory_summaries",
                             description = "Searches summaries of locally stored memories. Use first to avoid loading full content.",
                             parameters = new
@@ -49,6 +38,17 @@ namespace Gemini
                                 },
                                 required = new[] { "ids" }
                             }
+                        },
+                        new
+                        {
+                            name = "search_google",
+                            description = "Searches information on google search and returns fresh live online results. Use it if you have no memories that can help.",
+                            parameters = new
+                            {
+                                type = "object",
+                                properties = new { search_terms = new { type = "string", description = "The search query to use." } },
+                                required = new[] { "search_terms" }
+                            }
                         }
                     }
                 }
@@ -58,9 +58,11 @@ namespace Gemini
         public static string GetInitialPrompt() =>
             $"Current Date: {DateTime.Now:yyyy-MM-dd}\n" +
             "You have access to tools to search local memory summaries, fetch memory content, and perform Google searches.\n" +
-            "First, use 'search_memory_summaries' to check for relevant summaries.\n" +
-            "If relevant summaries are found, use 'search_memory_content' to fetch full content by IDs.\n" +
+            "**Prioritize Summaries:** Always begin by using 'search_memory_summaries' to identify relevant summaries.\n" +
+            "**Extract Information:** Carefully analyze the content of the summaries to determine if they contain all the information needed to answer the user's query.\n" +
+            "**Fetch Content Judiciously:** Only use 'search_memory_content' to fetch full content by IDs **if and only if** the summaries lack crucial details required to provide a complete and accurate response. Avoid fetching content unnecessarily." +
             "If no relevant memories are found, fall back to 'search_google'.\n" +
+            "Always try to balance the need to use less tokens with the need to provide accurate responses. Fetching full contents and google searches use more tokens than using summaries, but are more complete.\n" +
             "NEVER ask for user confirmation to use tools. Use them when needed.";
 
         public static string GetProcessedContentPrompt(string searchTerms, string originalUserQuery, List<(string content, string url)> contentUrlPairs)
