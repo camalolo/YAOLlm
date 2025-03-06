@@ -18,11 +18,9 @@ namespace Gemini
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
             _geminiClient = geminiClient ?? throw new ArgumentNullException(nameof(geminiClient));
 
-            // Define the path for the SQLite database
             var homeDir = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
             var dbPath = Path.Combine(homeDir, ".gemini-memories.db");
 
-            // Ensure the directory exists for the SQLite database
             var directoryName = Path.GetDirectoryName(dbPath);
             if (directoryName != null)
             {
@@ -65,24 +63,16 @@ namespace Gemini
                     throw new ArgumentNullException(nameof(content));
                 }
 
-                // Generate a summary using the LLM
-                var summary = await _geminiClient.GenerateSummary(content);
+                // Generate a summary using GeminiClient.
+                var summary = await SummaryFunctions.GenerateSummary(_geminiClient, content);
                 if (string.IsNullOrEmpty(summary))
                 {
                     summary = content.Length > 100 ? content.Substring(0, 100) + "..." : content;
                     _logger.Log("Failed to generate summary, using truncated content as summary");
                 }
 
-                // Generate embedding for the content
-                var embedding = Embeddings.ComputeEmbedding(content);
-                if (embedding == null || embedding.Length == 0)
-                {
-                    _logger.Log("Failed to generate embedding, using default embedding");
-                    embedding = new float[1] { 0f }; // Use a default embedding
-                }
-
-                // Store in SQLite and return the ID
-                var id = _memoryStore.StoreMemory(summary, content, embedding);
+                // Embeddings are no longer required, so we pass an empty embedding.
+                var id = _memoryStore.StoreMemory(summary, content, new float[0]);
                 _logger.Log($"Stored memory in SQLite database with ID: {id}");
                 return id;
             }
@@ -105,34 +95,11 @@ namespace Gemini
                     return new List<(string, float)>();
                 }
 
-                // First try exact text search
+                // Use FTS search on the stored summaries and then search within full contents.
                 var summaryResults = _memoryStore.SearchSummaries(query, maxResults * 2);
                 var results = _memoryStore.SearchFullContent(query, summaryResults.Select(r => r.id).ToList(), maxResults);
 
-                // If no exact matches found, perform semantic search
-                if (!results.Any())
-                {
-                    _logger.Log("No exact matches found, performing semantic search");
-                    
-                    // Get query embedding
-                    var queryEmbedding = Embeddings.ComputeEmbedding(query);
-                    
-                    // Get memories with embeddings
-                    var memoriesWithEmbeddings = _memoryStore.GetAllMemoriesWithEmbeddings();
-                    
-                    // Process sequentially since these are CPU-bound operations
-                    var semanticResults = memoriesWithEmbeddings
-                        .Select(memory => (
-                            content: memory.content,
-                            score: Embeddings.CosineSimilarity(queryEmbedding, memory.embedding)
-                        ))
-                        .Where(r => r.score > 0.1f)
-                        .OrderByDescending(r => r.score)
-                        .Take(maxResults)
-                        .ToList();
-
-                    results = semanticResults;
-                }
+                // Removed: Fallback semantic search (based on embeddings) was removed.
 
                 _logger.Log($"SearchMemories: Found {results.Count} relevant memories for query '{query}'");
                 return results;
@@ -141,6 +108,20 @@ namespace Gemini
             {
                 _logger.Log($"Error searching memories: {ex.Message}");
                 throw;
+            }
+        }
+
+        public static async Task CreateMemoryFromSearchResults(Logger logger, MemoryManager memoryManager, List<(string content, string url)> results)
+        {
+            try
+            {
+                var contentWithUrls = string.Join("\n\n", results.Select(p => $"Content from: {p.url}\n\n{p.content}"));
+                await memoryManager.StoreMemory(contentWithUrls);
+                logger.Log("Successfully created and stored memory from search results");
+            }
+            catch (Exception ex)
+            {
+                logger.Log($"Error creating memory from search results: {ex.Message}");
             }
         }
     }

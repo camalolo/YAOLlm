@@ -25,6 +25,7 @@ namespace Gemini
         private void InitializeDatabase()
         {
             using var command = _connection.CreateCommand();
+
             // Create table for summaries
             command.CommandText = @"
                 CREATE TABLE IF NOT EXISTS memory_summaries (
@@ -41,23 +42,9 @@ namespace Gemini
                 )";
             command.ExecuteNonQuery();
 
-            // Create table for embeddings
-            command.CommandText = @"
-                CREATE TABLE IF NOT EXISTS memory_embeddings (
-                    id INTEGER PRIMARY KEY,
-                    embedding BLOB NOT NULL,
-                    FOREIGN KEY (id) REFERENCES memory_summaries(id)
-                )";
-            command.ExecuteNonQuery();
+            // Removed: Creation of memory_embeddings and memory_mapping tables
 
-            // Create mapping table
-            command.CommandText = @"
-                CREATE TABLE IF NOT EXISTS memory_mapping (
-                    id INTEGER PRIMARY KEY
-                )";
-            command.ExecuteNonQuery();
-
-            // Create FTS table
+            // Create FTS table for summaries
             command.CommandText = @"
                 CREATE VIRTUAL TABLE IF NOT EXISTS memory_summaries_fts USING fts5(
                     summary,
@@ -70,6 +57,20 @@ namespace Gemini
                 INSERT OR IGNORE INTO memory_summaries_fts (rowid, summary)
                 SELECT id, summary FROM memory_summaries";
             command.ExecuteNonQuery();
+
+            // Create FTS table for content
+            command.CommandText = @"
+                CREATE VIRTUAL TABLE IF NOT EXISTS memory_content_fts USING fts5(
+                    content,
+                    tokenize = 'unicode61'
+                )";
+            command.ExecuteNonQuery();
+
+            // Initialize content FTS with existing data
+            command.CommandText = @"
+                INSERT OR IGNORE INTO memory_content_fts (rowid, content)
+                SELECT id, content FROM memory_content";
+            command.ExecuteNonQuery();
         }
 
         public long StoreMemory(string summary, string content, float[] embedding)
@@ -77,7 +78,7 @@ namespace Gemini
             if (_disposed) throw new ObjectDisposedException(nameof(SQLiteMemoryStore));
             if (string.IsNullOrEmpty(summary)) throw new ArgumentNullException(nameof(summary));
             if (string.IsNullOrEmpty(content)) throw new ArgumentNullException(nameof(content));
-            if (embedding == null || embedding.Length == 0) throw new ArgumentNullException(nameof(embedding));
+            // The embedding parameter is no longer used.
 
             using var transaction = _connection.BeginTransaction();
             try
@@ -93,32 +94,26 @@ namespace Gemini
                 idCmd.CommandText = "SELECT last_insert_rowid()";
                 long id = Convert.ToInt64(idCmd.ExecuteScalar() ?? throw new InvalidOperationException("Failed to retrieve last inserted row ID"));
 
-                // Insert into memory_content
+                // Insert into memory_content using the same ID
                 using var contentCmd = _connection.CreateCommand();
                 contentCmd.CommandText = "INSERT INTO memory_content (id, content) VALUES ($id, $content)";
                 contentCmd.Parameters.AddWithValue("$id", id);
                 contentCmd.Parameters.AddWithValue("$content", content);
                 contentCmd.ExecuteNonQuery();
 
-                // Insert into memory_embeddings
-                using var embeddingCmd = _connection.CreateCommand();
-                embeddingCmd.CommandText = "INSERT INTO memory_embeddings (id, embedding) VALUES ($id, $embedding)";
-                embeddingCmd.Parameters.AddWithValue("$id", id);
-                embeddingCmd.Parameters.AddWithValue("$embedding", embedding.SelectMany(BitConverter.GetBytes).ToArray());
-                embeddingCmd.ExecuteNonQuery();
-
-                // Insert into memory_mapping
-                using var mappingCmd = _connection.CreateCommand();
-                mappingCmd.CommandText = "INSERT INTO memory_mapping (id) VALUES ($id)";
-                mappingCmd.Parameters.AddWithValue("$id", id);
-                mappingCmd.ExecuteNonQuery();
-
-                // Update FTS table
+                // Update FTS table for summaries
                 using var ftsCmd = _connection.CreateCommand();
                 ftsCmd.CommandText = "INSERT INTO memory_summaries_fts (rowid, summary) VALUES ($id, $summary)";
                 ftsCmd.Parameters.AddWithValue("$id", id);
                 ftsCmd.Parameters.AddWithValue("$summary", summary);
                 ftsCmd.ExecuteNonQuery();
+
+                // Update FTS table for content
+                using var ftsContentCmd = _connection.CreateCommand();
+                ftsContentCmd.CommandText = "INSERT INTO memory_content_fts (rowid, content) VALUES ($id, $content)";
+                ftsContentCmd.Parameters.AddWithValue("$id", id);
+                ftsContentCmd.Parameters.AddWithValue("$content", content);
+                ftsContentCmd.ExecuteNonQuery();
 
                 transaction.Commit();
                 return id;
@@ -131,35 +126,10 @@ namespace Gemini
             }
         }
 
+        // This function is kept for compatibility but now simply returns an empty list.
         public List<(string content, float[] embedding)> GetAllMemoriesWithEmbeddings()
         {
-            var results = new List<(string content, float[] embedding)>();
-            using var command = _connection.CreateCommand();
-            try
-            {
-                command.CommandText = @"
-                    SELECT mc.content, me.embedding
-                    FROM memory_content mc
-                    JOIN memory_embeddings me ON mc.id = me.id";
-
-                using var reader = command.ExecuteReader();
-                while (reader.Read())
-                {
-                    var content = reader.GetString(0);
-                    var embeddingBlob = (byte[])reader.GetValue(1);
-                    
-                    var embedding = new float[embeddingBlob.Length / sizeof(float)];
-                    Buffer.BlockCopy(embeddingBlob, 0, embedding, 0, embeddingBlob.Length);
-                    
-                    results.Add((content, embedding));
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.Log($"Error retrieving memories with embeddings: {ex.Message}");
-                throw; // Rethrow to let caller handle the error
-            }
-            return results;
+            return new List<(string content, float[] embedding)>();
         }
 
         public List<(long id, string summary, float score)> SearchSummaries(string query, int maxResults = 5)
@@ -167,19 +137,18 @@ namespace Gemini
             var results = new List<(long id, string summary, float score)>();
             try
             {
-                // Log the query and maxResults for debugging
                 _logger.Log($"SearchSummaries: Executing query '{query}' with maxResults={maxResults}");
 
-                // Search the summaries using the FTS5 table
+                // Search the summaries using the FTS5 table with BM25 ranking.
                 using var command = _connection.CreateCommand();
-                // Escape double quotes in the query and enclose it in double quotes
+                // Escape double quotes in the query and enclose it in double quotes.
                 string escapedQuery = query.Replace("\"", "\"\"");
                 command.CommandText = @"
-                    SELECT ms.id, ms.summary, msfts.rank
+                    SELECT ms.id, ms.summary, bm25(memory_summaries_fts) as rank
                     FROM memory_summaries ms
                     JOIN memory_summaries_fts msfts ON ms.id = msfts.rowid
                     WHERE msfts.summary MATCH $query
-                    ORDER BY msfts.rank LIMIT $maxResults";
+                    ORDER BY rank LIMIT $maxResults";
                 command.Parameters.AddWithValue("$query", "\"" + escapedQuery + "\"");
                 command.Parameters.AddWithValue("$maxResults", maxResults);
 
@@ -188,8 +157,8 @@ namespace Gemini
                 {
                     results.Add((
                         reader.GetInt64(0),
-                        reader.GetString(1),
-                        (float)reader.GetDouble(2) // Rank is negative in FTS5 (BM25), so you might want to normalize it
+                        reader.GetString(1), 
+                        (float)reader.GetDouble(2)
                     ));
                 }
 
@@ -213,34 +182,35 @@ namespace Gemini
 
             try
             {
-                // Log the query and IDs for debugging
                 _logger.Log($"SearchFullContent: Executing query '{query}' for IDs [{string.Join(", ", ids)}] with maxResults={maxResults}");
 
                 using var command = _connection.CreateCommand();
                 var idList = string.Join(",", ids);
 
-                // If query is empty, return all contents for the given IDs
+                // If query is empty, return all contents for the given IDs.
                 if (string.IsNullOrWhiteSpace(query))
                 {
                     command.CommandText = @"
                         SELECT content, 0.0 as rank
-                        FROM memory_content 
-                        WHERE rowid IN (" + idList + @")
+                        FROM memory_content mc
+                        WHERE mc.rowid IN (" + idList + @")
                         LIMIT $maxResults";
                 }
                 else
                 {
-                    // Otherwise do normal FTS search
+                    // Otherwise, perform an FTS search on the content.
                     string escapedQuery = query.Replace("\"", "\"\"");
+                    // Note: Use the FTS table for content ranking.
                     command.CommandText = @"
-                        SELECT content, rank
-                        FROM memory_content
-                        WHERE rowid IN (" + idList + @")
-                        AND content MATCH $query
+                        SELECT mc.content, bm25(memory_content_fts) as rank
+                        FROM memory_content mc
+                        JOIN memory_content_fts mcfts ON mc.id = mcfts.rowid
+                        WHERE mc.rowid IN (" + idList + @")
+                        AND mcfts.content MATCH $query
                         ORDER BY rank LIMIT $maxResults";
                     command.Parameters.AddWithValue("$query", "\"" + escapedQuery + "\"");
                 }
-                
+
                 command.Parameters.AddWithValue("$maxResults", maxResults);
 
                 using var reader = command.ExecuteReader();
