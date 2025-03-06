@@ -231,7 +231,7 @@ namespace Gemini
                             else
                             {
                                 client.Logger.Log($"No relevant summaries found for query '{query}'");
-                                return await Task.FromResult("No relevant memories found.");
+                                return await Task.FromResult($"No relevant memories found. The original user query was '{client.OriginalUserQuery}'");
                             }
                         }
                         else if (funcCall.Value.name == "search_memory_content")
@@ -243,7 +243,7 @@ namespace Gemini
                             if (memories.Any())
                             {
                                 var memoryContent = string.Join("\n\n", memories.Select(m => $"Memory :\n{m}"));
-                                var prompt = $"Found the following relevant memory content:\n\n{memoryContent}\n\nBased on these memories, please provide a helpful response to the user query'.";
+                                var prompt = $"Found the following relevant memory content:\n\n{memoryContent}\n\nBased on these memories, please provide a helpful response to the user query : '{client.OriginalUserQuery}'.";
                                 return await SendToLLM(client, prompt) ?? "No relevant information found in memory content.";
                             }
                             else
