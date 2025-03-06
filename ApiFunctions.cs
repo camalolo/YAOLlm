@@ -217,21 +217,39 @@ namespace Gemini
                             await PerformSearchAndDisplaySummaries(client);
                             return llmResponse.message;
                         }
-                        else if (funcCall.Value.name == "search_memory")
+                        else if (funcCall.Value.name == "search_memory_summaries")
                         {
                             var query = funcCall.Value.args["query"]?.ToString();
-                            client.Logger.Log($"Initiating memory search for query: {query}");
-                            var memories = string.IsNullOrEmpty(query) ? new List<(string content, float score)>() : client.MemoryManager.SearchMemories(query);
-                            if (memories.Any())
+                            client.Logger.Log($"Initiating memory summaries search for query: {query}");
+                            var summaries = string.IsNullOrEmpty(query) ? new List<(long id, string summary, float score)>() : client.MemoryManager.SearchMemorySummaries(query);
+                            if (summaries.Any())
                             {
-                                var memoryContent = string.Join("\n\n", memories.Select(m => $"Memory (score: {m.score:F2}):\n{m.content}"));
-                                var prompt = $"Found the following relevant memories:\n\n{memoryContent}\n\nBased on these memories, please provide a helpful response to '{query}'.";
-                                return await SendToLLM(client, prompt) ?? "No relevant information found in memories.";
+                                var summaryContent = string.Join("\n\n", summaries.Select(s => $"Summary (ID: {s.id}, score: {s.score:F2}):\n{s.summary}"));
+                                var prompt = $"Found the following relevant memory summaries:\n\n{summaryContent}\n\nIf these summaries are relevant, fetch the full content using 'search_memory_content' with the IDs, or respond directly if sufficient.";
+                                return await SendToLLM(client, prompt) ?? "No relevant information found in summaries.";
                             }
                             else
                             {
-                                client.Logger.Log($"No relevant memories found for query '{query}'");
+                                client.Logger.Log($"No relevant summaries found for query '{query}'");
                                 return await Task.FromResult("No relevant memories found.");
+                            }
+                        }
+                        else if (funcCall.Value.name == "search_memory_content")
+                        {
+                            var idsJson = (JsonElement)funcCall.Value.args["ids"];
+                            var ids = idsJson.EnumerateArray().Select(id => id.GetInt64()).ToList();
+                            client.Logger.Log($"Initiating memory content search for IDs: [{string.Join(", ", ids)}]");
+                            var memories = ids.Any() ? client.MemoryManager.FetchMemoryContent(ids) : new List<string>();
+                            if (memories.Any())
+                            {
+                                var memoryContent = string.Join("\n\n", memories.Select(m => $"Memory :\n{m}"));
+                                var prompt = $"Found the following relevant memory content:\n\n{memoryContent}\n\nBased on these memories, please provide a helpful response to the user query'.";
+                                return await SendToLLM(client, prompt) ?? "No relevant information found in memory content.";
+                            }
+                            else
+                            {
+                                client.Logger.Log($"No relevant content found for IDs [{string.Join(", ", ids)}]");
+                                return await Task.FromResult("No relevant memory content found.");
                             }
                         }
                     }

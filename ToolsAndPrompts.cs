@@ -26,13 +26,28 @@ namespace Gemini
                         },
                         new
                         {
-                            name = "search_memory",
-                            description = "Searches for relevant memories stored locally before performing an online search. Should be used first.",
+                            name = "search_memory_summaries",
+                            description = "Searches summaries of locally stored memories. Use first to avoid loading full content.",
                             parameters = new
                             {
                                 type = "object",
-                                properties = new { query = new { type = "string", description = "The query to search for in memories." } },
+                                properties = new { query = new { type = "string", description = "Query to search summaries." } },
                                 required = new[] { "query" }
+                            }
+                        },
+                        new
+                        {
+                            name = "search_memory_content",
+                            description = "Fetches full content of memories by IDs after searching summaries.",
+                            parameters = new
+                            {
+                                type = "object",
+                                properties = new
+                                {
+                                    ids = new { type = "array", items = new { type = "integer" }, description = "List of memory IDs to fetch content for." },
+                                    query = new { type = "string", description = "Optional query to search within content." }
+                                },
+                                required = new[] { "ids" }
                             }
                         }
                     }
@@ -42,11 +57,11 @@ namespace Gemini
 
         public static string GetInitialPrompt() =>
             $"Current Date: {DateTime.Now:yyyy-MM-dd}\n" +
-            "You have access to tools to search local memories and perform Google searches.\n" +
-            "First, use the 'search_memory' tool to check for relevant local memories before using 'search_google', as memory searches are faster.\n" +
+            "You have access to tools to search local memory summaries, fetch memory content, and perform Google searches.\n" +
+            "First, use 'search_memory_summaries' to check for relevant summaries.\n" +
+            "If relevant summaries are found, use 'search_memory_content' to fetch full content by IDs.\n" +
             "If no relevant memories are found, fall back to 'search_google'.\n" +
-            "NEVER ask for user confirmation to use tools. Use them when needed.\n" +
-            "Use tools to complete your answer unless you are confident you can answer the question with your base knowledge.";
+            "NEVER ask for user confirmation to use tools. Use them when needed.";
 
         public static string GetProcessedContentPrompt(string searchTerms, string originalUserQuery, List<(string content, string url)> contentUrlPairs)
         {

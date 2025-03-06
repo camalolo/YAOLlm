@@ -157,7 +157,7 @@ namespace Gemini
                 {
                     results.Add((
                         reader.GetInt64(0),
-                        reader.GetString(1), 
+                        reader.GetString(1),
                         (float)reader.GetDouble(2)
                     ));
                 }
@@ -171,62 +171,40 @@ namespace Gemini
             return results;
         }
 
-        public List<(string content, float score)> SearchFullContent(string query, List<long> ids, int maxResults = 3)
+        public List<string> FetchFullContent(List<long> ids)
         {
-            var results = new List<(string content, float score)>();
+            var results = new List<string>();
             if (ids.Count == 0)
             {
-                _logger.Log("SearchFullContent: No IDs provided, returning empty results");
+                _logger.Log("FetchFullContent: No IDs provided, returning empty results");
                 return results;
             }
 
             try
             {
-                _logger.Log($"SearchFullContent: Executing query '{query}' for IDs [{string.Join(", ", ids)}] with maxResults={maxResults}");
+                _logger.Log($"FetchFullContent: Fetching for IDs [{string.Join(", ", ids)}]");
 
                 using var command = _connection.CreateCommand();
                 var idList = string.Join(",", ids);
 
-                // If query is empty, return all contents for the given IDs.
-                if (string.IsNullOrWhiteSpace(query))
-                {
-                    command.CommandText = @"
-                        SELECT content, 0.0 as rank
-                        FROM memory_content mc
-                        WHERE mc.rowid IN (" + idList + @")
-                        LIMIT $maxResults";
-                }
-                else
-                {
-                    // Otherwise, perform an FTS search on the content.
-                    string escapedQuery = query.Replace("\"", "\"\"");
-                    // Note: Use the FTS table for content ranking.
-                    command.CommandText = @"
-                        SELECT mc.content, bm25(memory_content_fts) as rank
-                        FROM memory_content mc
-                        JOIN memory_content_fts mcfts ON mc.id = mcfts.rowid
-                        WHERE mc.rowid IN (" + idList + @")
-                        AND mcfts.content MATCH $query
-                        ORDER BY rank LIMIT $maxResults";
-                    command.Parameters.AddWithValue("$query", "\"" + escapedQuery + "\"");
-                }
+                // Note: Use the FTS table for content ranking.
+                command.CommandText = @"
+                    SELECT mc.content
+                    FROM memory_content mc
+                    WHERE mc.rowid IN (" + idList + @");";
 
-                command.Parameters.AddWithValue("$maxResults", maxResults);
 
                 using var reader = command.ExecuteReader();
                 while (reader.Read())
                 {
-                    results.Add((
-                        reader.GetString(0),
-                        (float)reader.GetDouble(1)
-                    ));
+                    results.Add(reader.GetString(0));
                 }
 
-                _logger.Log($"SearchFullContent: Found {results.Count} full content matches for query '{query}'");
+                _logger.Log($"FetchFullContent: Found {results.Count} full content matches");
             }
             catch (Exception ex)
             {
-                _logger.Log($"Error in SearchFullContent: {ex.Message}");
+                _logger.Log($"Error in FetchFullContent: {ex.Message}");
             }
             return results;
         }

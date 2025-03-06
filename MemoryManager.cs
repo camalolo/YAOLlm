@@ -82,35 +82,18 @@ namespace Gemini
                 throw;
             }
         }
-
-        public List<(string content, float score)> SearchMemories(string query, int maxResults = 3)
+        public List<(long id, string summary, float score)> SearchMemorySummaries(string query, int maxResults = 5)
         {
             if (_disposed) throw new ObjectDisposedException(nameof(MemoryManager));
-            
-            try
-            {
-                if (string.IsNullOrWhiteSpace(query))
-                {
-                    _logger.Log("SearchMemories: Query is empty");
-                    return new List<(string, float)>();
-                }
-
-                // Use FTS search on the stored summaries and then search within full contents.
-                var summaryResults = _memoryStore.SearchSummaries(query, maxResults * 2);
-                var results = _memoryStore.SearchFullContent(query, summaryResults.Select(r => r.id).ToList(), maxResults);
-
-                // Removed: Fallback semantic search (based on embeddings) was removed.
-
-                _logger.Log($"SearchMemories: Found {results.Count} relevant memories for query '{query}'");
-                return results;
-            }
-            catch (Exception ex)
-            {
-                _logger.Log($"Error searching memories: {ex.Message}");
-                throw;
-            }
+            if (string.IsNullOrWhiteSpace(query)) return new List<(long, string, float)>();
+            return _memoryStore.SearchSummaries(query, maxResults);
         }
 
+        public List<string> FetchMemoryContent(List<long> ids)
+        {
+            if (_disposed) throw new ObjectDisposedException(nameof(MemoryManager));
+            return _memoryStore.FetchFullContent(ids);
+        }
         public static async Task CreateMemoryFromSearchResults(Logger logger, MemoryManager memoryManager, List<(string content, string url)> results)
         {
             try
