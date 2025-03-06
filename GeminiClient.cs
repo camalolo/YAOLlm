@@ -40,7 +40,7 @@ namespace Gemini
                 _apiKey = Environment.GetEnvironmentVariable("GEMINI_API_KEY") ?? throw new ArgumentException("GEMINI_API_KEY is not set");
                 var googleSearchApiKey = Environment.GetEnvironmentVariable("GOOGLE_SEARCH_API_KEY") ?? throw new ArgumentException("GOOGLE_SEARCH_API_KEY is not set");
                 var googleSearchEngineId = Environment.GetEnvironmentVariable("GOOGLE_SEARCH_ENGINE_ID") ?? throw new ArgumentException("GOOGLE_SEARCH_ENGINE_ID is not set");
-                _memoryManager = new MemoryManager(logger);
+                _memoryManager = new MemoryManager(logger, this);
                 _search = new Search(logger, googleSearchApiKey, googleSearchEngineId, CreateMemoryFromSearchResults);
             }
             catch (Exception ex)
@@ -56,6 +56,20 @@ namespace Gemini
             UpdateChat = (_, __) => { };
             UpdateHistoryCounter = () => { };
             UpdateStatus = (_) => { };
+        }
+
+        public async Task<string> GenerateSummary(string content)
+        {
+            try
+            {
+                var prompt = $"Summarize the following content into a concise, keyword-rich one-sentence summary:\n\n{content}";
+                return await SendToLLMWithNoContext(prompt) ?? string.Empty;
+            }
+            catch (Exception ex)
+            {
+                _logger.Log($"Error generating summary: {ex.Message}");
+                return string.Empty;
+            }
         }
 
         public void SetUICallbacks(Action<string, string> updateChat, Action updateHistoryCounter, Action<Status> updateStatus)
@@ -252,20 +266,17 @@ namespace Gemini
         {
             try
             {
-                // Ensure the prompt is not empty
                 if (string.IsNullOrEmpty(prompt))
                 {
                     _logger.Log("Prompt cannot be empty in SendToLLMWithNoContext");
                     return null;
                 }
 
-                // Create a single user message with the prompt
                 var messages = new List<Dictionary<string, string>>
-        {
-            new Dictionary<string, string> { { "role", "user" }, { "content", prompt } }
-        };
+                {
+                    new Dictionary<string, string> { { "role", "user" }, { "content", prompt } }
+                };
 
-                // Construct the payload
                 var payload = new
                 {
                     contents = messages.Select(m => new
@@ -275,7 +286,6 @@ namespace Gemini
                     }).ToList()
                 };
 
-                // Log the payload for debugging
                 var jsonPayload = JsonSerializer.Serialize(payload);
                 _logger.Log($"Sending payload to LLM in SendToLLMWithNoContext: {jsonPayload}");
 
@@ -316,21 +326,20 @@ namespace Gemini
         {
             try
             {
-                // Prepare the content to summarize
                 var contentWithUrls = string.Join("\n\n", results.Select(p => $"Content from: {p.url}\n\n{p.content}"));
-                var prompt = $"Summarize and organize the following search results into a concise, well-structured memory entry. Focus on key information and clarity, and enhance with your own knowledge if relevant.\n\n{contentWithUrls}";
+                //var prompt = $"Summarize and organize the following search results into a concise, well-structured memory entry. Focus on key information and clarity, and enhance with your own knowledge if relevant.\n\n{contentWithUrls}";
 
-                // Since we don't need a special context for summarization, pass an empty context
-                var summary = await SendToLLMWithNoContext(prompt);
-                if (!string.IsNullOrEmpty(summary))
-                {
-                    _memoryManager.StoreMemory(summary);
+                //var summary = await SendToLLMWithNoContext(prompt);
+                //if (!string.IsNullOrEmpty(summary))
+                //{
+                    //await _memoryManager.StoreMemory(summary);
+                    await _memoryManager.StoreMemory(contentWithUrls);
                     _logger.Log("Successfully created and stored memory from search results");
-                }
-                else
-                {
-                    _logger.Log("Failed to create memory: LLM returned empty summary");
-                }
+                //}
+                //else
+                //{
+                //    _logger.Log("Failed to create memory: LLM returned empty summary");
+                //}
             }
             catch (Exception ex)
             {
