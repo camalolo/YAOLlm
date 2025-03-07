@@ -182,11 +182,21 @@ namespace Gemini
                     {
                         if (funcCall.Value.name == "search_google")
                         {
-                            var searchTerms = funcCall.Value.args["search_terms"].ToString();
-                            client.PendingSearchRequest = searchTerms ?? string.Empty;
+                            var searchTerms = funcCall.Value.args["search_terms"].ToString() ?? string.Empty;
                             client.Logger.Log($"Initiating search for terms: {searchTerms}");
-                            await PerformSearchAndDisplaySummaries(client);
-                            return llmResponse.message;
+                            var contentUrlPairs = await client.Search.PerformSearch(searchTerms, client.OriginalUserQuery, client.UpdateChat, client.UpdateStatus);
+                            client.UpdateStatus(Status.Idle);
+                            if (contentUrlPairs.Any())
+                            {
+                                var prompt = ToolsAndPrompts.GetProcessedContentPrompt(searchTerms, client.OriginalUserQuery, contentUrlPairs);
+                                return await SendToLLM(client, prompt) ?? "The LLM did not reply.";
+                            }
+                            else
+                            {
+                                var prompt = ToolsAndPrompts.GetNoRelevantResultsPrompt(searchTerms, client.OriginalUserQuery);
+                                return await SendToLLM(client, prompt) ?? "The LLM did not reply.";
+                            }
+                            
                         }
                         else if (funcCall.Value.name == "search_memory_summaries")
                         {
@@ -279,41 +289,5 @@ namespace Gemini
             }
         }
 
-        private static async Task PerformSearchAndDisplaySummaries(GeminiClient client)
-        {
-            if (string.IsNullOrEmpty(client.PendingSearchRequest))
-            {
-                client.UpdateChat("No pending search request.\n", "system");
-                client.Logger.Log("No pending search request to process");
-                return;
-            }
-
-            string searchTerms = client.PendingSearchRequest;
-            client.PendingSearchRequest = string.Empty;
-            client.OriginalUserQueryInternal ??= "the user's question";
-
-            try
-            {
-                var contentUrlPairs = await client.Search.PerformSearch(searchTerms, client.OriginalUserQueryInternal, client.UpdateChat, client.UpdateStatus);
-                if (contentUrlPairs.Any())
-                {
-                    var prompt = ToolsAndPrompts.GetProcessedContentPrompt(searchTerms, client.OriginalUserQueryInternal, contentUrlPairs);
-                    await client.ProcessLLMRequest(prompt);
-                }
-                else
-                {
-                    await client.ProcessLLMRequest(ToolsAndPrompts.GetNoRelevantResultsPrompt(client.PendingSearchRequest, client.OriginalUserQueryInternal));
-                }
-            }
-            catch (Exception ex)
-            {
-                client.Logger.Log($"Error in PerformSearchAndDisplaySummaries: {ex.Message}");
-                client.UpdateChat($"Error during search: {ex.Message}\n", "system");
-            }
-            finally
-            {
-                client.UpdateStatus(Status.Idle);
-            }
-        }
     }
 }

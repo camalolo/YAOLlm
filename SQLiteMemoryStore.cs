@@ -26,88 +26,90 @@ namespace Gemini
         {
             using var command = _connection.CreateCommand();
 
-            // Create table for summaries with created_at column
+            // Updated table with url column
             command.CommandText = @"
-        CREATE TABLE IF NOT EXISTS memory_summaries (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            summary TEXT NOT NULL,
-            created_at DATETIME
-        )";
+                CREATE TABLE IF NOT EXISTS memory_summaries (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    summary TEXT NOT NULL,
+                    url TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )";
             command.ExecuteNonQuery();
 
-            // Create table for full content
             command.CommandText = @"
-        CREATE TABLE IF NOT EXISTS memory_content (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            content TEXT NOT NULL
-        )";
+            CREATE INDEX IF NOT EXISTS idx_memory_summaries_url ON memory_summaries(url);";
             command.ExecuteNonQuery();
 
-            // Create FTS table for summaries
             command.CommandText = @"
-        CREATE VIRTUAL TABLE IF NOT EXISTS memory_summaries_fts USING fts5(
-            summary,
-            tokenize = 'unicode61'
-        )";
+                CREATE VIRTUAL TABLE IF NOT EXISTS memory_summaries_fts USING fts5(
+                    summary,
+                    tokenize = 'unicode61'
+                )";
             command.ExecuteNonQuery();
 
-            // Populate FTS table with existing summaries
             command.CommandText = @"
-        INSERT OR IGNORE INTO memory_summaries_fts (rowid, summary)
-        SELECT id, summary FROM memory_summaries";
+                CREATE TABLE IF NOT EXISTS memory_content (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    content TEXT NOT NULL
+                )";
             command.ExecuteNonQuery();
 
-            // Create FTS table for content
             command.CommandText = @"
-        CREATE VIRTUAL TABLE IF NOT EXISTS memory_content_fts USING fts5(
-            content,
-            tokenize = 'unicode61'
-        )";
+                CREATE VIRTUAL TABLE IF NOT EXISTS memory_content_fts USING fts5(
+                    content,
+                    tokenize = 'unicode61'
+                )";
             command.ExecuteNonQuery();
 
-            // Initialize content FTS with existing data
-            command.CommandText = @"
-        INSERT OR IGNORE INTO memory_content_fts (rowid, content)
-        SELECT id, content FROM memory_content";
-            command.ExecuteNonQuery();
         }
 
-        public long StoreMemory(string summary, string content, float[] embedding)
+        public long StoreMemory(string summary, string content, string? url = null)
         {
             if (_disposed) throw new ObjectDisposedException(nameof(SQLiteMemoryStore));
             if (string.IsNullOrEmpty(summary)) throw new ArgumentNullException(nameof(summary));
             if (string.IsNullOrEmpty(content)) throw new ArgumentNullException(nameof(content));
-            // The embedding parameter is no longer used.
 
             using var transaction = _connection.BeginTransaction();
             try
             {
-                // Insert into memory_summaries
+                // Check if URL already exists
+                if (!string.IsNullOrEmpty(url))
+                {
+                    using var checkCmd = _connection.CreateCommand();
+                    checkCmd.CommandText = "SELECT id FROM memory_summaries WHERE url = $url";
+                    checkCmd.Parameters.AddWithValue("$url", url);
+                    var existingId = checkCmd.ExecuteScalar();
+                    if (existingId != null)
+                    {
+                        _logger.Log($"Memory with URL '{url}' already exists with ID: {existingId}");
+                        transaction.Rollback();
+                        return Convert.ToInt64(existingId); // Return existing ID
+                    }
+                }
+
+                // Insert into memory_summaries with URL
                 using var summaryCmd = _connection.CreateCommand();
-                summaryCmd.CommandText = "INSERT INTO memory_summaries (summary) VALUES ($summary)";
+                summaryCmd.CommandText = "INSERT INTO memory_summaries (summary, url) VALUES ($summary, $url)";
                 summaryCmd.Parameters.AddWithValue("$summary", summary);
+                summaryCmd.Parameters.AddWithValue("$url", url != null ? (object)url : DBNull.Value);
                 summaryCmd.ExecuteNonQuery();
 
-                // Get the last inserted ID
                 using var idCmd = _connection.CreateCommand();
                 idCmd.CommandText = "SELECT last_insert_rowid()";
                 long id = Convert.ToInt64(idCmd.ExecuteScalar() ?? throw new InvalidOperationException("Failed to retrieve last inserted row ID"));
 
-                // Insert into memory_content using the same ID
                 using var contentCmd = _connection.CreateCommand();
                 contentCmd.CommandText = "INSERT INTO memory_content (id, content) VALUES ($id, $content)";
                 contentCmd.Parameters.AddWithValue("$id", id);
                 contentCmd.Parameters.AddWithValue("$content", content);
                 contentCmd.ExecuteNonQuery();
 
-                // Update FTS table for summaries
                 using var ftsCmd = _connection.CreateCommand();
                 ftsCmd.CommandText = "INSERT INTO memory_summaries_fts (rowid, summary) VALUES ($id, $summary)";
                 ftsCmd.Parameters.AddWithValue("$id", id);
                 ftsCmd.Parameters.AddWithValue("$summary", summary);
                 ftsCmd.ExecuteNonQuery();
 
-                // Update FTS table for content
                 using var ftsContentCmd = _connection.CreateCommand();
                 ftsContentCmd.CommandText = "INSERT INTO memory_content_fts (rowid, content) VALUES ($id, $content)";
                 ftsContentCmd.Parameters.AddWithValue("$id", id);
@@ -115,6 +117,7 @@ namespace Gemini
                 ftsContentCmd.ExecuteNonQuery();
 
                 transaction.Commit();
+                _logger.Log($"Stored new memory with ID: {id}, URL: {url}");
                 return id;
             }
             catch (Exception ex)

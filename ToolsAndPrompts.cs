@@ -89,8 +89,8 @@ namespace Gemini
                    $"Based on this content, please provide a helpful response to '{originalUserQuery}'.\n\n";
         }
 
-        public static string GetNoRelevantResultsPrompt(string pendingSearchRequest, string originalUserQuery) =>
-            $"The previous search produced no relevant results for '{pendingSearchRequest}'. " +
+        public static string GetNoRelevantResultsPrompt(string searchRequest, string originalUserQuery) =>
+            $"The previous search produced no relevant results for '{searchRequest}'. " +
             "Please use the 'search_google' tool immediately to try again with different, more specific, or refined search terms. " +
             $"Base your new search terms on the original user query: '{originalUserQuery}'. " +
             "Do not ask the user for confirmation or to repeat their question — proceed directly with the new search.";

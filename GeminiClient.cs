@@ -18,7 +18,6 @@ namespace Gemini
         private string _llmApiUrl => $"https://generativelanguage.googleapis.com/v1beta/models/{_llmApiModel}:generateContent?key={_apiKey}";
         private List<Dictionary<string, string>> _conversationHistory;
         private readonly List<object> _tools;
-        private string _pendingSearchRequest;
         private string _originalUserQuery;
 
         // Public getters for private fields
@@ -28,7 +27,6 @@ namespace Gemini
         public string LlmApiUrl => _llmApiUrl;
         public List<Dictionary<string, string>> ConversationHistory => _conversationHistory;
         public List<object> Tools => _tools.ToList(); // Return a copy to prevent external modification
-        public string PendingSearchRequest { get => _pendingSearchRequest; set => _pendingSearchRequest = value; }
         public string OriginalUserQueryInternal { get => _originalUserQuery; set => _originalUserQuery = value; }
 
         public Action<string, string> UpdateChat { get; set; }
@@ -59,7 +57,6 @@ namespace Gemini
 
             _conversationHistory = new List<Dictionary<string, string>> { new() { { "role", "model" }, { "content", ToolsAndPrompts.GetInitialPrompt() } } };
             _tools = ToolsAndPrompts.DefineTools();
-            _pendingSearchRequest = string.Empty;
             _originalUserQuery = string.Empty;
             UpdateChat = (_, __) => { };
             UpdateHistoryCounter = () => { };

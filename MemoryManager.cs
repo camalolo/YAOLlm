@@ -53,17 +53,13 @@ namespace Gemini
             Dispose(false);
         }
 
-        public async Task<long> StoreMemory(string content)
+        public async Task<long> StoreMemory(string content, string? url = null)
         {
             if (_disposed) throw new ObjectDisposedException(nameof(MemoryManager));
             try
             {
-                if (string.IsNullOrEmpty(content))
-                {
-                    throw new ArgumentNullException(nameof(content));
-                }
+                if (string.IsNullOrEmpty(content)) throw new ArgumentNullException(nameof(content));
 
-                // Generate a summary using GeminiClient.
                 var summary = await SummaryFunctions.GenerateSummary(_geminiClient, content);
                 if (string.IsNullOrEmpty(summary))
                 {
@@ -71,9 +67,8 @@ namespace Gemini
                     _logger.Log("Failed to generate summary, using truncated content as summary");
                 }
 
-                // Embeddings are no longer required, so we pass an empty embedding.
-                var id = _memoryStore.StoreMemory(summary, content, new float[0]);
-                _logger.Log($"Stored memory in SQLite database with ID: {id}");
+                var id = _memoryStore.StoreMemory(summary, content, url);
+                _logger.Log($"Stored memory with ID: {id}, URL: {url}");
                 return id;
             }
             catch (Exception ex)
@@ -100,9 +95,12 @@ namespace Gemini
         {
             try
             {
-                var contentWithUrls = string.Join("\n\n", results.Select(p => $"Content from: {p.url}\n\n{p.content}"));
-                await memoryManager.StoreMemory(contentWithUrls);
-                logger.Log("Successfully created and stored memory from search results");
+                foreach (var (content, url) in results)
+                {
+                    if (string.IsNullOrEmpty(content)) continue;
+                    await memoryManager.StoreMemory(content, url);
+                    logger.Log($"Stored memory from search result with URL: {url}");
+                }
             }
             catch (Exception ex)
             {
