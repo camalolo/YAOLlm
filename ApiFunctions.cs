@@ -18,7 +18,7 @@ namespace Gemini
             request.AddJsonBody(payload);
 
             var jsonPayload = JsonSerializer.Serialize(payload);
-            client.Logger.Log($"Full request payload: {jsonPayload}");
+            client.Logger.Log($"Full request payload: {jsonPayload.Replace("\\n", "\n")}");
             client.UpdateStatus(Status.ReceivingData);
 
             const int maxRetries = 3;
@@ -193,17 +193,19 @@ namespace Gemini
                         {
                             var query = funcCall.Value.args["query"]?.ToString();
                             client.Logger.Log($"Initiating memory summaries search for query: {query}");
-                            var summaries = string.IsNullOrEmpty(query) ? new List<(long id, string summary, float score)>() : client.MemoryManager.SearchMemorySummaries(query);
+                            var summaries = string.IsNullOrEmpty(query)
+                                ? new List<(long id, string summary, float score, DateTime createdAt)>()
+                                : client.MemoryManager.SearchMemorySummaries(query);
                             if (summaries.Any())
                             {
                                 var summaryContent = string.Join("\n\n", summaries.Select(s => $"Summary (ID: {s.id}, score: {s.score:F2}):\n{s.summary}"));
-                                var prompt = $"Found the following relevant memory summaries:\n\n{summaryContent}\n\nIf these summaries are relevant, fetch the full content using 'search_memory_content' with the IDs, or respond directly if sufficient.";
+                                var prompt = $"Found the following relevant memory summaries:\n\n{summaryContent}\n\nIf these summaries are relevant, fetch the full content using 'search_memory_content' with the IDs, or respond directly if sufficient. The user question was '{client.OriginalUserQuery}'";
                                 return await SendToLLM(client, prompt) ?? "The LLM did not reply.";
                             }
                             else
                             {
-                                client.Logger.Log($"No relevant memory summaries found for query {query}");
-                                var prompt = $"No memories summaries found for this query. You might try a slightly different query, or give up on searching.";
+                                client.Logger.Log($"No relevant memory summaries found for query '{query}'");
+                                var prompt = $"No memories summaries found for '{query}'. You might try a slightly different query, or give up on searching.";
                                 return await SendToLLM(client, prompt) ?? "The LLM did not reply.";
 
                             }
@@ -223,7 +225,7 @@ namespace Gemini
                             else
                             {
                                 client.Logger.Log($"No relevant content found for IDs [{string.Join(", ", ids)}]");
-                                var prompt = $"No memories content found with this query. You might try a slightly different query, or give up on searching.";
+                                var prompt = $"No memories content found with IDs [{string.Join(", ", ids)}]. You might try a slightly different query, or give up on searching.";
                                 return await SendToLLM(client, prompt) ?? "No relevant information found in memory content.";
                             }
                         }

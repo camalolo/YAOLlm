@@ -26,50 +26,49 @@ namespace Gemini
         {
             using var command = _connection.CreateCommand();
 
-            // Create table for summaries
+            // Create table for summaries with created_at column
             command.CommandText = @"
-                CREATE TABLE IF NOT EXISTS memory_summaries (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    summary TEXT NOT NULL
-                )";
+        CREATE TABLE IF NOT EXISTS memory_summaries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            summary TEXT NOT NULL,
+            created_at DATETIME
+        )";
             command.ExecuteNonQuery();
 
             // Create table for full content
             command.CommandText = @"
-                CREATE TABLE IF NOT EXISTS memory_content (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    content TEXT NOT NULL
-                )";
+        CREATE TABLE IF NOT EXISTS memory_content (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            content TEXT NOT NULL
+        )";
             command.ExecuteNonQuery();
-
-            // Removed: Creation of memory_embeddings and memory_mapping tables
 
             // Create FTS table for summaries
             command.CommandText = @"
-                CREATE VIRTUAL TABLE IF NOT EXISTS memory_summaries_fts USING fts5(
-                    summary,
-                    tokenize = 'unicode61'
-                )";
+        CREATE VIRTUAL TABLE IF NOT EXISTS memory_summaries_fts USING fts5(
+            summary,
+            tokenize = 'unicode61'
+        )";
             command.ExecuteNonQuery();
 
             // Populate FTS table with existing summaries
             command.CommandText = @"
-                INSERT OR IGNORE INTO memory_summaries_fts (rowid, summary)
-                SELECT id, summary FROM memory_summaries";
+        INSERT OR IGNORE INTO memory_summaries_fts (rowid, summary)
+        SELECT id, summary FROM memory_summaries";
             command.ExecuteNonQuery();
 
             // Create FTS table for content
             command.CommandText = @"
-                CREATE VIRTUAL TABLE IF NOT EXISTS memory_content_fts USING fts5(
-                    content,
-                    tokenize = 'unicode61'
-                )";
+        CREATE VIRTUAL TABLE IF NOT EXISTS memory_content_fts USING fts5(
+            content,
+            tokenize = 'unicode61'
+        )";
             command.ExecuteNonQuery();
 
             // Initialize content FTS with existing data
             command.CommandText = @"
-                INSERT OR IGNORE INTO memory_content_fts (rowid, content)
-                SELECT id, content FROM memory_content";
+        INSERT OR IGNORE INTO memory_content_fts (rowid, content)
+        SELECT id, content FROM memory_content";
             command.ExecuteNonQuery();
         }
 
@@ -132,42 +131,104 @@ namespace Gemini
             return new List<(string content, float[] embedding)>();
         }
 
-        public List<(long id, string summary, float score)> SearchSummaries(string query, int maxResults = 5)
+        public List<(long id, string summary, float score, DateTime createdAt)> SearchSummaries(string query, int maxResults = 5)
         {
-            var results = new List<(long id, string summary, float score)>();
+            var results = new List<(long id, string summary, float score, DateTime createdAt)>();
+
             try
             {
                 _logger.Log($"SearchSummaries: Executing query '{query}' with maxResults={maxResults}");
 
-                // Search the summaries using the FTS5 table with BM25 ranking.
-                using var command = _connection.CreateCommand();
-                // Escape double quotes in the query and enclose it in double quotes.
-                string escapedQuery = query.Replace("\"", "\"\"");
-                command.CommandText = @"
-                    SELECT ms.id, ms.summary, bm25(memory_summaries_fts) as rank
-                    FROM memory_summaries ms
-                    JOIN memory_summaries_fts msfts ON ms.id = msfts.rowid
-                    WHERE msfts.summary MATCH $query
-                    ORDER BY rank LIMIT $maxResults";
-                command.Parameters.AddWithValue("$query", "\"" + escapedQuery + "\"");
-                command.Parameters.AddWithValue("$maxResults", maxResults);
-
-                using var reader = command.ExecuteReader();
-                while (reader.Read())
+                if (string.IsNullOrWhiteSpace(query))
                 {
+                    _logger.Log("SearchSummaries: Query is empty, returning most recent summaries");
+                    using var emptyQueryCommand = _connection.CreateCommand();
+                    emptyQueryCommand.CommandText = @"
+                SELECT id, summary, 1.0 AS rank, created_at
+                FROM memory_summaries
+                ORDER BY created_at DESC
+                LIMIT $maxResults";
+                    emptyQueryCommand.Parameters.AddWithValue("$maxResults", maxResults);
+
+                    using var emptyQueryReader = emptyQueryCommand.ExecuteReader();
+                    while (emptyQueryReader.Read())
+                    {
+                        results.Add((
+                            emptyQueryReader.GetInt64(0),
+                            emptyQueryReader.GetString(1),
+                            1.0f,
+                            emptyQueryReader.GetDateTime(3)
+                        ));
+                    }
+                    _logger.Log($"SearchSummaries: Returning {results.Count} most recent summaries");
+                    return results;
+                }
+
+                string[] queryWords = query.ToLower().Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                for (int i = 0; i < queryWords.Length; i++)
+                {
+                    queryWords[i] = queryWords[i].Replace("?", "");
+                }
+                string matchQuery = string.Join(" OR ", queryWords);
+
+                using var searchCommand = _connection.CreateCommand();
+                searchCommand.CommandText = @"
+            SELECT ms.id, ms.summary, bm25(memory_summaries_fts) AS rank, ms.created_at
+            FROM memory_summaries ms
+            JOIN memory_summaries_fts msfts ON ms.id = msfts.rowid
+            WHERE msfts.summary MATCH $matchQuery
+            ORDER BY rank ASC, created_at DESC
+            LIMIT $maxResults";
+                searchCommand.Parameters.AddWithValue("$matchQuery", matchQuery);
+                searchCommand.Parameters.AddWithValue("$maxResults", maxResults);
+
+                using var searchReader = searchCommand.ExecuteReader();
+                while (searchReader.Read())
+                {
+                    float bm25Score = (float)searchReader.GetDouble(2);
+                    float normalizedScore = -bm25Score / 10.0f;
                     results.Add((
-                        reader.GetInt64(0),
-                        reader.GetString(1),
-                        (float)reader.GetDouble(2)
+                        searchReader.GetInt64(0),
+                        searchReader.GetString(1),
+                        normalizedScore > 1.0f ? 1.0f : normalizedScore,
+                        searchReader.GetDateTime(3)
                     ));
                 }
 
-                _logger.Log($"SearchSummaries: Found {results.Count} summaries for query '{query}'");
+                if (results.Count < maxResults)
+                {
+                    _logger.Log($"SearchSummaries: Found {results.Count} matches, filling with recent summaries");
+                    int remaining = maxResults - results.Count;
+                    var existingIds = results.Select(r => r.id).ToList();
+
+                    using var fallbackCommand = _connection.CreateCommand();
+                    fallbackCommand.CommandText = @"
+                SELECT id, summary, 0.0 AS rank, created_at
+                FROM memory_summaries
+                WHERE id NOT IN (" + (existingIds.Any() ? string.Join(",", existingIds) : "0") + @")
+                ORDER BY created_at DESC
+                LIMIT $remaining";
+                    fallbackCommand.Parameters.AddWithValue("$remaining", remaining);
+
+                    using var fallbackReader = fallbackCommand.ExecuteReader();
+                    while (fallbackReader.Read())
+                    {
+                        results.Add((
+                            fallbackReader.GetInt64(0),
+                            fallbackReader.GetString(1),
+                            0.0f,
+                            fallbackReader.GetDateTime(3)
+                        ));
+                    }
+                }
+
+                _logger.Log($"SearchSummaries: Returning {results.Count} summaries for query '{query}'");
             }
             catch (Exception ex)
             {
                 _logger.Log($"Error in SearchSummaries: {ex.Message}");
             }
+
             return results;
         }
 

@@ -58,12 +58,12 @@ namespace Gemini
         public static string GetInitialPrompt() =>
             $"Current Date: {DateTime.Now:yyyy-MM-dd}\n" +
             "You have access to tools to search local memory summaries, fetch memory content, and perform Google searches.\n" +
-            "**Prioritize Summaries:** Always begin by using 'search_memory_summaries' to identify relevant summaries.\n" +
-            "**Extract Information:** Carefully analyze the content of the summaries to determine if they contain all the information needed to answer the user's query.\n" +
-            "**Fetch Content Judiciously:** Only use 'search_memory_content' to fetch full content by IDs **if and only if** the summaries lack crucial details required to provide a complete and accurate response. Avoid fetching content unnecessarily." +
-            "If no relevant memories are found, fall back to 'search_google'.\n" +
-            "Always try to balance the need to use less tokens with the need to provide accurate responses. Fetching full contents and google searches use more tokens than using summaries, but are more complete.\n" +
-            "NEVER ask for user confirmation to use tools. Use them when needed.";
+            "**Prioritize Summaries:** Always start by using 'search_memory_summaries' to quickly identify relevant memories.\n" +
+            "**Analyze and Extract:** Review memory summaries carefully to determine if crucial details are present. If essential details are missing, use 'search_memory_content' to fetch additional content.\n" +
+            "**Adaptive Search:** If no relevant memories are found or details are insufficient, immediately use 'search_google' with refined search terms derived from the original query.\n" +
+            "**Efficiency vs Completeness:** Balance token usage and response accuracy. Prefer concise summary searches, but do not hesitate to resort to more detailed searches when necessary.\n" +
+            "If a memory search yields no results, refine the query by considering alternative phrasings, synonyms, and contextual clues before defaulting to online search.\n" +
+            "NEVER ask for user confirmation to use tools. Decide autonomously based on context.";
 
         public static string GetProcessedContentPrompt(string searchTerms, string originalUserQuery, List<(string content, string url)> contentUrlPairs)
         {

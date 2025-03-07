@@ -82,10 +82,11 @@ namespace Gemini
                 throw;
             }
         }
-        public List<(long id, string summary, float score)> SearchMemorySummaries(string query, int maxResults = 5)
+
+        public List<(long id, string summary, float score, DateTime createdAt)> SearchMemorySummaries(string query, int maxResults = 5)
         {
             if (_disposed) throw new ObjectDisposedException(nameof(MemoryManager));
-            if (string.IsNullOrWhiteSpace(query)) return new List<(long, string, float)>();
+            // Call SearchSummaries directly, it already handles empty queries by returning recent summaries
             return _memoryStore.SearchSummaries(query, maxResults);
         }
 
@@ -94,6 +95,7 @@ namespace Gemini
             if (_disposed) throw new ObjectDisposedException(nameof(MemoryManager));
             return _memoryStore.FetchFullContent(ids);
         }
+
         public static async Task CreateMemoryFromSearchResults(Logger logger, MemoryManager memoryManager, List<(string content, string url)> results)
         {
             try
