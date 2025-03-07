@@ -96,7 +96,6 @@ namespace Gemini
                 tools = client.Tools
             };
 
-            client.UpdateChat("\nSystem: Waiting for LLM reply...\n", "system");
             var (content, _) = await SendRequestToLLM(client, payload);
             if (content == null) return null;
 
@@ -229,6 +228,21 @@ namespace Gemini
                                 return await SendToLLM(client, prompt) ?? "No relevant information found in memory content.";
                             }
                         }
+                        else if (funcCall.Value.name == "delete_memories")
+                            {
+                                var idsJson = (JsonElement)funcCall.Value.args["ids"];
+                                var ids = idsJson.EnumerateArray().Select(id => id.GetInt64()).ToList();
+                                client.Logger.Log($"Deleting memories with IDs: [{string.Join(", ", ids)}]");
+                                try {
+                                    client.MemoryManager.DeleteMemories(ids);
+                                    var prompt = $"Successfully deleted memories with IDs [{string.Join(", ", ids)}].";
+                                    return await SendToLLM(client, prompt) ?? "Couldn't delete memories.";
+                                } catch (Exception ex) {
+                                    client.UpdateChat($"Failed to delete memories with IDs: {string.Join(", ", ids)}. Error: {ex.Message}\n", "system");
+                                    var prompt = $"Successfully deleted memories with IDs [{string.Join(", ", ids)}].";
+                                    return await SendToLLM(client, prompt) ?? "Couldn't delete memories.";
+                                }
+                            }
                     }
                 }
             }

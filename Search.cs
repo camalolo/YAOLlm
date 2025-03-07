@@ -42,7 +42,6 @@ namespace Gemini
                 return new List<(string, string)>();
             }
 
-            updateChat($"System: Searching for '{searchTerms}'...\n", "system");
             updateStatus(Status.Searching);
 
             List<string> urls = await GetSearchResults(searchTerms);

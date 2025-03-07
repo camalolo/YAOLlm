@@ -101,10 +101,8 @@ namespace Gemini
                     UpdateStatus(Status.AnalyzingImage);
                     string describePrompt = ToolsAndPrompts.GetImageDescriptionPrompt(activeWindowTitle ?? string.Empty);
                     var response = await ApiFunctions.SendToLLM(this, describePrompt, imageBase64);
-                    if (response != null) UpdateChat("\nImage analysis done.\n", "model");
 
                     prompt = string.IsNullOrEmpty(prompt) ? ToolsAndPrompts.GetImageDescriptionDefaultUserPrompt() : prompt;
-                    UpdateChat("\nProcessing image...\n", "system");
                     response = await ApiFunctions.SendToLLM(this, prompt, imageBase64);
                     if (response != null) UpdateChat(response + "\n", "model");
                 }

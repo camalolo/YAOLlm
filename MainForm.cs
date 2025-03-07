@@ -300,29 +300,28 @@ namespace Gemini
 
         private void SendMessage()
         {
-            string userInput = _inputField.Text.Trim();
-            if (!string.IsNullOrEmpty(userInput))
+            string message = _inputField.Text.Trim();
+            if (!string.IsNullOrEmpty(message))
             {
-                UpdateChat($"You: {userInput}\r\n", "white");
-                _geminiClient.OriginalUserQuery = userInput;
+                UpdateChat($"You: {message}\r\n", "white");
+                _geminiClient.OriginalUserQuery = message;
                 _inputField.Text = "";
-                Task.Run(() => _geminiClient.ProcessLLMRequest(userInput, string.Empty, string.Empty));
+                Task.Run(() => _geminiClient.ProcessLLMRequest(message, string.Empty, string.Empty));
             }
         }
 
         private void CaptureAndSend()
         {
-            string userInput = _inputField.Text.Trim();
-            if (!string.IsNullOrEmpty(userInput))
+            string message = _inputField.Text.Trim();
+            if (!string.IsNullOrEmpty(message))
             {
-                UpdateChat($"You: {userInput}\r\n", "white");
+                UpdateChat($"You: {message}\r\n", "white");
                 _inputField.Text = "";
             }
             var (imageBase64, activeWindowTitle) = CaptureScreenAndEncode();
             if (imageBase64 != null)
             {
-                UpdateChat("Uploading image...\r\n", "grey");
-                Task.Run(() => _geminiClient.ProcessLLMRequest(userInput, imageBase64, activeWindowTitle));
+                Task.Run(() => _geminiClient.ProcessLLMRequest(message, imageBase64, activeWindowTitle));
             }
             else
             {

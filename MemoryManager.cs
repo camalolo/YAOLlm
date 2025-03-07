@@ -83,7 +83,7 @@ namespace Gemini
             }
         }
 
-        public List<(long id, string summary, float score, DateTime createdAt)> SearchMemorySummaries(string query, int maxResults = 5)
+        public List<(long id, string summary, float score, DateTime createdAt)> SearchMemorySummaries(string query, int maxResults = 20)
         {
             if (_disposed) throw new ObjectDisposedException(nameof(MemoryManager));
             // Call SearchSummaries directly, it already handles empty queries by returning recent summaries
@@ -108,6 +108,14 @@ namespace Gemini
             {
                 logger.Log($"Error creating memory from search results: {ex.Message}");
             }
+        }
+        public void DeleteMemories(List<long> ids)
+        {
+            if (ids == null || ids.Count == 0)
+                return;
+            if (_disposed) throw new ObjectDisposedException(nameof(MemoryManager));
+            _memoryStore.DeleteMemories(ids);
+            _logger.Log("Deleted memories with IDs: " + string.Join(", ", ids));
         }
     }
 }

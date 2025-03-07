@@ -131,7 +131,7 @@ namespace Gemini
             return new List<(string content, float[] embedding)>();
         }
 
-        public List<(long id, string summary, float score, DateTime createdAt)> SearchSummaries(string query, int maxResults = 5)
+        public List<(long id, string summary, float score, DateTime createdAt)> SearchSummaries(string query, int maxResults = 20)
         {
             var results = new List<(long id, string summary, float score, DateTime createdAt)>();
 
@@ -294,6 +294,73 @@ namespace Gemini
                 _logger.Log($"Error retrieving all memories: {ex.Message}");
             }
             return results;
+        }
+
+        public void DeleteMemories(List<long> ids)
+        {
+            if (_disposed) throw new ObjectDisposedException(nameof(SQLiteMemoryStore));
+            if (ids == null || ids.Count == 0)
+            {
+                _logger.Log("DeleteMemories: No IDs provided, nothing to delete.");
+                return;
+            }
+
+            using var transaction = _connection.BeginTransaction();
+            try
+            {
+                // Prepare a parameterized IN clause for the IDs
+                string idPlaceholder = string.Join(",", ids.Select((_, i) => $"${i}"));
+                int rowsAffected = 0;
+
+                // Delete from memory_summaries
+                using (var cmd = _connection.CreateCommand())
+                {
+                    cmd.Transaction = transaction;
+                    cmd.CommandText = $"DELETE FROM memory_summaries WHERE id IN ({idPlaceholder})";
+                    for (int i = 0; i < ids.Count; i++)
+                        cmd.Parameters.AddWithValue($"${i}", ids[i]);
+                    rowsAffected += cmd.ExecuteNonQuery();
+                }
+
+                // Delete from memory_content
+                using (var cmd = _connection.CreateCommand())
+                {
+                    cmd.Transaction = transaction;
+                    cmd.CommandText = $"DELETE FROM memory_content WHERE id IN ({idPlaceholder})";
+                    for (int i = 0; i < ids.Count; i++)
+                        cmd.Parameters.AddWithValue($"${i}", ids[i]);
+                    rowsAffected += cmd.ExecuteNonQuery();
+                }
+
+                // Delete from memory_summaries_fts
+                using (var cmd = _connection.CreateCommand())
+                {
+                    cmd.Transaction = transaction;
+                    cmd.CommandText = $"DELETE FROM memory_summaries_fts WHERE rowid IN ({idPlaceholder})";
+                    for (int i = 0; i < ids.Count; i++)
+                        cmd.Parameters.AddWithValue($"${i}", ids[i]);
+                    rowsAffected += cmd.ExecuteNonQuery();
+                }
+
+                // Delete from memory_content_fts
+                using (var cmd = _connection.CreateCommand())
+                {
+                    cmd.Transaction = transaction;
+                    cmd.CommandText = $"DELETE FROM memory_content_fts WHERE rowid IN ({idPlaceholder})";
+                    for (int i = 0; i < ids.Count; i++)
+                        cmd.Parameters.AddWithValue($"${i}", ids[i]);
+                    rowsAffected += cmd.ExecuteNonQuery();
+                }
+
+                transaction.Commit();
+                _logger.Log($"Deleted {rowsAffected / 4} memories with IDs: {string.Join(", ", ids)} (total rows affected: {rowsAffected})");
+            }
+            catch (Exception ex)
+            {
+                transaction.Rollback();
+                _logger.Log($"Error deleting memories with IDs [{string.Join(", ", ids)}]: {ex.Message}");
+                throw; // Rethrow to let the caller handle it
+            }
         }
 
         public void Dispose()
