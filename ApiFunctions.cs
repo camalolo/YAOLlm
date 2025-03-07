@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text;
 using System.Text.Json;
+using System.Threading;
 using System.Threading.Tasks;
 using RestSharp;
 
@@ -9,45 +11,77 @@ namespace Gemini
 {
     public static class ApiFunctions
     {
+        // Rate limit constants based on Google Gemini free tier
+        private const int EmbeddingRpmLimit = 1500; // text-embedding-004: 1,500 RPM
+        private const int GenerationRpmLimit = 15;  // gemini-2.0-flash: 15 RPM
+        private static readonly SemaphoreSlim RateLimiterEmbedding = new SemaphoreSlim(EmbeddingRpmLimit, EmbeddingRpmLimit);
+        private static readonly SemaphoreSlim RateLimiterGeneration = new SemaphoreSlim(GenerationRpmLimit, GenerationRpmLimit);
+        private static readonly TimeSpan RateLimitReset = TimeSpan.FromSeconds(60); // 1 minute
 
-        private static async Task<(string?, RestResponse)> SendRequestToLLM(GeminiClient client, object payload)
+        private static async Task<(string?, RestResponse)> SendRequestToLLM(
+            GeminiClient client,
+            object payload,
+            bool embed = false)
         {
-            var clientRest = new RestClient(client.LlmApiUrl);
+            var url = embed ? client.getEmbedUrl() : client.getUrl();
+            var clientRest = new RestClient(url);
             var request = new RestRequest { Method = Method.Post };
             request.AddHeader("Content-Type", "application/json");
-            request.AddJsonBody(payload);
 
-            var jsonPayload = JsonSerializer.Serialize(payload);
-            client.Logger.Log($"Full request payload: {jsonPayload.Replace("\\n", "\n")}");
+            var finalPayload = embed
+                ? new { content = new { parts = new[] { new { text = payload } } } }
+                : payload;
+
+            request.AddJsonBody(finalPayload);
+
+            client.Logger.Log($"Sending request to {url}");
             client.UpdateStatus(Status.ReceivingData);
 
             const int maxRetries = 3;
-            for (int retryCount = 0; retryCount <= maxRetries; retryCount++)
+            var rateLimiter = embed ? RateLimiterEmbedding : RateLimiterGeneration;
+
+            try
             {
+                // Wait for a slot in the appropriate rate limiter
+                await rateLimiter.WaitAsync();
                 try
                 {
-                    var response = await clientRest.ExecuteAsync(request);
-                    if (response.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
+                    // Release the slot after 60 seconds to enforce RPM
+                    _ = Task.Delay(RateLimitReset).ContinueWith(_ => rateLimiter.Release());
+
+                    for (int retryCount = 0; retryCount <= maxRetries; retryCount++)
                     {
-                        if (retryCount == maxRetries) return (null, response);
-                        int retryDelay = (int)Math.Pow(2, retryCount) * 1000;
-                        client.Logger.Log($"429 Too Many Requests. Retrying in {retryDelay / 1000} seconds (attempt {retryCount + 1}/{maxRetries})");
-                        await Task.Delay(retryDelay);
-                        continue;
+                        try
+                        {
+                            if (retryCount == 0 && embed) await Task.Delay(100); // Initial delay for embedding
+                            var response = await clientRest.ExecuteAsync(request);
+                            if (response.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
+                            {
+                                if (retryCount == maxRetries) return (null, response);
+                                int retryDelay = (int)Math.Pow(2, retryCount) * 1000;
+                                client.Logger.Log($"429 Too Many Requests. Retrying in {retryDelay / 1000} seconds (attempt {retryCount + 1}/{maxRetries})");
+                                await Task.Delay(retryDelay);
+                                continue;
+                            }
+                            response.ThrowIfError();
+                            client.Logger.Log($"Raw LLM response: {response.Content}");
+                            return (response.Content, response);
+                        }
+                        catch (Exception ex)
+                        {
+                            client.Logger.Log($"Error in SendRequestToLLM: {ex.Message}");
+                            return (null, new RestResponse());
+                        }
                     }
-                    response.ThrowIfError();
-                    client.Logger.Log($"Raw LLM response: {response.Content}");
-                    return (response.Content, response);
-                }
-                catch (Exception ex)
-                {
-                    client.Logger.Log($"Error in SendRequestToLLM: {ex.Message}");
-                    return (null, new RestResponse());
                 }
                 finally
                 {
-                    client.UpdateStatus(Status.Idle);
+                    // No explicit release here; handled by the delay task
                 }
+            }
+            finally
+            {
+                client.UpdateStatus(Status.Idle);
             }
             return (null, new RestResponse()); // Unreachable, but required for compilation
         }
@@ -242,6 +276,41 @@ namespace Gemini
             {
                 logger.Log($"Error extracting function call: {ex.Message}");
                 return null;
+            }
+        }
+
+        public static async Task<float[]> Embed(GeminiClient client, string text)
+        {
+            try
+            {
+                var (content, _) = await SendRequestToLLM(client, text, true);
+
+                if (content == null)
+                {
+                    client.Logger.Log("Embedding API returned null content");
+                    return Array.Empty<float>();
+                }
+
+                var json = JsonDocument.Parse(content);
+                var root = json.RootElement;
+
+                if (!root.TryGetProperty("embedding", out var embeddingElement) ||
+                    !embeddingElement.TryGetProperty("values", out var valuesElement))
+                {
+                    client.Logger.Log($"Invalid embedding response format: {content}");
+                    return Array.Empty<float>();
+                }
+
+                var embeddings = valuesElement.EnumerateArray()
+                                             .Select(v => v.GetSingle())
+                                             .ToArray();
+                client.Logger.Log($"Successfully retrieved embedding with {embeddings.Length} dimensions");
+                return embeddings;
+            }
+            catch (Exception ex)
+            {
+                client.Logger.Log($"Error in Embed: {ex.Message}");
+                return Array.Empty<float>();
             }
         }
 

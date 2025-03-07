@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
 using dotenv.net;
+using Microsoft.ML.OnnxRuntime;
 
 namespace Gemini
 {
@@ -14,8 +15,9 @@ namespace Gemini
         private readonly Search _search;
         private readonly MemoryManager _memoryManager;
         public const int MaxHistoryLength = 32; // Changed to public
-        private string _llmApiModel = "gemini-2.0-flash";
-        private string _llmApiUrl => $"https://generativelanguage.googleapis.com/v1beta/models/{_llmApiModel}:generateContent?key={_apiKey}";
+        private string _apiBaseUrl => "https://generativelanguage.googleapis.com/v1beta/models/";
+        private string _embedModel = "text-embedding-004";
+        private string _model = "gemini-2.0-flash";
         private List<Dictionary<string, string>> _conversationHistory;
         private readonly List<object> _tools;
         private string _originalUserQuery;
@@ -24,7 +26,6 @@ namespace Gemini
         public Logger Logger => _logger;
         public Search Search => _search;
         public MemoryManager MemoryManager => _memoryManager;
-        public string LlmApiUrl => _llmApiUrl;
         public List<Dictionary<string, string>> ConversationHistory => _conversationHistory;
         public List<object> Tools => _tools.ToList(); // Return a copy to prevent external modification
         public string OriginalUserQueryInternal { get => _originalUserQuery; set => _originalUserQuery = value; }
@@ -47,7 +48,7 @@ namespace Gemini
                 var googleSearchApiKey = Environment.GetEnvironmentVariable("GOOGLE_SEARCH_API_KEY") ?? throw new ArgumentException("GOOGLE_SEARCH_API_KEY is not set");
                 var googleSearchEngineId = Environment.GetEnvironmentVariable("GOOGLE_SEARCH_ENGINE_ID") ?? throw new ArgumentException("GOOGLE_SEARCH_ENGINE_ID is not set");
                 _memoryManager = new MemoryManager(logger, this);
-                _search = new Search(logger, googleSearchApiKey, googleSearchEngineId, CreateMemoryFromSearchResults);
+                _search = new Search(this, googleSearchApiKey, googleSearchEngineId, CreateMemoryFromSearchResults);
             }
             catch (Exception ex)
             {
@@ -68,12 +69,6 @@ namespace Gemini
             UpdateChat = updateChat;
             UpdateHistoryCounter = updateHistoryCounter;
             UpdateStatus = updateStatus;
-        }
-
-        public void UpdateModel(string model)
-        {
-            _llmApiModel = model;
-            ClearConversationHistory();
         }
 
         public int GetConversationHistoryLength()
@@ -124,5 +119,20 @@ namespace Gemini
         {
             await MemoryManager.CreateMemoryFromSearchResults(_logger, _memoryManager, results);
         }
+
+        public async Task<float[]> Embed(string text)
+        {
+            return await ApiFunctions.Embed(this, text);
+        }
+        public string getUrl()
+        {
+            return $"{_apiBaseUrl}{_model}:generateContent?key={_apiKey}";
+        }
+        public string getEmbedUrl()
+        {
+            return $"{_apiBaseUrl}{_embedModel}:embedContent?key={_apiKey}";
+        }
+
+        
     }
 }

@@ -13,19 +13,21 @@ namespace Gemini
 {
     public class Search
     {
+        private readonly GeminiClient _geminiClient;
         private readonly Logger _logger;
         private readonly string _googleSearchApiKey;
         private readonly string _googleSearchEngineId;
         private const int GoogleSearchNumItems = 10;
-        private const double RelevanceThreshold = 0.2;
+        private const double RelevanceThreshold = 0.5;
         private readonly Dictionary<string, List<string>> _searchResultsCache = new();
         private readonly Dictionary<string, int> _searchStartIndices = new();
         private readonly Dictionary<string, (string, float[])> _scrapedContentCache = new();
         private readonly Action<List<(string content, string url)>>? _onSearchComplete; // Callback for memory creation
 
-        public Search(Logger logger, string googleSearchApiKey, string googleSearchEngineId, Action<List<(string content, string url)>>? onSearchComplete = null)
+        public Search(GeminiClient client, string googleSearchApiKey, string googleSearchEngineId, Action<List<(string content, string url)>>? onSearchComplete = null)
         {
-            _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+            _geminiClient = client;
+            _logger = client.Logger ?? throw new ArgumentNullException(nameof(client));
             _googleSearchApiKey = googleSearchApiKey ?? throw new ArgumentNullException(nameof(googleSearchApiKey));
             _googleSearchEngineId = googleSearchEngineId ?? throw new ArgumentNullException(nameof(googleSearchEngineId));
             Action<List<(string content, string url)>>? localOnSearchComplete = onSearchComplete;
@@ -54,7 +56,7 @@ namespace Gemini
             var scrapedData = await ScrapeUrls(urls);
 
             updateStatus(Status.Processing);
-            var results = ProcessScrapedData(scrapedData, searchTerms, urls);
+            var results = await ProcessScrapedData(scrapedData, searchTerms, urls);
 
             if (!results.Any())
             {
@@ -160,7 +162,7 @@ namespace Gemini
                         return (string.Empty, new float[0]);
                     }
 
-                    var embedding = Embeddings.ComputeEmbedding(text, null); // Don’t pass query here, only in ProcessScrapedData
+                    var embedding = await _geminiClient.Embed(text);
                     _scrapedContentCache[url] = (text, embedding);
                     _logger.Log($"Scraped content from {url}, length: {text.Length} chars");
                     return (text, embedding);
@@ -179,25 +181,31 @@ namespace Gemini
             return results;
         }
 
-        private List<(string content, string url)> ProcessScrapedData((string, float[])[] scrapedData, string searchTerms, List<string> urls)
+
+        private async Task<List<(string content, string url)>> ProcessScrapedData((string, float[])[] scrapedData, string searchTerms, List<string> urls)
         {
             var validData = scrapedData.Select((data, idx) => (content: data.Item1, embedding: data.Item2, url: urls[idx]))
-                                       .Where(d => !string.IsNullOrEmpty(d.content) && d.embedding.Length > 0)
+                                       .Where(d => !string.IsNullOrEmpty(d.content) && d.embedding.Length == 768) // Assuming 768 dimensions
                                        .ToList();
             var docs = validData.Select(d => d.content).ToList();
             var embeddings = validData.Select(d => d.embedding).ToList();
             var validUrls = validData.Select(d => d.url).ToList();
 
-            if (!docs.Any()) return new List<(string, string)>();
-
-            var queryEmbedding = Embeddings.ComputeEmbedding(searchTerms, searchTerms);
-            if (queryEmbedding.Length == 0)
+            if (!docs.Any())
             {
-                _logger.Log($"Failed to compute query embedding for '{searchTerms}'");
+                _logger.Log("No valid data after filtering (content or embedding dimension mismatch)");
                 return new List<(string, string)>();
             }
 
-            var scores = embeddings.Select(e => Embeddings.CosineSimilarity(e, queryEmbedding)).ToList();
+            var queryEmbedding = await _geminiClient.Embed(searchTerms);
+            if (queryEmbedding.Length != 768) // Match expected dimension
+            {
+                _logger.Log($"Query embedding dimension mismatch: expected 768, got {queryEmbedding.Length}");
+                return new List<(string, string)>();
+            }
+
+            var scores = embeddings.Select(e => CosineSimilarity(e, queryEmbedding)).ToList();
+            // Rest of the function remains unchanged...
 
             var allResults = docs.Zip(validUrls, (d, u) => (content: d, url: u))
                                  .Zip(scores, (r, s) => $"URL: {r.url}, Score: {s:F3}");
@@ -216,6 +224,22 @@ namespace Gemini
             _logger.Log($"Filtered {filteredResults.Count} relevant results for '{searchTerms}' (threshold {RelevanceThreshold}): [{string.Join("; ", filteredDetails)}]");
 
             return filteredResults;
+        }
+        private static float CosineSimilarity(float[] a, float[] b)
+        {
+            int length = Math.Min(a.Length, b.Length);
+            if (length == 0) return 0;
+
+            float dot = 0, magA = 0, magB = 0;
+            for (int i = 0; i < length; i++)
+            {
+                dot += a[i] * b[i];
+                magA += a[i] * a[i];
+                magB += b[i] * b[i];
+            }
+            magA = (float)Math.Sqrt(magA);
+            magB = (float)Math.Sqrt(magB);
+            return magA * magB == 0 ? 0 : dot / (magA * magB);
         }
     }
 }
