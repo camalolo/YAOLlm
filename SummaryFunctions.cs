@@ -10,7 +10,7 @@ namespace Gemini
             try
             {
                 var prompt = $"Summarize the following content into a concise, keyword-rich one-sentence summary:\n\n{content}";
-                return await ApiFunctions.SendToLLMWithNoContext(client, prompt) ?? string.Empty;
+                return await ApiFunctions.SendToLLM(client, prompt, null, false) ?? string.Empty;
             }
             catch (Exception ex)
             {

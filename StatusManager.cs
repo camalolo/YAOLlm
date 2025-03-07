@@ -1,4 +1,4 @@
-﻿using System.Collections.Generic;
+﻿using System;
 
 namespace Gemini
 {
@@ -15,17 +15,11 @@ namespace Gemini
 
     public class StatusManager
     {
-        private Status _status = Status.Idle;
-        private readonly Queue<Status> _queue = new Queue<Status>();
+        public event Action<Status>? StatusChanged;
 
         public void SetStatus(Status status)
         {
-            _status = status;
-            lock (_queue) { _queue.Enqueue(status); }
+            StatusChanged?.Invoke(status);
         }
-
-        public Status GetStatus() => _status;
-
-        public Queue<Status> GetQueue() => _queue;
     }
 }

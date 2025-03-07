@@ -34,7 +34,6 @@ namespace Gemini
                                 properties = new
                                 {
                                     ids = new { type = "array", items = new { type = "integer" }, description = "List of memory IDs to fetch content for." },
-                                    query = new { type = "string", description = "Optional query to search within content." }
                                 },
                                 required = new[] { "ids" }
                             }

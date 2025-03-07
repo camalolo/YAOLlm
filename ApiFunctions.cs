@@ -22,35 +22,18 @@ namespace Gemini
             client.UpdateStatus(Status.ReceivingData);
 
             const int maxRetries = 3;
-            int retryCount = 0;
-            int delaySeconds = 1;
-
-            while (true)
+            for (int retryCount = 0; retryCount <= maxRetries; retryCount++)
             {
                 try
                 {
                     var response = await clientRest.ExecuteAsync(request);
                     if (response.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
                     {
-                        if (retryCount >= maxRetries)
-                        {
-                            client.Logger.Log("Max retries reached for LLM request due to 429 Too Many Requests");
-                            client.UpdateChat("Error: Too many requests to the server. Please try again later.\n", "system");
-                            return (null, response);
-                        }
-                        retryCount++;
-                        int retryDelay = delaySeconds * (int)Math.Pow(2, retryCount - 1);
-                        client.Logger.Log($"Received 429 Too Many Requests. Retrying in {retryDelay} seconds (attempt {retryCount}/{maxRetries})");
-                        client.UpdateChat($"System: Server busy, retrying in {retryDelay} seconds...\n", "system");
-                        await Task.Delay(retryDelay * 1000);
+                        if (retryCount == maxRetries) return (null, response);
+                        int retryDelay = (int)Math.Pow(2, retryCount) * 1000;
+                        client.Logger.Log($"429 Too Many Requests. Retrying in {retryDelay / 1000} seconds (attempt {retryCount + 1}/{maxRetries})");
+                        await Task.Delay(retryDelay);
                         continue;
-                    }
-                    if (response.StatusCode == System.Net.HttpStatusCode.BadRequest)
-                    {
-                        client.Logger.Log($"BadRequest (400) received. Response content: {response.Content}");
-                        client.Logger.Log($"Request sent: {jsonPayload}");
-                        client.UpdateChat("Error: The request was invalid. Please check your input and try again.\n", "system");
-                        return (null, response);
                     }
                     response.ThrowIfError();
                     client.Logger.Log($"Raw LLM response: {response.Content}");
@@ -59,7 +42,6 @@ namespace Gemini
                 catch (Exception ex)
                 {
                     client.Logger.Log($"Error in SendRequestToLLM: {ex.Message}");
-                    client.UpdateChat($"Error processing LLM request: {ex.Message}\n", "system");
                     return (null, new RestResponse());
                 }
                 finally
@@ -67,13 +49,14 @@ namespace Gemini
                     client.UpdateStatus(Status.Idle);
                 }
             }
+            return (null, new RestResponse()); // Unreachable, but required for compilation
         }
-
-        public static async Task<string?> SendToLLM(GeminiClient client, string prompt, string? imageBase64 = null)
+        public static async Task<string?> SendToLLM(GeminiClient client, string prompt, string? imageBase64 = null, bool useHistory = true)
         {
             var userMessage = new Dictionary<string, string> { { "role", "user" }, { "content", prompt } };
             if (imageBase64 != null) userMessage["image"] = imageBase64;
-            var messages = new List<Dictionary<string, string>>(client.ConversationHistory) { userMessage };
+            var messages = useHistory ? new List<Dictionary<string, string>>(client.ConversationHistory) { userMessage }
+                              : new List<Dictionary<string, string>> { userMessage };
 
             if (client.ConversationHistory.Count > GeminiClient.MaxHistoryLength * 2)
             {
@@ -109,36 +92,6 @@ namespace Gemini
                 client.UpdateHistoryCounter();
             }
             return processedResponse;
-        }
-
-        public static async Task<string?> SendToLLMWithNoContext(GeminiClient client, string prompt)
-        {
-            if (string.IsNullOrEmpty(prompt))
-            {
-                client.Logger.Log("Prompt cannot be empty in SendToLLMWithNoContext");
-                return null;
-            }
-
-            var messages = new List<Dictionary<string, string>>
-    {
-        new Dictionary<string, string> { { "role", "user" }, { "content", prompt } }
-    };
-
-            var payload = new
-            {
-                contents = messages.Select(m => new
-                {
-                    role = m["role"],
-                    parts = new[] { new { text = m["content"] } }
-                }).ToList()
-            };
-
-            var (content, _) = await SendRequestToLLM(client, payload);
-            if (content == null) return null;
-
-            var data = JsonSerializer.Deserialize<JsonElement>(content);
-            var (message, _) = ExtractLLMResponse(client.Logger, data);
-            return message;
         }
 
         private static (string message, List<JsonElement> functionCalls) ExtractLLMResponse(Logger logger, JsonElement data)
@@ -193,10 +146,10 @@ namespace Gemini
                             }
                             else
                             {
-                                var prompt = ToolsAndPrompts.GetNoRelevantResultsPrompt(searchTerms, client.OriginalUserQuery);
-                                return await SendToLLM(client, prompt) ?? "The LLM did not reply.";
+                                client.Logger.Log($"No relevant results for '{searchTerms}', returning fallback response");
+                                return $"No relevant information found online for '{searchTerms}'. Please refine your query or try a different approach.";
                             }
-                            
+
                         }
                         else if (funcCall.Value.name == "search_memory_summaries")
                         {
@@ -239,20 +192,23 @@ namespace Gemini
                             }
                         }
                         else if (funcCall.Value.name == "delete_memories")
+                        {
+                            var idsJson = (JsonElement)funcCall.Value.args["ids"];
+                            var ids = idsJson.EnumerateArray().Select(id => id.GetInt64()).ToList();
+                            client.Logger.Log($"Deleting memories with IDs: [{string.Join(", ", ids)}]");
+                            try
                             {
-                                var idsJson = (JsonElement)funcCall.Value.args["ids"];
-                                var ids = idsJson.EnumerateArray().Select(id => id.GetInt64()).ToList();
-                                client.Logger.Log($"Deleting memories with IDs: [{string.Join(", ", ids)}]");
-                                try {
-                                    client.MemoryManager.DeleteMemories(ids);
-                                    var prompt = $"Successfully deleted memories with IDs [{string.Join(", ", ids)}].";
-                                    return await SendToLLM(client, prompt) ?? "Couldn't delete memories.";
-                                } catch (Exception ex) {
-                                    client.UpdateChat($"Failed to delete memories with IDs: {string.Join(", ", ids)}. Error: {ex.Message}\n", "system");
-                                    var prompt = $"Successfully deleted memories with IDs [{string.Join(", ", ids)}].";
-                                    return await SendToLLM(client, prompt) ?? "Couldn't delete memories.";
-                                }
+                                client.MemoryManager.DeleteMemories(ids);
+                                var prompt = $"Successfully deleted memories with IDs [{string.Join(", ", ids)}].";
+                                return await SendToLLM(client, prompt) ?? "Couldn't delete memories.";
                             }
+                            catch (Exception ex)
+                            {
+                                client.UpdateChat($"Failed to delete memories with IDs: {string.Join(", ", ids)}. Error: {ex.Message}\n", "system");
+                                var prompt = $"Successfully deleted memories with IDs [{string.Join(", ", ids)}].";
+                                return await SendToLLM(client, prompt) ?? "Couldn't delete memories.";
+                            }
+                        }
                     }
                 }
             }

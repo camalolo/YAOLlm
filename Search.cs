@@ -17,10 +17,9 @@ namespace Gemini
         private readonly string _googleSearchApiKey;
         private readonly string _googleSearchEngineId;
         private const int GoogleSearchNumItems = 10;
-        private const double RelevanceThreshold = 0.45;
+        private const double RelevanceThreshold = 0.2;
         private readonly Dictionary<string, List<string>> _searchResultsCache = new();
         private readonly Dictionary<string, int> _searchStartIndices = new();
-        private readonly Dictionary<string, int> _searchResultsIndex = new();
         private readonly Dictionary<string, (string, float[])> _scrapedContentCache = new();
         private readonly Action<List<(string content, string url)>>? _onSearchComplete; // Callback for memory creation
 
@@ -43,7 +42,6 @@ namespace Gemini
             }
 
             updateStatus(Status.Searching);
-
             List<string> urls = await GetSearchResults(searchTerms);
             if (!urls.Any())
             {
@@ -60,12 +58,13 @@ namespace Gemini
 
             if (!results.Any())
             {
+                _logger.Log($"No relevant results after processing for '{searchTerms}'");
                 updateChat($"System: No relevant results found for '{searchTerms}'.\n", "system");
             }
             else
             {
-                // Trigger memory creation via callback
-                _onSearchComplete?.Invoke(results);
+                _logger.Log($"Search completed, invoking memory creation for {results.Count} results");
+                _onSearchComplete?.Invoke(results); // Ensure this runs
             }
 
             return results;
@@ -73,24 +72,14 @@ namespace Gemini
 
         private async Task<List<string>> GetSearchResults(string searchTerms)
         {
-            if (_searchResultsCache.ContainsKey(searchTerms))
+            if (_searchResultsCache.TryGetValue(searchTerms, out var cachedUrls))
             {
-                var cachedUrls = _searchResultsCache[searchTerms];
-                int startIndex = _searchResultsIndex.GetValueOrDefault(searchTerms, 0);
-                var urls = cachedUrls.Skip(startIndex).Take(3).ToList();
-                _searchResultsIndex[searchTerms] = startIndex + 3;
-
-                if (!urls.Any())
-                {
-                    urls = await SearchGoogle(searchTerms);
-                    _searchResultsIndex[searchTerms] = 0;
-                }
-                _logger.Log($"Using cached search results for '{searchTerms}', URLs: {string.Join(", ", urls)}");
-                return urls;
+                _logger.Log($"Using cached search results for '{searchTerms}', URLs: {string.Join(", ", cachedUrls)}");
+                return cachedUrls; // Simplified: no pagination
             }
 
             var newUrls = await SearchGoogle(searchTerms);
-            _searchResultsIndex[searchTerms] = 0;
+            _searchResultsCache[searchTerms] = newUrls;
             _logger.Log($"New search results for '{searchTerms}', URLs: {string.Join(", ", newUrls)}");
             return newUrls;
         }
@@ -138,7 +127,7 @@ namespace Gemini
 
         private async Task<(string, float[])[]> ScrapeUrls(List<string> urls)
         {
-            return await Task.WhenAll(urls.Select(async url =>
+            var results = await Task.WhenAll(urls.Select(async url =>
             {
                 if (_scrapedContentCache.TryGetValue(url, out var cached))
                 {
@@ -159,9 +148,7 @@ namespace Gemini
                     foreach (var node in doc.DocumentNode.SelectNodes("//script | //style | //nav | //footer | //*[contains(@class, 'advert')] | //*[contains(@class, 'popup')]") ?? new HtmlNodeCollection(null))
                         node.Remove();
 
-                    var contentNode = doc.DocumentNode.SelectSingleNode("//article") ??
-                                      doc.DocumentNode.SelectSingleNode("//main") ??
-                                      doc.DocumentNode.SelectSingleNode("//body");
+                    var contentNode = doc.DocumentNode.SelectSingleNode("//article") ?? doc.DocumentNode.SelectSingleNode("//main") ?? doc.DocumentNode.SelectSingleNode("//body");
                     var text = contentNode != null ? HtmlEntity.DeEntitize(contentNode.InnerText) : doc.DocumentNode.InnerText;
 
                     text = Regex.Replace(text, @"\s+", " ").Trim();
@@ -173,10 +160,15 @@ namespace Gemini
                         return (string.Empty, new float[0]);
                     }
 
-                    var embedding = Embeddings.ComputeEmbedding(text);
+                    var embedding = Embeddings.ComputeEmbedding(text, null); // Don’t pass query here, only in ProcessScrapedData
                     _scrapedContentCache[url] = (text, embedding);
                     _logger.Log($"Scraped content from {url}, length: {text.Length} chars");
                     return (text, embedding);
+                }
+                catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.Forbidden)
+                {
+                    _logger.Log($"Forbidden (403) error scraping {url}");
+                    return (string.Empty, new float[0]);
                 }
                 catch (Exception ex)
                 {
@@ -184,64 +176,46 @@ namespace Gemini
                     return (string.Empty, new float[0]);
                 }
             }));
+            return results;
         }
 
         private List<(string content, string url)> ProcessScrapedData((string, float[])[] scrapedData, string searchTerms, List<string> urls)
         {
-            if (string.IsNullOrWhiteSpace(searchTerms))
-            {
-                _logger.Log("Error: Search terms are empty");
-                return new List<(string, string)>();
-            }
+            var validData = scrapedData.Select((data, idx) => (content: data.Item1, embedding: data.Item2, url: urls[idx]))
+                                       .Where(d => !string.IsNullOrEmpty(d.content) && d.embedding.Length > 0)
+                                       .ToList();
+            var docs = validData.Select(d => d.content).ToList();
+            var embeddings = validData.Select(d => d.embedding).ToList();
+            var validUrls = validData.Select(d => d.url).ToList();
 
-            var docs = scrapedData.Where(d => !string.IsNullOrEmpty(d.Item1) && d.Item2.Length > 0)
-                                  .Select(d => d.Item1)
-                                  .ToList();
-            var embeddings = scrapedData.Where(d => !string.IsNullOrEmpty(d.Item1) && d.Item2.Length > 0)
-                                        .Select(d => d.Item2)
-                                        .ToList();
+            if (!docs.Any()) return new List<(string, string)>();
 
-            if (!docs.Any())
-            {
-                _logger.Log($"No valid scraped documents found for search terms: '{searchTerms}'");
-                return new List<(string, string)>();
-            }
-
-            var queryEmbedding = Embeddings.ComputeEmbedding(searchTerms);
+            var queryEmbedding = Embeddings.ComputeEmbedding(searchTerms, searchTerms);
             if (queryEmbedding.Length == 0)
             {
-                _logger.Log($"Failed to compute embeddings for search terms: '{searchTerms}'");
+                _logger.Log($"Failed to compute query embedding for '{searchTerms}'");
                 return new List<(string, string)>();
             }
 
-            var scores = embeddings.Select((e, i) =>
-            {
-                var similarity = Embeddings.CosineSimilarity(e, queryEmbedding);
-                var lengthPenalty = Math.Min(1.0f, docs[i].Length / 10000.0f);
-                return similarity * lengthPenalty;
-            }).ToList();
+            var scores = embeddings.Select(e => Embeddings.CosineSimilarity(e, queryEmbedding)).ToList();
 
-            _logger.Log($"Processing search results for terms: '{searchTerms}'");
-            _logger.Log($"Found {docs.Count} documents with scores: {string.Join(", ", scores)}");
+            var allResults = docs.Zip(validUrls, (d, u) => (content: d, url: u))
+                                 .Zip(scores, (r, s) => $"URL: {r.url}, Score: {s:F3}");
+            _logger.Log($"All {docs.Count} processed results for '{searchTerms}': [{string.Join("; ", allResults)}]");
 
-            const float MinThreshold = 0.1f;
-            var threshold = Math.Min(RelevanceThreshold,
-                scores.OrderByDescending(s => s).Skip(2).FirstOrDefault() > 0 ? scores.OrderByDescending(s => s).Skip(2).First() : MinThreshold);
+            var filteredResults = docs.Zip(scores, (d, s) => (content: d, score: s))
+                                      .Zip(validUrls, (cs, u) => (content: cs.content, score: cs.score, url: u))
+                                      .Where(x => x.score > RelevanceThreshold)
+                                      .OrderByDescending(x => x.score)
+                                      .Take(3)
+                                      .Select(x => (x.content, x.url))
+                                      .ToList();
 
-            var relevantDocs = docs.Zip(scores, (d, s) => (content: d, score: s))
-                                   .Where(x => x.score > threshold)
-                                   .OrderByDescending(x => x.score)
-                                   .Take(3)
-                                   .ToList();
+            var filteredDetails = filteredResults.Zip(scores.Where(s => s > RelevanceThreshold).OrderByDescending(s => s).Take(3),
+                (r, s) => $"URL: {r.url}, Score: {s:F3}");
+            _logger.Log($"Filtered {filteredResults.Count} relevant results for '{searchTerms}' (threshold {RelevanceThreshold}): [{string.Join("; ", filteredDetails)}]");
 
-            if (!relevantDocs.Any())
-            {
-                _logger.Log($"No relevant documents found above threshold {threshold} for search terms: '{searchTerms}'");
-                return new List<(string, string)>();
-            }
-
-            _logger.Log($"Returning {relevantDocs.Count} relevant documents with scores: {string.Join(", ", relevantDocs.Select(d => d.score))}");
-            return relevantDocs.Zip(urls.Take(relevantDocs.Count), (content, url) => (content.content, url)).ToList();
+            return filteredResults;
         }
     }
 }

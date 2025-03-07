@@ -3,6 +3,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text.RegularExpressions;
 
 namespace Gemini
 {
@@ -37,10 +38,6 @@ namespace Gemini
             command.ExecuteNonQuery();
 
             command.CommandText = @"
-            CREATE INDEX IF NOT EXISTS idx_memory_summaries_url ON memory_summaries(url);";
-            command.ExecuteNonQuery();
-
-            command.CommandText = @"
                 CREATE VIRTUAL TABLE IF NOT EXISTS memory_summaries_fts USING fts5(
                     summary,
                     tokenize = 'unicode61'
@@ -51,13 +48,6 @@ namespace Gemini
                 CREATE TABLE IF NOT EXISTS memory_content (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     content TEXT NOT NULL
-                )";
-            command.ExecuteNonQuery();
-
-            command.CommandText = @"
-                CREATE VIRTUAL TABLE IF NOT EXISTS memory_content_fts USING fts5(
-                    content,
-                    tokenize = 'unicode61'
                 )";
             command.ExecuteNonQuery();
 
@@ -110,12 +100,6 @@ namespace Gemini
                 ftsCmd.Parameters.AddWithValue("$summary", summary);
                 ftsCmd.ExecuteNonQuery();
 
-                using var ftsContentCmd = _connection.CreateCommand();
-                ftsContentCmd.CommandText = "INSERT INTO memory_content_fts (rowid, content) VALUES ($id, $content)";
-                ftsContentCmd.Parameters.AddWithValue("$id", id);
-                ftsContentCmd.Parameters.AddWithValue("$content", content);
-                ftsContentCmd.ExecuteNonQuery();
-
                 transaction.Commit();
                 _logger.Log($"Stored new memory with ID: {id}, URL: {url}");
                 return id;
@@ -126,12 +110,6 @@ namespace Gemini
                 _logger.Log($"Error storing memory in SQLite: {ex.Message}");
                 throw;
             }
-        }
-
-        // This function is kept for compatibility but now simply returns an empty list.
-        public List<(string content, float[] embedding)> GetAllMemoriesWithEmbeddings()
-        {
-            return new List<(string content, float[] embedding)>();
         }
 
         public List<(long id, string summary, float score, DateTime createdAt)> SearchSummaries(string query, int maxResults = 20)
@@ -167,7 +145,8 @@ namespace Gemini
                     return results;
                 }
 
-                string[] queryWords = query.ToLower().Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                string sanitizedQuery = Regex.Replace(query.ToLower(), @"[:\?\!]", " ");
+                string[] queryWords = sanitizedQuery.Split(' ', StringSplitOptions.RemoveEmptyEntries);
                 for (int i = 0; i < queryWords.Length; i++)
                 {
                     queryWords[i] = queryWords[i].Replace("?", "");
@@ -273,32 +252,6 @@ namespace Gemini
             return results;
         }
 
-        public List<(long id, string content)> GetAllMemories()
-        {
-            var results = new List<(long id, string content)>();
-            try
-            {
-                using var command = _connection.CreateCommand();
-                command.CommandText = @"
-                    SELECT mc.rowid, mc.content
-                    FROM memory_content mc";
-
-                using var reader = command.ExecuteReader();
-                while (reader.Read())
-                {
-                    results.Add((
-                        reader.GetInt64(0),
-                        reader.GetString(1)
-                    ));
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.Log($"Error retrieving all memories: {ex.Message}");
-            }
-            return results;
-        }
-
         public void DeleteMemories(List<long> ids)
         {
             if (_disposed) throw new ObjectDisposedException(nameof(SQLiteMemoryStore));
@@ -340,16 +293,6 @@ namespace Gemini
                 {
                     cmd.Transaction = transaction;
                     cmd.CommandText = $"DELETE FROM memory_summaries_fts WHERE rowid IN ({idPlaceholder})";
-                    for (int i = 0; i < ids.Count; i++)
-                        cmd.Parameters.AddWithValue($"${i}", ids[i]);
-                    rowsAffected += cmd.ExecuteNonQuery();
-                }
-
-                // Delete from memory_content_fts
-                using (var cmd = _connection.CreateCommand())
-                {
-                    cmd.Transaction = transaction;
-                    cmd.CommandText = $"DELETE FROM memory_content_fts WHERE rowid IN ({idPlaceholder})";
                     for (int i = 0; i < ids.Count; i++)
                         cmd.Parameters.AddWithValue($"${i}", ids[i]);
                     rowsAffected += cmd.ExecuteNonQuery();

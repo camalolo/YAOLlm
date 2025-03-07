@@ -1,14 +1,12 @@
 using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text.RegularExpressions;
 
 namespace Gemini
 {
     public static class Embeddings
     {
-        private static readonly ConcurrentDictionary<string, int> _vocabulary = new();
-        private static readonly object _vocabularyLock = new();
         private static readonly HashSet<string> _stopWords = new HashSet<string>
         {
             "the", "be", "to", "of", "and", "a", "in", "that", "have",
@@ -24,41 +22,44 @@ namespace Gemini
             "new", "want", "because", "any", "these", "give", "day", "most"
         };
 
-        public static float[] ComputeEmbedding(string text)
+        public static float[] ComputeEmbedding(string text, string? query = null)
         {
             try
             {
-                // Preprocess text: tokenize, lowercase, remove punctuation, and filter stop words
-                var words = text.ToLower()
-                    .Split(new[] { ' ', '\n', '\r', '\t', '.', ',', ';', ':', '!', '?', '(', ')', '[', ']', '{', '}', '"', '\'', '/', '\\' },
-                        StringSplitOptions.RemoveEmptyEntries)
+                var cleanedText = Regex.Replace(text.ToLower(), @"[^\w\s-]", " ");
+                var words = cleanedText.Split(' ', StringSplitOptions.RemoveEmptyEntries)
                     .Where(w => w.Length > 2 && !_stopWords.Contains(w))
                     .ToList();
 
-                // Update vocabulary
-                lock (_vocabularyLock)
-                {
-                    foreach (var word in words.Distinct())
-                    {
-                        _vocabulary.TryAdd(word, _vocabulary.Count);
-                    }
-                }
+                if ((!words.Any() || text.Length < 200) && query != text)
+                    return new float[0];
 
-                // Compute TF-IDF vector
-                var vector = new float[_vocabulary.Count];
+                var queryWords = query != null
+                    ? Regex.Replace(query.ToLower(), @"[^\w\s-]", " ")
+                        .Split(' ', StringSplitOptions.RemoveEmptyEntries)
+                        .Where(w => w.Length > 2 && !_stopWords.Contains(w))
+                        .Distinct()
+                        .ToList()
+                    : new List<string>();
+                var vocabulary = queryWords.Concat(words.Distinct())
+                    .Distinct()
+                    .Take(1000)
+                    .ToDictionary(w => w, w => Array.IndexOf(words.Concat(queryWords).Distinct().ToArray(), w));
+
+                var vector = new float[vocabulary.Count];
                 var wordCounts = words.GroupBy(w => w)
                     .ToDictionary(g => g.Key, g => g.Count());
 
                 foreach (var (word, count) in wordCounts)
                 {
-                    if (_vocabulary.TryGetValue(word, out int index))
+                    if (vocabulary.TryGetValue(word, out int index))
                     {
-                        float tf = 1 + (float)Math.Log(count);
-                        vector[index] = tf;
+                        float weight = count;
+                        if (queryWords.Contains(word)) weight += 1; // Small boost for query terms
+                        vector[index] = weight;
                     }
                 }
 
-                // L2 normalization
                 float magnitude = (float)Math.Sqrt(vector.Sum(x => x * x));
                 if (magnitude > 0)
                 {
@@ -72,7 +73,7 @@ namespace Gemini
             }
             catch (Exception)
             {
-                return Array.Empty<float>();
+                return new float[0];
             }
         }
 
@@ -81,12 +82,15 @@ namespace Gemini
             int length = Math.Min(a.Length, b.Length);
             if (length == 0) return 0;
 
-            var aAdjusted = a.Length > length ? a.Take(length).ToArray() : a.Concat(Enumerable.Repeat(0f, length - a.Length)).ToArray();
-            var bAdjusted = b.Length > length ? b.Take(length).ToArray() : b.Concat(Enumerable.Repeat(0f, length - b.Length)).ToArray();
-
-            float dot = aAdjusted.Zip(bAdjusted, (x, y) => x * y).Sum();
-            float magA = (float)Math.Sqrt(aAdjusted.Sum(x => x * x));
-            float magB = (float)Math.Sqrt(bAdjusted.Sum(x => x * x));
+            float dot = 0, magA = 0, magB = 0;
+            for (int i = 0; i < length; i++)
+            {
+                dot += a[i] * b[i];
+                magA += a[i] * a[i];
+                magB += b[i] * b[i];
+            }
+            magA = (float)Math.Sqrt(magA);
+            magB = (float)Math.Sqrt(magB);
             return magA * magB == 0 ? 0 : dot / (magA * magB);
         }
     }

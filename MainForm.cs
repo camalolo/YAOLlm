@@ -16,7 +16,6 @@ namespace Gemini
         private readonly GeminiClient _geminiClient;
         private readonly StatusManager _statusManager;
         private NotifyIcon _trayIcon;
-        private bool _isVisible = false;
         private readonly Logger _logger;
 
         // Windows API constants and imports for global hotkey
@@ -47,7 +46,7 @@ namespace Gemini
             SetupUI();
 
             this.Visible = false; // Reinforce hidden state
-            _logger.Log($"Post-SetupUI: Visible = {this.Visible}, _isVisible = {_isVisible}");
+            _logger.Log($"Post-SetupUI: Visible = {this.Visible}");
 
             SetupTrayIcon();
             this.FormClosing += MainForm_FormClosing;
@@ -62,7 +61,7 @@ namespace Gemini
                 _logger.Log("Global hotkey Ctrl+F12 registered.");
             }
 
-            Task.Run(() => MonitorStatusQueue());
+            statusManager.StatusChanged += status => _statusLabel.Invoke((System.Windows.Forms.MethodInvoker)(() => _statusLabel.Text = status.ToString()));
 
         }
         protected override void WndProc(ref Message m)
@@ -205,9 +204,7 @@ namespace Gemini
             this.Controls.Add(topPanel);
 
             this.Visible = false;
-            _isVisible = false;
 
-            Task.Run(() => MonitorStatusQueue());
         }
 
         private RichTextBox _chatBox;
@@ -416,14 +413,12 @@ namespace Gemini
 
         private void ToggleVisibility()
         {
-            _isVisible = !_isVisible;
-            this.Visible = _isVisible;
-            if (_isVisible) FocusInputField();
+            this.Visible = !this.Visible;
+            if (this.Visible) FocusInputField();
         }
 
         private void HideOverlay()
         {
-            _isVisible = false;
             this.Visible = false;
         }
 
@@ -446,18 +441,6 @@ namespace Gemini
             return string.Empty;
         }
 
-        private void MonitorStatusQueue()
-        {
-            while (true)
-            {
-                try
-                {
-                    Status status = _statusManager.GetQueue().Dequeue();
-                    _statusLabel.Invoke((System.Windows.Forms.MethodInvoker)(() => _statusLabel.Text = status.ToString()));
-                }
-                catch (InvalidOperationException) { Thread.Sleep(100); }
-            }
-        }
     }
 
     public static class BitmapExtensions

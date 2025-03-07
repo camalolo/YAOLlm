@@ -98,6 +98,7 @@ namespace Gemini
                 foreach (var (content, url) in results)
                 {
                     if (string.IsNullOrEmpty(content)) continue;
+                    logger.Log($"Storing memory with URL: {url}, Content preview: {content.Substring(0, Math.Min(50, content.Length))}...");
                     await memoryManager.StoreMemory(content, url);
                     logger.Log($"Stored memory from search result with URL: {url}");
                 }
