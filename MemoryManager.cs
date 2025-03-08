@@ -11,6 +11,7 @@ namespace Gemini
         private readonly SQLiteMemoryStore _memoryStore;
         private readonly GeminiClient _geminiClient;
         private bool _disposed;
+        private const int ExpectedEmbeddingDimension = 768; // Configurable constant
 
         public MemoryManager(Logger logger, GeminiClient geminiClient)
         {
@@ -21,7 +22,7 @@ namespace Gemini
             var dbPath = Path.Combine(homeDir, ".gemini-memories.db");
 
             var directoryName = Path.GetDirectoryName(dbPath);
-            if (directoryName != null)
+            if (!string.IsNullOrEmpty(directoryName)) // Check for null or empty
             {
                 Directory.CreateDirectory(directoryName);
             }
@@ -61,9 +62,9 @@ namespace Gemini
 
                 // Generate embedding for the content
                 float[] embedding = await _geminiClient.Embed(content);
-                if (embedding.Length != 768) // Adjust dimension as per GeminiClient
+                if (embedding.Length != ExpectedEmbeddingDimension) // Use constant
                 {
-                    _logger.Log($"Embedding dimension mismatch: expected 768, got {embedding.Length}");
+                    _logger.Log($"Embedding dimension mismatch: expected {ExpectedEmbeddingDimension}, got {embedding.Length}");
                     throw new InvalidOperationException("Failed to generate valid embedding for content");
                 }
 
@@ -78,10 +79,10 @@ namespace Gemini
             }
         }
 
-        public List<(long id, string content, float score, DateTime createdAt)> SearchMemory(string query, int maxResults = 3)
+        public async Task<List<(long id, string content, float score, DateTime createdAt)>> SearchMemory(string query, int maxResults = 3) // Made async
         {
             if (_disposed) throw new ObjectDisposedException(nameof(MemoryManager));
-            return _memoryStore.SearchMemory(query, _geminiClient, maxResults);
+            return await _memoryStore.SearchMemory(query, _geminiClient, maxResults); // Await the async call
         }
 
         public static async Task CreateMemoryFromSearchResults(Logger logger, MemoryManager memoryManager, List<(string content, string url)> results)
@@ -99,6 +100,7 @@ namespace Gemini
             catch (Exception ex)
             {
                 logger.Log($"Error creating memory from search results: {ex.Message}");
+                throw; // Rethrow to notify caller
             }
         }
 

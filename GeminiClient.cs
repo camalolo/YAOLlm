@@ -4,7 +4,6 @@ using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
 using dotenv.net;
-using Microsoft.ML.OnnxRuntime;
 
 namespace Gemini
 {
@@ -14,26 +13,35 @@ namespace Gemini
         private readonly string _apiKey;
         private readonly Search _search;
         private readonly MemoryManager _memoryManager;
-        public const int MaxHistoryLength = 32; // Changed to public
+        public const int MaxHistoryLength = 32;
         private string _apiBaseUrl => "https://generativelanguage.googleapis.com/v1beta/models/";
         private string _embedModel = "text-embedding-004";
         private string _model = "gemini-2.0-flash";
         private List<Dictionary<string, string>> _conversationHistory;
         private readonly List<object> _tools;
         private string _originalUserQuery;
+        private readonly object _historyLock = new object(); // Added for thread safety
 
         // Public getters for private fields
         public Logger Logger => _logger;
         public Search Search => _search;
         public MemoryManager MemoryManager => _memoryManager;
-        public List<Dictionary<string, string>> ConversationHistory => _conversationHistory;
+        public List<Dictionary<string, string>> ConversationHistory
+        {
+            get
+            {
+                lock (_historyLock) // Thread-safe read
+                {
+                    return new List<Dictionary<string, string>>(_conversationHistory); // Return a copy
+                }
+            }
+        }
         public List<object> Tools => _tools.ToList(); // Return a copy to prevent external modification
-        public string OriginalUserQueryInternal { get => _originalUserQuery; set => _originalUserQuery = value; }
+        public string OriginalUserQuery { get => _originalUserQuery; set => _originalUserQuery = value; } // Removed redundant Internal version
 
         public Action<string, string> UpdateChat { get; set; }
         public Action UpdateHistoryCounter { get; set; }
         public Action<Status> UpdateStatus { get; set; }
-        public string OriginalUserQuery { get => _originalUserQuery; set => _originalUserQuery = value; }
 
         public GeminiClient(Logger logger)
         {
@@ -73,13 +81,19 @@ namespace Gemini
 
         public int GetConversationHistoryLength()
         {
-            return _conversationHistory.Sum(turn => turn["content"].Length);
+            lock (_historyLock) // Thread-safe read
+            {
+                return _conversationHistory.Sum(turn => turn["content"].Length);
+            }
         }
 
         public void ClearConversationHistory()
         {
-            _conversationHistory = new List<Dictionary<string, string>> { new() { { "role", "model" }, { "content", ToolsAndPrompts.GetInitialPrompt() } } };
-            UpdateHistoryCounter();
+            lock (_historyLock) // Thread-safe write
+            {
+                _conversationHistory = new List<Dictionary<string, string>> { new() { { "role", "model" }, { "content", ToolsAndPrompts.GetInitialPrompt() } } };
+                UpdateHistoryCounter();
+            }
         }
 
         public async Task ProcessLLMRequest(string prompt, string? imageBase64 = null, string? activeWindowTitle = null)
@@ -115,7 +129,7 @@ namespace Gemini
             }
         }
 
-        private async void CreateMemoryFromSearchResults(List<(string content, string url)> results)
+        private async Task CreateMemoryFromSearchResults(List<(string content, string url)> results) // Changed to async Task
         {
             await MemoryManager.CreateMemoryFromSearchResults(_logger, _memoryManager, results);
         }
@@ -124,15 +138,15 @@ namespace Gemini
         {
             return await ApiFunctions.Embed(this, text);
         }
+
         public string getUrl()
         {
             return $"{_apiBaseUrl}{_model}:generateContent?key={_apiKey}";
         }
+
         public string getEmbedUrl()
         {
             return $"{_apiBaseUrl}{_embedModel}:embedContent?key={_apiKey}";
         }
-
-        
     }
 }

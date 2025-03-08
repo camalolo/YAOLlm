@@ -17,6 +17,7 @@ namespace Gemini
         private static readonly SemaphoreSlim RateLimiterEmbedding = new SemaphoreSlim(EmbeddingRpmLimit, EmbeddingRpmLimit);
         private static readonly SemaphoreSlim RateLimiterGeneration = new SemaphoreSlim(GenerationRpmLimit, GenerationRpmLimit);
         private static readonly TimeSpan RateLimitReset = TimeSpan.FromSeconds(60); // 1 minute
+        private const int ExpectedEmbeddingDimension = 768; // Added constant for consistency
 
         private static async Task<(string?, RestResponse)> SendRequestToLLM(
             GeminiClient client,
@@ -42,13 +43,9 @@ namespace Gemini
 
             try
             {
-                // Wait for a slot in the appropriate rate limiter
                 await rateLimiter.WaitAsync();
                 try
                 {
-                    // Release the slot after 60 seconds to enforce RPM
-                    _ = Task.Delay(RateLimitReset).ContinueWith(_ => rateLimiter.Release());
-
                     for (int retryCount = 0; retryCount <= maxRetries; retryCount++)
                     {
                         try
@@ -76,7 +73,7 @@ namespace Gemini
                 }
                 finally
                 {
-                    // No explicit release here; handled by the delay task
+                    rateLimiter.Release(); // Ensure release in all cases
                 }
             }
             finally
@@ -85,12 +82,14 @@ namespace Gemini
             }
             return (null, new RestResponse()); // Unreachable, but required for compilation
         }
+
         public static async Task<string?> SendToLLM(GeminiClient client, string prompt, string? imageBase64 = null, bool useHistory = true)
         {
-            var userMessage = new Dictionary<string, string> { { "role", "user" }, { "content", prompt } };
+            var userMessage = new Dictionary<string, string> { { "role", "user" } };
+            if (!string.IsNullOrEmpty(prompt)) userMessage["content"] = prompt; // Ensure content is present
             if (imageBase64 != null) userMessage["image"] = imageBase64;
             var messages = useHistory ? new List<Dictionary<string, string>>(client.ConversationHistory) { userMessage }
-                              : new List<Dictionary<string, string>> { userMessage };
+                                      : new List<Dictionary<string, string>> { userMessage };
 
             if (client.ConversationHistory.Count > GeminiClient.MaxHistoryLength * 2)
             {
@@ -101,14 +100,12 @@ namespace Gemini
 
             var payload = new
             {
-                contents = messages.Select(m => new
+                contents = messages.Select(m =>
                 {
-                    role = m["role"],
-                    parts = new List<object>
-            {
-                m.ContainsKey("content") ? new { text = m["content"] } : new object(),
-                m.ContainsKey("image") ? new { inlineData = new { mimeType = "image/png", data = m["image"] } } : new object()
-            }.Where(p => p.GetType() != typeof(object)).ToList()
+                    var parts = new List<object>();
+                    if (m.ContainsKey("content")) parts.Add(new { text = m["content"] });
+                    if (m.ContainsKey("image")) parts.Add(new { inlineData = new { mimeType = "image/png", data = m["image"] } });
+                    return new { role = m["role"], parts };
                 }),
                 tools = client.Tools
             };
@@ -192,13 +189,12 @@ namespace Gemini
                                 client.Logger.Log($"No relevant results for '{searchTerms}', returning fallback response");
                                 return $"No relevant information found online for '{searchTerms}'. Please refine your query or try a different approach.";
                             }
-
                         }
                         else if (funcCall.Value.name == "search_memory")
                         {
                             var searchTerms = funcCall.Value.args["search_terms"].ToString() ?? string.Empty;
                             client.Logger.Log($"Initiating memory search for terms: {searchTerms}");
-                            
+
                             if (string.IsNullOrEmpty(searchTerms))
                             {
                                 client.Logger.Log("No valid query provided for memory search.");
@@ -207,7 +203,7 @@ namespace Gemini
                             }
 
                             client.Logger.Log($"Initiating memory search for query: '{searchTerms}'");
-                            var memories = client.MemoryManager.SearchMemory(searchTerms);
+                            var memories = await client.MemoryManager.SearchMemory(searchTerms);
 
                             if (memories.Any())
                             {
@@ -236,7 +232,7 @@ namespace Gemini
                             catch (Exception ex)
                             {
                                 client.UpdateChat($"Failed to delete memories with IDs: {string.Join(", ", ids)}. Error: {ex.Message}\n", "system");
-                                var prompt = $"Successfully deleted memories with IDs [{string.Join(", ", ids)}].";
+                                var prompt = $"Failed to delete memories with IDs [{string.Join(", ", ids)}]. Error: {ex.Message}";
                                 return await SendToLLM(client, prompt) ?? "Couldn't delete memories.";
                             }
                         }
@@ -272,7 +268,7 @@ namespace Gemini
             catch (Exception ex)
             {
                 logger.Log($"Error extracting function call: {ex.Message}");
-                return null;
+                throw; // Propagate exception instead of silent null
             }
         }
 
@@ -301,6 +297,11 @@ namespace Gemini
                 var embeddings = valuesElement.EnumerateArray()
                                              .Select(v => v.GetSingle())
                                              .ToArray();
+                if (embeddings.Length != ExpectedEmbeddingDimension)
+                {
+                    client.Logger.Log($"Embedding dimension mismatch: expected {ExpectedEmbeddingDimension}, got {embeddings.Length}");
+                    return Array.Empty<float>();
+                }
                 client.Logger.Log($"Successfully retrieved embedding with {embeddings.Length} dimensions");
                 return embeddings;
             }
@@ -310,6 +311,5 @@ namespace Gemini
                 return Array.Empty<float>();
             }
         }
-
     }
 }

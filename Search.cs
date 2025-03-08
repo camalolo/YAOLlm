@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net.Http;
@@ -18,18 +19,27 @@ namespace Gemini
         private readonly string _googleSearchEngineId;
         private const int GoogleSearchNumItems = 10;
         private const double RelevanceThreshold = 0.5;
-        private readonly Dictionary<string, List<string>> _searchResultsCache = new();
-        private readonly Dictionary<string, int> _searchStartIndices = new();
-        private readonly Dictionary<string, (string content, float[] embedding)> _scrapedContentCache = new();
-        private readonly Action<List<(string content, string url)>>? _onSearchComplete;
+        private const int ExpectedEmbeddingDimension = 768;
+        private readonly ConcurrentDictionary<string, List<string>> _searchResultsCache = new();
+        private readonly ConcurrentDictionary<string, int> _searchStartIndices = new();
+        private readonly ConcurrentDictionary<string, (string content, float[] embedding)> _scrapedContentCache = new();
+        private readonly Func<List<(string content, string url)>, Task>? _onSearchComplete; // Updated type
+        private static readonly HttpClient _httpClient = new();
 
-        public Search(GeminiClient client, string googleSearchApiKey, string googleSearchEngineId, Action<List<(string content, string url)>>? onSearchComplete = null)
+        static Search()
+        {
+            _httpClient.DefaultRequestHeaders.UserAgent.ParseAdd(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.36");
+            _httpClient.Timeout = TimeSpan.FromSeconds(10);
+        }
+
+        public Search(GeminiClient client, string googleSearchApiKey, string googleSearchEngineId, Func<List<(string content, string url)>, Task>? onSearchComplete = null)
         {
             _geminiClient = client;
             _logger = client.Logger ?? throw new ArgumentNullException(nameof(client));
             _googleSearchApiKey = googleSearchApiKey ?? throw new ArgumentNullException(nameof(googleSearchApiKey));
             _googleSearchEngineId = googleSearchEngineId ?? throw new ArgumentNullException(nameof(googleSearchEngineId));
-            _onSearchComplete = onSearchComplete ?? (_ => { });
+            _onSearchComplete = onSearchComplete ?? (_ => Task.CompletedTask); // Default to completed task
         }
 
         public async Task<List<(string content, string url)>> PerformSearch(string searchTerms, string originalUserQuery, Action<string, string> updateChat, Action<Status> updateStatus)
@@ -64,7 +74,7 @@ namespace Gemini
             else
             {
                 _logger.Log($"Search completed, invoking memory creation for {results.Count} results");
-                _onSearchComplete?.Invoke(results);
+                if (_onSearchComplete != null) await _onSearchComplete(results); // Await the async callback
             }
 
             return results;
@@ -103,7 +113,13 @@ namespace Gemini
                 var response = await client.ExecuteAsync(request);
                 response.ThrowIfError();
 
-                var data = response.Content != null ? JsonSerializer.Deserialize<JsonElement>(response.Content) : default;
+                if (response.Content == null)
+                {
+                    _logger.Log("Google search returned null content");
+                    return new List<string>();
+                }
+
+                var data = JsonSerializer.Deserialize<JsonElement>(response.Content);
                 if (data.TryGetProperty("items", out var items))
                 {
                     _searchStartIndices[searchTerms] += GoogleSearchNumItems;
@@ -137,11 +153,7 @@ namespace Gemini
 
                 try
                 {
-                    using var client = new HttpClient();
-                    client.DefaultRequestHeaders.UserAgent.ParseAdd(
-                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.36");
-                    client.Timeout = TimeSpan.FromSeconds(10);
-                    var html = await client.GetStringAsync(url);
+                    var html = await _httpClient.GetStringAsync(url); // Use shared HttpClient
                     var doc = new HtmlAgilityPack.HtmlDocument();
                     doc.LoadHtml(html);
 
@@ -182,7 +194,7 @@ namespace Gemini
         private async Task<List<(string content, string url)>> ProcessScrapedData((string content, float[] embedding)[] scrapedData, string searchTerms, List<string> urls)
         {
             var validData = scrapedData.Select((data, idx) => (content: data.content, embedding: data.embedding, url: urls[idx]))
-                                       .Where(d => !string.IsNullOrEmpty(d.content) && d.embedding.Length == 768) // Assuming 768 dimensions
+                                       .Where(d => !string.IsNullOrEmpty(d.content) && d.embedding.Length == ExpectedEmbeddingDimension) // Use constant
                                        .ToList();
             var docs = validData.Select(d => d.content).ToList();
             var embeddings = validData.Select(d => d.embedding).ToList();
@@ -195,9 +207,9 @@ namespace Gemini
             }
 
             var queryEmbedding = await _geminiClient.Embed(searchTerms);
-            if (queryEmbedding.Length != 768) // Match expected dimension
+            if (queryEmbedding.Length != ExpectedEmbeddingDimension) // Use constant
             {
-                _logger.Log($"Query embedding dimension mismatch: expected 768, got {queryEmbedding.Length}");
+                _logger.Log($"Query embedding dimension mismatch: expected {ExpectedEmbeddingDimension}, got {queryEmbedding.Length}");
                 return new List<(string, string)>();
             }
 

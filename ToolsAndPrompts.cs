@@ -55,7 +55,7 @@ namespace Gemini
         }
 
         public static string GetInitialPrompt() =>
-            $"Current Date: {DateTime.Now:yyyy-MM-dd}\n" +
+            $"Current Date: {DateTime.Now.ToString("yyyy-MM-dd")}\n" + // Updated to ToString()
             "You have access to tools to search local memory summaries, fetch memory content, and perform Google searches.\n" +
             "**Prioritize Summaries:** Always start by using 'search_memory_summaries' to quickly identify relevant memories.\n" +
             "**Analyze and Extract:** Review memory summaries carefully to determine if crucial details are present. If essential details are missing, use 'search_memory_content' to fetch additional content.\n" +

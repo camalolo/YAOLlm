@@ -3,6 +3,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Threading.Tasks; // Added for async
 
 namespace Gemini
 {
@@ -12,6 +13,7 @@ namespace Gemini
         private readonly string _dbPath;
         private readonly Logger _logger;
         private bool _disposed;
+        private const int ExpectedEmbeddingDimension = 768; // Added constant for consistency
 
         public SQLiteMemoryStore(string dbPath, Logger logger)
         {
@@ -54,7 +56,7 @@ namespace Gemini
                     var existingId = checkCmd.ExecuteScalar();
                     if (existingId != null)
                     {
-                        _logger.Log($"Memory with URL '{url}' already exists with ID: {existingId}");
+                        _logger.Log($"Memory with URL '{url}' already exists with ID: {existingId}, rolling back transaction");
                         transaction.Rollback();
                         return Convert.ToInt64(existingId);
                     }
@@ -86,7 +88,7 @@ namespace Gemini
             }
         }
 
-        public List<(long id, string content, float score, DateTime createdAt)> SearchMemory(string query, GeminiClient geminiClient, int maxResults = 3)
+        public async Task<List<(long id, string content, float score, DateTime createdAt)>> SearchMemory(string query, GeminiClient geminiClient, int maxResults = 3) // Made async
         {
             if (_disposed) throw new ObjectDisposedException(nameof(SQLiteMemoryStore));
             if (string.IsNullOrEmpty(query)) throw new ArgumentNullException(nameof(query));
@@ -97,11 +99,11 @@ namespace Gemini
             {
                 _logger.Log($"Searching memory for query: '{query}'");
 
-                // Generate query embedding
-                float[] queryEmbedding = geminiClient.Embed(query).Result; // Assuming Embed is async
-                if (queryEmbedding.Length != 768) // Adjust dimension as per your GeminiClient
+                // Generate query embedding asynchronously
+                float[] queryEmbedding = await geminiClient.Embed(query); // Await instead of .Result
+                if (queryEmbedding.Length != ExpectedEmbeddingDimension) // Use constant
                 {
-                    _logger.Log($"Query embedding dimension mismatch: expected 768, got {queryEmbedding.Length}");
+                    _logger.Log($"Query embedding dimension mismatch: expected {ExpectedEmbeddingDimension}, got {queryEmbedding.Length}");
                     return results;
                 }
 
