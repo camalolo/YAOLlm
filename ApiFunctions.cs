@@ -170,9 +170,18 @@ namespace Gemini
                         if (funcCall.Value.name == "search_google")
                         {
                             var searchTerms = funcCall.Value.args["search_terms"].ToString() ?? string.Empty;
-                            client.Logger.Log($"Initiating search for terms: {searchTerms}");
+                            client.Logger.Log($"Initiating google search for terms: {searchTerms}");
+
+                            if (string.IsNullOrEmpty(searchTerms))
+                            {
+                                client.Logger.Log("No valid query provided for google search.");
+                                var prompt = "No query provided to search google. Please provide a query or refine your request.";
+                                return await SendToLLM(client, prompt) ?? "No relevant information found in google.";
+                            }
+
                             var contentUrlPairs = await client.Search.PerformSearch(searchTerms, client.OriginalUserQuery, client.UpdateChat, client.UpdateStatus);
                             client.UpdateStatus(Status.Idle);
+
                             if (contentUrlPairs.Any())
                             {
                                 var prompt = ToolsAndPrompts.GetProcessedContentPrompt(searchTerms, client.OriginalUserQuery, contentUrlPairs);
@@ -185,43 +194,31 @@ namespace Gemini
                             }
 
                         }
-                        else if (funcCall.Value.name == "search_memory_summaries")
+                        else if (funcCall.Value.name == "search_memory")
                         {
-                            var query = funcCall.Value.args["query"]?.ToString();
-                            client.Logger.Log($"Initiating memory summaries search for query: {query}");
-                            var summaries = string.IsNullOrEmpty(query)
-                                ? new List<(long id, string summary, float score, DateTime createdAt)>()
-                                : client.MemoryManager.SearchMemorySummaries(query);
-                            if (summaries.Any())
+                            var searchTerms = funcCall.Value.args["search_terms"].ToString() ?? string.Empty;
+                            client.Logger.Log($"Initiating memory search for terms: {searchTerms}");
+                            
+                            if (string.IsNullOrEmpty(searchTerms))
                             {
-                                var summaryContent = string.Join("\n\n", summaries.Select(s => $"Summary (ID: {s.id}, score: {s.score:F2}):\n{s.summary}"));
-                                var prompt = $"Found the following relevant memory summaries:\n\n{summaryContent}\n\nIf these summaries are relevant, fetch the full content using 'search_memory_content' with the IDs, or respond directly if sufficient. The user question was '{client.OriginalUserQuery}'";
-                                return await SendToLLM(client, prompt) ?? "The LLM did not reply.";
+                                client.Logger.Log("No valid query provided for memory search.");
+                                var prompt = "No query provided to search memory content. Please provide a query or refine your request.";
+                                return await SendToLLM(client, prompt) ?? "No relevant information found in memory content.";
                             }
-                            else
-                            {
-                                client.Logger.Log($"No relevant memory summaries found for query '{query}'");
-                                var prompt = $"No memories summaries found for '{query}'. You might try a slightly different query, or give up on searching.";
-                                return await SendToLLM(client, prompt) ?? "The LLM did not reply.";
 
-                            }
-                        }
-                        else if (funcCall.Value.name == "search_memory_content")
-                        {
-                            var idsJson = (JsonElement)funcCall.Value.args["ids"];
-                            var ids = idsJson.EnumerateArray().Select(id => id.GetInt64()).ToList();
-                            client.Logger.Log($"Initiating memory content search for IDs: [{string.Join(", ", ids)}]");
-                            var memories = ids.Any() ? client.MemoryManager.FetchMemoryContent(ids) : new List<string>();
+                            client.Logger.Log($"Initiating memory search for query: '{searchTerms}'");
+                            var memories = client.MemoryManager.SearchMemory(searchTerms);
+
                             if (memories.Any())
                             {
-                                var memoryContent = string.Join("\n\n", memories.Select(m => $"Memory :\n{m}"));
-                                var prompt = $"Found the following relevant memory content:\n\n{memoryContent}\n\nBased on these memories, please provide a helpful response to the user query : '{client.OriginalUserQuery}'.";
+                                var memoryContent = string.Join("\n\n", memories.Select(m => $"Memory (ID: {m.id}, Score: {m.score:F3}):\n{m.content}"));
+                                var prompt = $"Found the following relevant memory content:\n\n{memoryContent}\n\nBased on these memories, please provide a helpful response to the user query: '{client.OriginalUserQuery}'.";
                                 return await SendToLLM(client, prompt) ?? "No relevant information found in memory content.";
                             }
                             else
                             {
-                                client.Logger.Log($"No relevant content found for IDs [{string.Join(", ", ids)}]");
-                                var prompt = $"No memories content found with IDs [{string.Join(", ", ids)}]. You might try a slightly different query, or give up on searching.";
+                                client.Logger.Log($"No relevant memories found for query '{searchTerms}'");
+                                var prompt = $"No memories found matching the query '{searchTerms}'. You might try a slightly different query.";
                                 return await SendToLLM(client, prompt) ?? "No relevant information found in memory content.";
                             }
                         }

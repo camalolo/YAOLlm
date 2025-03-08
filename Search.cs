@@ -7,7 +7,6 @@ using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using RestSharp;
 using HtmlAgilityPack;
-using System.Collections.Concurrent;
 
 namespace Gemini
 {
@@ -21,8 +20,8 @@ namespace Gemini
         private const double RelevanceThreshold = 0.5;
         private readonly Dictionary<string, List<string>> _searchResultsCache = new();
         private readonly Dictionary<string, int> _searchStartIndices = new();
-        private readonly Dictionary<string, (string, float[])> _scrapedContentCache = new();
-        private readonly Action<List<(string content, string url)>>? _onSearchComplete; // Callback for memory creation
+        private readonly Dictionary<string, (string content, float[] embedding)> _scrapedContentCache = new();
+        private readonly Action<List<(string content, string url)>>? _onSearchComplete;
 
         public Search(GeminiClient client, string googleSearchApiKey, string googleSearchEngineId, Action<List<(string content, string url)>>? onSearchComplete = null)
         {
@@ -30,8 +29,7 @@ namespace Gemini
             _logger = client.Logger ?? throw new ArgumentNullException(nameof(client));
             _googleSearchApiKey = googleSearchApiKey ?? throw new ArgumentNullException(nameof(googleSearchApiKey));
             _googleSearchEngineId = googleSearchEngineId ?? throw new ArgumentNullException(nameof(googleSearchEngineId));
-            Action<List<(string content, string url)>>? localOnSearchComplete = onSearchComplete;
-            _onSearchComplete = localOnSearchComplete ?? (_ => { });
+            _onSearchComplete = onSearchComplete ?? (_ => { });
         }
 
         public async Task<List<(string content, string url)>> PerformSearch(string searchTerms, string originalUserQuery, Action<string, string> updateChat, Action<Status> updateStatus)
@@ -66,7 +64,7 @@ namespace Gemini
             else
             {
                 _logger.Log($"Search completed, invoking memory creation for {results.Count} results");
-                _onSearchComplete?.Invoke(results); // Ensure this runs
+                _onSearchComplete?.Invoke(results);
             }
 
             return results;
@@ -77,7 +75,7 @@ namespace Gemini
             if (_searchResultsCache.TryGetValue(searchTerms, out var cachedUrls))
             {
                 _logger.Log($"Using cached search results for '{searchTerms}', URLs: {string.Join(", ", cachedUrls)}");
-                return cachedUrls; // Simplified: no pagination
+                return cachedUrls;
             }
 
             var newUrls = await SearchGoogle(searchTerms);
@@ -127,7 +125,7 @@ namespace Gemini
             }
         }
 
-        private async Task<(string, float[])[]> ScrapeUrls(List<string> urls)
+        private async Task<(string content, float[] embedding)[]> ScrapeUrls(List<string> urls)
         {
             var results = await Task.WhenAll(urls.Select(async url =>
             {
@@ -181,10 +179,9 @@ namespace Gemini
             return results;
         }
 
-
-        private async Task<List<(string content, string url)>> ProcessScrapedData((string, float[])[] scrapedData, string searchTerms, List<string> urls)
+        private async Task<List<(string content, string url)>> ProcessScrapedData((string content, float[] embedding)[] scrapedData, string searchTerms, List<string> urls)
         {
-            var validData = scrapedData.Select((data, idx) => (content: data.Item1, embedding: data.Item2, url: urls[idx]))
+            var validData = scrapedData.Select((data, idx) => (content: data.content, embedding: data.embedding, url: urls[idx]))
                                        .Where(d => !string.IsNullOrEmpty(d.content) && d.embedding.Length == 768) // Assuming 768 dimensions
                                        .ToList();
             var docs = validData.Select(d => d.content).ToList();
@@ -205,7 +202,6 @@ namespace Gemini
             }
 
             var scores = embeddings.Select(e => CosineSimilarity(e, queryEmbedding)).ToList();
-            // Rest of the function remains unchanged...
 
             var allResults = docs.Zip(validUrls, (d, u) => (content: d, url: u))
                                  .Zip(scores, (r, s) => $"URL: {r.url}, Score: {s:F3}");
@@ -225,6 +221,7 @@ namespace Gemini
 
             return filteredResults;
         }
+
         private static float CosineSimilarity(float[] a, float[] b)
         {
             int length = Math.Min(a.Length, b.Length);

@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Linq;
 using System.Threading.Tasks;
 
 namespace Gemini
@@ -60,14 +59,15 @@ namespace Gemini
             {
                 if (string.IsNullOrEmpty(content)) throw new ArgumentNullException(nameof(content));
 
-                var summary = await SummaryFunctions.GenerateSummary(_geminiClient, content);
-                if (string.IsNullOrEmpty(summary))
+                // Generate embedding for the content
+                float[] embedding = await _geminiClient.Embed(content);
+                if (embedding.Length != 768) // Adjust dimension as per GeminiClient
                 {
-                    summary = content.Length > 100 ? content.Substring(0, 100) + "..." : content;
-                    _logger.Log("Failed to generate summary, using truncated content as summary");
+                    _logger.Log($"Embedding dimension mismatch: expected 768, got {embedding.Length}");
+                    throw new InvalidOperationException("Failed to generate valid embedding for content");
                 }
 
-                var id = _memoryStore.StoreMemory(summary, content, url);
+                var id = _memoryStore.StoreMemory(content, embedding, url);
                 _logger.Log($"Stored memory with ID: {id}, URL: {url}");
                 return id;
             }
@@ -78,17 +78,10 @@ namespace Gemini
             }
         }
 
-        public List<(long id, string summary, float score, DateTime createdAt)> SearchMemorySummaries(string query, int maxResults = 20)
+        public List<(long id, string content, float score, DateTime createdAt)> SearchMemory(string query, int maxResults = 3)
         {
             if (_disposed) throw new ObjectDisposedException(nameof(MemoryManager));
-            // Call SearchSummaries directly, it already handles empty queries by returning recent summaries
-            return _memoryStore.SearchSummaries(query, maxResults);
-        }
-
-        public List<string> FetchMemoryContent(List<long> ids)
-        {
-            if (_disposed) throw new ObjectDisposedException(nameof(MemoryManager));
-            return _memoryStore.FetchFullContent(ids);
+            return _memoryStore.SearchMemory(query, _geminiClient, maxResults);
         }
 
         public static async Task CreateMemoryFromSearchResults(Logger logger, MemoryManager memoryManager, List<(string content, string url)> results)
@@ -108,6 +101,7 @@ namespace Gemini
                 logger.Log($"Error creating memory from search results: {ex.Message}");
             }
         }
+
         public void DeleteMemories(List<long> ids)
         {
             if (ids == null || ids.Count == 0)

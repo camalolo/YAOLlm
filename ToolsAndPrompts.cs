@@ -15,37 +15,23 @@ namespace Gemini
                     {
                         new
                         {
-                            name = "search_memory_summaries",
-                            description = "Searches summaries of locally stored memories. Use first to avoid loading full content.",
+                            name = "search_memory",
+                            description = "Searches information in the memories.",
                             parameters = new
                             {
                                 type = "object",
-                                properties = new { query = new { type = "string", description = "Query to search summaries." } },
-                                required = new[] { "query" }
-                            }
-                        },
-                        new
-                        {
-                            name = "search_memory_content",
-                            description = "Fetches full content of memories by IDs after searching summaries.",
-                            parameters = new
-                            {
-                                type = "object",
-                                properties = new
-                                {
-                                    ids = new { type = "array", items = new { type = "integer" }, description = "List of memory IDs to fetch content for." },
-                                },
-                                required = new[] { "ids" }
+                                properties = new { search_terms = new { type = "string", description = "The search terms to use." } },
+                                required = new[] { "search_terms" }
                             }
                         },
                         new
                         {
                             name = "search_google",
-                            description = "Searches information on google search and returns fresh live online results. Use it if you have no memories that can help.",
+                            description = "Searches information on google search and returns fresh live online results.",
                             parameters = new
                             {
                                 type = "object",
-                                properties = new { search_terms = new { type = "string", description = "The search query to use." } },
+                                properties = new { search_terms = new { type = "string", description = "The search terms to use." } },
                                 required = new[] { "search_terms" }
                             }
                         },

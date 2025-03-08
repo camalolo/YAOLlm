@@ -3,7 +3,6 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Text.RegularExpressions;
 
 namespace Gemini
 {
@@ -26,38 +25,22 @@ namespace Gemini
         private void InitializeDatabase()
         {
             using var command = _connection.CreateCommand();
-
-            // Updated table with url column
             command.CommandText = @"
-                CREATE TABLE IF NOT EXISTS memory_summaries (
+                CREATE TABLE IF NOT EXISTS memory_content (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    summary TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    embedding BLOB NOT NULL, -- Store embeddings as binary data
                     url TEXT,
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
                 )";
             command.ExecuteNonQuery();
-
-            command.CommandText = @"
-                CREATE VIRTUAL TABLE IF NOT EXISTS memory_summaries_fts USING fts5(
-                    summary,
-                    tokenize = 'unicode61'
-                )";
-            command.ExecuteNonQuery();
-
-            command.CommandText = @"
-                CREATE TABLE IF NOT EXISTS memory_content (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    content TEXT NOT NULL
-                )";
-            command.ExecuteNonQuery();
-
         }
 
-        public long StoreMemory(string summary, string content, string? url = null)
+        public long StoreMemory(string content, float[] embedding, string? url = null)
         {
             if (_disposed) throw new ObjectDisposedException(nameof(SQLiteMemoryStore));
-            if (string.IsNullOrEmpty(summary)) throw new ArgumentNullException(nameof(summary));
             if (string.IsNullOrEmpty(content)) throw new ArgumentNullException(nameof(content));
+            if (embedding == null || embedding.Length == 0) throw new ArgumentNullException(nameof(embedding));
 
             using var transaction = _connection.BeginTransaction();
             try
@@ -66,39 +49,30 @@ namespace Gemini
                 if (!string.IsNullOrEmpty(url))
                 {
                     using var checkCmd = _connection.CreateCommand();
-                    checkCmd.CommandText = "SELECT id FROM memory_summaries WHERE url = $url";
+                    checkCmd.CommandText = "SELECT id FROM memory_content WHERE url = $url";
                     checkCmd.Parameters.AddWithValue("$url", url);
                     var existingId = checkCmd.ExecuteScalar();
                     if (existingId != null)
                     {
                         _logger.Log($"Memory with URL '{url}' already exists with ID: {existingId}");
                         transaction.Rollback();
-                        return Convert.ToInt64(existingId); // Return existing ID
+                        return Convert.ToInt64(existingId);
                     }
                 }
 
-                // Insert into memory_summaries with URL
-                using var summaryCmd = _connection.CreateCommand();
-                summaryCmd.CommandText = "INSERT INTO memory_summaries (summary, url) VALUES ($summary, $url)";
-                summaryCmd.Parameters.AddWithValue("$summary", summary);
-                summaryCmd.Parameters.AddWithValue("$url", url != null ? (object)url : DBNull.Value);
-                summaryCmd.ExecuteNonQuery();
+                // Convert embedding to byte array
+                byte[] embeddingBytes = embedding.SelectMany(BitConverter.GetBytes).ToArray();
+
+                using var cmd = _connection.CreateCommand();
+                cmd.CommandText = "INSERT INTO memory_content (content, embedding, url) VALUES ($content, $embedding, $url)";
+                cmd.Parameters.AddWithValue("$content", content);
+                cmd.Parameters.AddWithValue("$embedding", embeddingBytes);
+                cmd.Parameters.AddWithValue("$url", url != null ? (object)url : DBNull.Value);
+                cmd.ExecuteNonQuery();
 
                 using var idCmd = _connection.CreateCommand();
                 idCmd.CommandText = "SELECT last_insert_rowid()";
                 long id = Convert.ToInt64(idCmd.ExecuteScalar() ?? throw new InvalidOperationException("Failed to retrieve last inserted row ID"));
-
-                using var contentCmd = _connection.CreateCommand();
-                contentCmd.CommandText = "INSERT INTO memory_content (id, content) VALUES ($id, $content)";
-                contentCmd.Parameters.AddWithValue("$id", id);
-                contentCmd.Parameters.AddWithValue("$content", content);
-                contentCmd.ExecuteNonQuery();
-
-                using var ftsCmd = _connection.CreateCommand();
-                ftsCmd.CommandText = "INSERT INTO memory_summaries_fts (rowid, summary) VALUES ($id, $summary)";
-                ftsCmd.Parameters.AddWithValue("$id", id);
-                ftsCmd.Parameters.AddWithValue("$summary", summary);
-                ftsCmd.ExecuteNonQuery();
 
                 transaction.Commit();
                 _logger.Log($"Stored new memory with ID: {id}, URL: {url}");
@@ -112,142 +86,53 @@ namespace Gemini
             }
         }
 
-        public List<(long id, string summary, float score, DateTime createdAt)> SearchSummaries(string query, int maxResults = 20)
+        public List<(long id, string content, float score, DateTime createdAt)> SearchMemory(string query, GeminiClient geminiClient, int maxResults = 3)
         {
-            var results = new List<(long id, string summary, float score, DateTime createdAt)>();
+            if (_disposed) throw new ObjectDisposedException(nameof(SQLiteMemoryStore));
+            if (string.IsNullOrEmpty(query)) throw new ArgumentNullException(nameof(query));
+            if (geminiClient == null) throw new ArgumentNullException(nameof(geminiClient));
 
+            var results = new List<(long id, string content, float score, DateTime createdAt)>();
             try
             {
-                _logger.Log($"SearchSummaries: Executing query '{query}' with maxResults={maxResults}");
+                _logger.Log($"Searching memory for query: '{query}'");
 
-                if (string.IsNullOrWhiteSpace(query))
+                // Generate query embedding
+                float[] queryEmbedding = geminiClient.Embed(query).Result; // Assuming Embed is async
+                if (queryEmbedding.Length != 768) // Adjust dimension as per your GeminiClient
                 {
-                    _logger.Log("SearchSummaries: Query is empty, returning most recent summaries");
-                    using var emptyQueryCommand = _connection.CreateCommand();
-                    emptyQueryCommand.CommandText = @"
-                SELECT id, summary, 1.0 AS rank, created_at
-                FROM memory_summaries
-                ORDER BY created_at DESC
-                LIMIT $maxResults";
-                    emptyQueryCommand.Parameters.AddWithValue("$maxResults", maxResults);
-
-                    using var emptyQueryReader = emptyQueryCommand.ExecuteReader();
-                    while (emptyQueryReader.Read())
-                    {
-                        results.Add((
-                            emptyQueryReader.GetInt64(0),
-                            emptyQueryReader.GetString(1),
-                            1.0f,
-                            emptyQueryReader.GetDateTime(3)
-                        ));
-                    }
-                    _logger.Log($"SearchSummaries: Returning {results.Count} most recent summaries");
+                    _logger.Log($"Query embedding dimension mismatch: expected 768, got {queryEmbedding.Length}");
                     return results;
                 }
 
-                string sanitizedQuery = Regex.Replace(query.ToLower(), @"[:\?\!]", " ");
-                string[] queryWords = sanitizedQuery.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-                for (int i = 0; i < queryWords.Length; i++)
-                {
-                    queryWords[i] = queryWords[i].Replace("?", "");
-                }
-                string matchQuery = string.Join(" OR ", queryWords);
-
-                using var searchCommand = _connection.CreateCommand();
-                searchCommand.CommandText = @"
-            SELECT ms.id, ms.summary, bm25(memory_summaries_fts) AS rank, ms.created_at
-            FROM memory_summaries ms
-            JOIN memory_summaries_fts msfts ON ms.id = msfts.rowid
-            WHERE msfts.summary MATCH $matchQuery
-            ORDER BY rank ASC, created_at DESC
-            LIMIT $maxResults";
-                searchCommand.Parameters.AddWithValue("$matchQuery", matchQuery);
-                searchCommand.Parameters.AddWithValue("$maxResults", maxResults);
-
-                using var searchReader = searchCommand.ExecuteReader();
-                while (searchReader.Read())
-                {
-                    float bm25Score = (float)searchReader.GetDouble(2);
-                    float normalizedScore = -bm25Score / 10.0f;
-                    results.Add((
-                        searchReader.GetInt64(0),
-                        searchReader.GetString(1),
-                        normalizedScore > 1.0f ? 1.0f : normalizedScore,
-                        searchReader.GetDateTime(3)
-                    ));
-                }
-
-                if (results.Count < maxResults)
-                {
-                    _logger.Log($"SearchSummaries: Found {results.Count} matches, filling with recent summaries");
-                    int remaining = maxResults - results.Count;
-                    var existingIds = results.Select(r => r.id).ToList();
-
-                    using var fallbackCommand = _connection.CreateCommand();
-                    fallbackCommand.CommandText = @"
-                SELECT id, summary, 0.0 AS rank, created_at
-                FROM memory_summaries
-                WHERE id NOT IN (" + (existingIds.Any() ? string.Join(",", existingIds) : "0") + @")
-                ORDER BY created_at DESC
-                LIMIT $remaining";
-                    fallbackCommand.Parameters.AddWithValue("$remaining", remaining);
-
-                    using var fallbackReader = fallbackCommand.ExecuteReader();
-                    while (fallbackReader.Read())
-                    {
-                        results.Add((
-                            fallbackReader.GetInt64(0),
-                            fallbackReader.GetString(1),
-                            0.0f,
-                            fallbackReader.GetDateTime(3)
-                        ));
-                    }
-                }
-
-                _logger.Log($"SearchSummaries: Returning {results.Count} summaries for query '{query}'");
-            }
-            catch (Exception ex)
-            {
-                _logger.Log($"Error in SearchSummaries: {ex.Message}");
-            }
-
-            return results;
-        }
-
-        public List<string> FetchFullContent(List<long> ids)
-        {
-            var results = new List<string>();
-            if (ids.Count == 0)
-            {
-                _logger.Log("FetchFullContent: No IDs provided, returning empty results");
-                return results;
-            }
-
-            try
-            {
-                _logger.Log($"FetchFullContent: Fetching for IDs [{string.Join(", ", ids)}]");
-
+                // Fetch all memories
                 using var command = _connection.CreateCommand();
-                var idList = string.Join(",", ids);
-
-                // Note: Use the FTS table for content ranking.
-                command.CommandText = @"
-                    SELECT mc.content
-                    FROM memory_content mc
-                    WHERE mc.rowid IN (" + idList + @");";
-
+                command.CommandText = "SELECT id, content, embedding, created_at FROM memory_content ORDER BY created_at DESC";
 
                 using var reader = command.ExecuteReader();
                 while (reader.Read())
                 {
-                    results.Add(reader.GetString(0));
+                    long id = reader.GetInt64(0);
+                    string content = reader.GetString(1);
+                    byte[] embeddingBytes = (byte[])reader.GetValue(2);
+                    DateTime createdAt = reader.GetDateTime(3);
+
+                    // Convert byte array back to float array
+                    float[] embedding = new float[embeddingBytes.Length / sizeof(float)];
+                    Buffer.BlockCopy(embeddingBytes, 0, embedding, 0, embeddingBytes.Length);
+
+                    // Compute cosine similarity
+                    float score = CosineSimilarity(embedding, queryEmbedding);
+                    results.Add((id, content, score, createdAt));
                 }
 
-                _logger.Log($"FetchFullContent: Found {results.Count} full content matches");
+                // Sort by score and take top maxResults
+                results = results.OrderByDescending(r => r.score).Take(maxResults).ToList();
+                _logger.Log($"Found {results.Count} top matches for query '{query}'");
             }
             catch (Exception ex)
             {
-                _logger.Log($"Error in FetchFullContent: {ex.Message}");
+                _logger.Log($"Error in SearchMemory: {ex.Message}");
             }
             return results;
         }
@@ -264,49 +149,40 @@ namespace Gemini
             using var transaction = _connection.BeginTransaction();
             try
             {
-                // Prepare a parameterized IN clause for the IDs
                 string idPlaceholder = string.Join(",", ids.Select((_, i) => $"${i}"));
-                int rowsAffected = 0;
-
-                // Delete from memory_summaries
-                using (var cmd = _connection.CreateCommand())
-                {
-                    cmd.Transaction = transaction;
-                    cmd.CommandText = $"DELETE FROM memory_summaries WHERE id IN ({idPlaceholder})";
-                    for (int i = 0; i < ids.Count; i++)
-                        cmd.Parameters.AddWithValue($"${i}", ids[i]);
-                    rowsAffected += cmd.ExecuteNonQuery();
-                }
-
-                // Delete from memory_content
-                using (var cmd = _connection.CreateCommand())
-                {
-                    cmd.Transaction = transaction;
-                    cmd.CommandText = $"DELETE FROM memory_content WHERE id IN ({idPlaceholder})";
-                    for (int i = 0; i < ids.Count; i++)
-                        cmd.Parameters.AddWithValue($"${i}", ids[i]);
-                    rowsAffected += cmd.ExecuteNonQuery();
-                }
-
-                // Delete from memory_summaries_fts
-                using (var cmd = _connection.CreateCommand())
-                {
-                    cmd.Transaction = transaction;
-                    cmd.CommandText = $"DELETE FROM memory_summaries_fts WHERE rowid IN ({idPlaceholder})";
-                    for (int i = 0; i < ids.Count; i++)
-                        cmd.Parameters.AddWithValue($"${i}", ids[i]);
-                    rowsAffected += cmd.ExecuteNonQuery();
-                }
+                using var cmd = _connection.CreateCommand();
+                cmd.Transaction = transaction;
+                cmd.CommandText = $"DELETE FROM memory_content WHERE id IN ({idPlaceholder})";
+                for (int i = 0; i < ids.Count; i++)
+                    cmd.Parameters.AddWithValue($"${i}", ids[i]);
+                int rowsAffected = cmd.ExecuteNonQuery();
 
                 transaction.Commit();
-                _logger.Log($"Deleted {rowsAffected / 4} memories with IDs: {string.Join(", ", ids)} (total rows affected: {rowsAffected})");
+                _logger.Log($"Deleted {rowsAffected} memories with IDs: {string.Join(", ", ids)}");
             }
             catch (Exception ex)
             {
                 transaction.Rollback();
                 _logger.Log($"Error deleting memories with IDs [{string.Join(", ", ids)}]: {ex.Message}");
-                throw; // Rethrow to let the caller handle it
+                throw;
             }
+        }
+
+        private static float CosineSimilarity(float[] a, float[] b)
+        {
+            int length = Math.Min(a.Length, b.Length);
+            if (length == 0) return 0;
+
+            float dot = 0, magA = 0, magB = 0;
+            for (int i = 0; i < length; i++)
+            {
+                dot += a[i] * b[i];
+                magA += a[i] * a[i];
+                magB += b[i] * b[i];
+            }
+            magA = (float)Math.Sqrt(magA);
+            magB = (float)Math.Sqrt(magB);
+            return magA * magB == 0 ? 0 : dot / (magA * magB);
         }
 
         public void Dispose()
