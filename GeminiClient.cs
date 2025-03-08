@@ -17,12 +17,11 @@ namespace Gemini
         private string _apiBaseUrl => "https://generativelanguage.googleapis.com/v1beta/models/";
         private string _embedModel = "text-embedding-004";
         private string _model = "gemini-2.0-flash";
-        private List<Dictionary<string, string>> _conversationHistory;
+        private List<Dictionary<string, string>> _conversationHistory; // Already private
         private readonly List<object> _tools;
         private string _originalUserQuery;
-        private readonly object _historyLock = new object(); // Added for thread safety
+        private readonly object _historyLock = new object();
 
-        // Public getters for private fields
         public Logger Logger => _logger;
         public Search Search => _search;
         public MemoryManager MemoryManager => _memoryManager;
@@ -30,14 +29,21 @@ namespace Gemini
         {
             get
             {
-                lock (_historyLock) // Thread-safe read
+                lock (_historyLock)
                 {
-                    return new List<Dictionary<string, string>>(_conversationHistory); // Return a copy
+                    return new List<Dictionary<string, string>>(_conversationHistory);
+                }
+            }
+            set // Add setter to ensure controlled updates
+            {
+                lock (_historyLock)
+                {
+                    _conversationHistory = new List<Dictionary<string, string>>(value);
                 }
             }
         }
-        public List<object> Tools => _tools.ToList(); // Return a copy to prevent external modification
-        public string OriginalUserQuery { get => _originalUserQuery; set => _originalUserQuery = value; } // Removed redundant Internal version
+        public List<object> Tools => _tools.ToList();
+        public string OriginalUserQuery { get => _originalUserQuery; set => _originalUserQuery = value; }
 
         public Action<string, string> UpdateChat { get; set; }
         public Action UpdateHistoryCounter { get; set; }
@@ -64,7 +70,9 @@ namespace Gemini
                 throw new ArgumentException("Failed to load environment variables from .gemini", ex);
             }
 
-            _conversationHistory = new List<Dictionary<string, string>> { new() { { "role", "model" }, { "content", ToolsAndPrompts.GetInitialPrompt() } } };
+            _conversationHistory = new List<Dictionary<string, string>> {
+                new() { { "role", "model" }, { "content", ToolsAndPrompts.GetInitialPrompt() } }
+            };
             _tools = ToolsAndPrompts.DefineTools();
             _originalUserQuery = string.Empty;
             UpdateChat = (_, __) => { };
@@ -81,7 +89,7 @@ namespace Gemini
 
         public int GetConversationHistoryLength()
         {
-            lock (_historyLock) // Thread-safe read
+            lock (_historyLock)
             {
                 return _conversationHistory.Sum(turn => turn["content"].Length);
             }
@@ -89,9 +97,11 @@ namespace Gemini
 
         public void ClearConversationHistory()
         {
-            lock (_historyLock) // Thread-safe write
+            lock (_historyLock)
             {
-                _conversationHistory = new List<Dictionary<string, string>> { new() { { "role", "model" }, { "content", ToolsAndPrompts.GetInitialPrompt() } } };
+                _conversationHistory = new List<Dictionary<string, string>> {
+                    new() { { "role", "model" }, { "content", ToolsAndPrompts.GetInitialPrompt() } }
+                };
                 UpdateHistoryCounter();
             }
         }
@@ -129,7 +139,7 @@ namespace Gemini
             }
         }
 
-        private async Task CreateMemoryFromSearchResults(List<(string content, string url)> results) // Changed to async Task
+        private async Task CreateMemoryFromSearchResults(List<(string content, string url)> results)
         {
             await MemoryManager.CreateMemoryFromSearchResults(_logger, _memoryManager, results);
         }

@@ -56,11 +56,10 @@ namespace Gemini
 
         public static string GetInitialPrompt() =>
             $"Current Date: {DateTime.Now.ToString("yyyy-MM-dd")}\n" + // Updated to ToString()
-            "You have access to tools to search local memory summaries, fetch memory content, and perform Google searches.\n" +
-            "**Prioritize Summaries:** Always start by using 'search_memory_summaries' to quickly identify relevant memories.\n" +
-            "**Analyze and Extract:** Review memory summaries carefully to determine if crucial details are present. If essential details are missing, use 'search_memory_content' to fetch additional content.\n" +
+            "You have access to tools to search and delete local memory content, and perform Google searches.\n" +
+            "**Analyze and Extract:** When trying to respond to user queries, if your internal knowledge isn't enough, use 'search_memory' to find relevant information.\n" +
             "**Adaptive Search:** If no relevant memories are found or details are insufficient, immediately use 'search_google' with refined search terms derived from the original query.\n" +
-            "**Efficiency vs Completeness:** Balance token usage and response accuracy. Prefer concise summary searches, but do not hesitate to resort to more detailed searches when necessary.\n" +
+            "**Efficiency vs Completeness:** Balance token usage and response accuracy. Prefer memories for information, but do not hesitate to resort online searches when necessary.\n" +
             "If a memory search yields no results, refine the query by considering alternative phrasings, synonyms, and contextual clues before defaulting to online search.\n" +
             "NEVER ask for user confirmation to use tools. Decide autonomously based on context.";
 

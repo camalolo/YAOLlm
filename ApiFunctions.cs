@@ -11,18 +11,14 @@ namespace Gemini
 {
     public static class ApiFunctions
     {
-        // Rate limit constants based on Google Gemini free tier
-        private const int EmbeddingRpmLimit = 1500; // text-embedding-004: 1,500 RPM
-        private const int GenerationRpmLimit = 15;  // gemini-2.0-flash: 15 RPM
+        private const int EmbeddingRpmLimit = 1500;
+        private const int GenerationRpmLimit = 15;
         private static readonly SemaphoreSlim RateLimiterEmbedding = new SemaphoreSlim(EmbeddingRpmLimit, EmbeddingRpmLimit);
         private static readonly SemaphoreSlim RateLimiterGeneration = new SemaphoreSlim(GenerationRpmLimit, GenerationRpmLimit);
-        private static readonly TimeSpan RateLimitReset = TimeSpan.FromSeconds(60); // 1 minute
-        private const int ExpectedEmbeddingDimension = 768; // Added constant for consistency
+        private static readonly TimeSpan RateLimitReset = TimeSpan.FromSeconds(60);
+        private const int ExpectedEmbeddingDimension = 768;
 
-        private static async Task<(string?, RestResponse)> SendRequestToLLM(
-            GeminiClient client,
-            object payload,
-            bool embed = false)
+        private static async Task<(string?, RestResponse)> SendRequestToLLM(GeminiClient client, object payload, bool embed = false)
         {
             var url = embed ? client.getEmbedUrl() : client.getUrl();
             var clientRest = new RestClient(url);
@@ -32,6 +28,9 @@ namespace Gemini
             var finalPayload = embed
                 ? new { content = new { parts = new[] { new { text = payload } } } }
                 : payload;
+
+            var jsonPayload = JsonSerializer.Serialize(finalPayload);
+            client.Logger.Log($"Payload: {jsonPayload}");
 
             request.AddJsonBody(finalPayload);
 
@@ -50,7 +49,7 @@ namespace Gemini
                     {
                         try
                         {
-                            if (retryCount == 0 && embed) await Task.Delay(100); // Initial delay for embedding
+                            if (retryCount == 0 && embed) await Task.Delay(100);
                             var response = await clientRest.ExecuteAsync(request);
                             if (response.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
                             {
@@ -61,7 +60,30 @@ namespace Gemini
                                 continue;
                             }
                             response.ThrowIfError();
-                            client.Logger.Log($"Raw LLM response: {response.Content}");
+                            // Modify the response log if it contains an embedding section
+                            string modifiedResponse = response.Content ?? "";
+                            try
+                            {
+                                // Deserialize the raw response into a dictionary
+                                var dict = JsonSerializer.Deserialize<Dictionary<string, object>>(modifiedResponse);
+                                if (dict != null && dict.TryGetValue("embedding", out var embObj))
+                                {
+                                    if (embObj is JsonElement embElem &&
+                                        embElem.TryGetProperty("values", out var valuesElement) &&
+                                        valuesElement.ValueKind == JsonValueKind.Array)
+                                    {
+                                        int count = valuesElement.GetArrayLength();
+                                        // Replace the embedding section with a summary of the count
+                                        dict["embedding"] = $"{count} values not shown in the log";
+                                        modifiedResponse = JsonSerializer.Serialize(dict, new JsonSerializerOptions { WriteIndented = true });
+                                    }
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                client.Logger.Log($"Error processing embedding section: {ex.Message}");
+                            }
+                            client.Logger.Log($"Raw LLM response: {modifiedResponse}");
                             return (response.Content, response);
                         }
                         catch (Exception ex)
@@ -73,29 +95,30 @@ namespace Gemini
                 }
                 finally
                 {
-                    rateLimiter.Release(); // Ensure release in all cases
+                    rateLimiter.Release();
                 }
             }
             finally
             {
                 client.UpdateStatus(Status.Idle);
             }
-            return (null, new RestResponse()); // Unreachable, but required for compilation
+            return (null, new RestResponse());
         }
 
         public static async Task<string?> SendToLLM(GeminiClient client, string prompt, string? imageBase64 = null, bool useHistory = true)
         {
             var userMessage = new Dictionary<string, string> { { "role", "user" } };
-            if (!string.IsNullOrEmpty(prompt)) userMessage["content"] = prompt; // Ensure content is present
+            if (!string.IsNullOrEmpty(prompt)) userMessage["content"] = prompt;
             if (imageBase64 != null) userMessage["image"] = imageBase64;
+
             var messages = useHistory ? new List<Dictionary<string, string>>(client.ConversationHistory) { userMessage }
                                       : new List<Dictionary<string, string>> { userMessage };
 
-            if (client.ConversationHistory.Count > GeminiClient.MaxHistoryLength * 2)
+            // Trim history if needed, but preserve recent context
+            if (useHistory && messages.Count > GeminiClient.MaxHistoryLength * 4)
             {
-                var trimmedHistory = client.ConversationHistory.Skip(client.ConversationHistory.Count - GeminiClient.MaxHistoryLength * 2).ToList();
-                client.ConversationHistory.Clear();
-                client.ConversationHistory.AddRange(trimmedHistory);
+                client.Logger.Log($"Trimming history from {messages.Count} to {GeminiClient.MaxHistoryLength * 2} entries");
+                messages = messages.Skip(messages.Count - GeminiClient.MaxHistoryLength * 2).ToList();
             }
 
             var payload = new
@@ -110,16 +133,28 @@ namespace Gemini
                 tools = client.Tools
             };
 
+            client.Logger.Log($"Sending payload to LLM (prompt length: {prompt.Length} chars, history entries: {messages.Count})");
             var (content, _) = await SendRequestToLLM(client, payload);
-            if (content == null) return null;
+            if (content == null)
+            {
+                client.Logger.Log("LLM returned null content");
+                return null;
+            }
 
             var data = JsonSerializer.Deserialize<JsonElement>(content);
             var llmResponse = ExtractLLMResponse(client.Logger, data);
             var processedResponse = await HandleLLMResponse(client, llmResponse);
-            if (!string.IsNullOrEmpty(processedResponse))
+
+            if (!string.IsNullOrEmpty(processedResponse) && useHistory)
             {
-                client.ConversationHistory.Add(userMessage);
-                client.ConversationHistory.Add(new Dictionary<string, string> { { "role", "model" }, { "content", processedResponse } });
+                // Update history only once, avoiding duplicates
+                var updatedHistory = new List<Dictionary<string, string>>(messages)
+        {
+            userMessage,
+            new Dictionary<string, string> { { "role", "model" }, { "content", processedResponse } }
+        };
+                client.ConversationHistory = updatedHistory; // Use setter
+                client.Logger.Log($"History updated, new length: {client.ConversationHistory.Count}");
                 client.UpdateHistoryCounter();
             }
             return processedResponse;
@@ -162,83 +197,123 @@ namespace Gemini
                 foreach (var func in llmResponse.functionCalls)
                 {
                     var funcCall = ExtractFunctionCall(client.Logger, func);
-                    if (funcCall.HasValue)
+                    if (!funcCall.HasValue) continue;
+
+                    if (funcCall.Value.name == "search_google")
                     {
-                        if (funcCall.Value.name == "search_google")
-                        {
-                            var searchTerms = funcCall.Value.args["search_terms"].ToString() ?? string.Empty;
-                            client.Logger.Log($"Initiating google search for terms: {searchTerms}");
+                        var searchTerms = funcCall.Value.args["search_terms"].ToString() ?? string.Empty;
+                        client.Logger.Log($"Initiating google search for terms: {searchTerms}");
 
-                            if (string.IsNullOrEmpty(searchTerms))
+                        if (string.IsNullOrEmpty(searchTerms))
+                        {
+                            client.Logger.Log("No valid query provided for google search.");
+                            return "No query provided to search google. Please provide a query or refine your request.";
+                        }
+
+                        var contentUrlPairs = await client.Search.PerformSearch(searchTerms, client.OriginalUserQuery, client.UpdateChat, client.UpdateStatus);
+                        client.UpdateStatus(Status.Idle);
+
+                        if (contentUrlPairs.Any())
+                        {
+                            client.Logger.Log($"Search returned {contentUrlPairs.Count} results:");
+                            foreach (var (content, url) in contentUrlPairs)
                             {
-                                client.Logger.Log("No valid query provided for google search.");
-                                var prompt = "No query provided to search google. Please provide a query or refine your request.";
-                                return await SendToLLM(client, prompt) ?? "No relevant information found in google.";
+                                client.Logger.Log($"URL: {url}, Content length: {content.Length} chars, Preview: {content.Substring(0, Math.Min(100, content.Length))}...");
                             }
 
-                            var contentUrlPairs = await client.Search.PerformSearch(searchTerms, client.OriginalUserQuery, client.UpdateChat, client.UpdateStatus);
-                            client.UpdateStatus(Status.Idle);
+                            var prompt = ToolsAndPrompts.GetProcessedContentPrompt(searchTerms, client.OriginalUserQuery, contentUrlPairs);
+                            client.Logger.Log($"Prompt sent to LLM (length: {prompt.Length} chars): {prompt.Substring(0, Math.Min(500, prompt.Length))}...");
 
-                            if (contentUrlPairs.Any())
+                            // Recursive call with history disabled to avoid nesting issues
+                            var llmResponseText = await SendToLLM(client, prompt, null, false);
+                            if (!string.IsNullOrEmpty(llmResponseText))
                             {
-                                var prompt = ToolsAndPrompts.GetProcessedContentPrompt(searchTerms, client.OriginalUserQuery, contentUrlPairs);
-                                return await SendToLLM(client, prompt) ?? "The LLM did not reply.";
+                                client.Logger.Log($"LLM response (length: {llmResponseText.Length} chars): {llmResponseText.Substring(0, Math.Min(500, llmResponseText.Length))}...");
+
+                                // Append search summary as a system message
+                                var searchSummary = $"System: Search results for '{searchTerms}' have been stored. Found {contentUrlPairs.Count} items:\n" +
+                                                    string.Join("\n", contentUrlPairs.Select(p => $"- {p.url} (Content preview: {p.content.Substring(0, Math.Min(100, p.content.Length))}...)"));
+                                var updatedHistory = new List<Dictionary<string, string>>(client.ConversationHistory)
+                        {
+                            new Dictionary<string, string> { { "role", "system" }, { "content", searchSummary } }
+                        };
+                                client.ConversationHistory = updatedHistory; // Use setter
+                                client.UpdateHistoryCounter();
+
+                                return llmResponseText;
                             }
                             else
                             {
-                                client.Logger.Log($"No relevant results for '{searchTerms}', returning fallback response");
-                                return $"No relevant information found online for '{searchTerms}'. Please refine your query or try a different approach.";
+                                client.Logger.Log("LLM returned null or empty response, using fallback");
+                                return $"Search for '{searchTerms}' yielded {contentUrlPairs.Count} results, but no response was generated.";
                             }
                         }
-                        else if (funcCall.Value.name == "search_memory")
+                        else
                         {
-                            var searchTerms = funcCall.Value.args["search_terms"].ToString() ?? string.Empty;
-                            client.Logger.Log($"Initiating memory search for terms: {searchTerms}");
-
-                            if (string.IsNullOrEmpty(searchTerms))
-                            {
-                                client.Logger.Log("No valid query provided for memory search.");
-                                var prompt = "No query provided to search memory content. Please provide a query or refine your request.";
-                                return await SendToLLM(client, prompt) ?? "No relevant information found in memory content.";
-                            }
-
-                            client.Logger.Log($"Initiating memory search for query: '{searchTerms}'");
-                            var memories = await client.MemoryManager.SearchMemory(searchTerms);
-
-                            if (memories.Any())
-                            {
-                                var memoryContent = string.Join("\n\n", memories.Select(m => $"Memory (ID: {m.id}, Score: {m.score:F3}):\n{m.content}"));
-                                var prompt = $"Found the following relevant memory content:\n\n{memoryContent}\n\nBased on these memories, please provide a helpful response to the user query: '{client.OriginalUserQuery}'.";
-                                return await SendToLLM(client, prompt) ?? "No relevant information found in memory content.";
-                            }
-                            else
-                            {
-                                client.Logger.Log($"No relevant memories found for query '{searchTerms}'");
-                                var prompt = $"No memories found matching the query '{searchTerms}'. You might try a slightly different query.";
-                                return await SendToLLM(client, prompt) ?? "No relevant information found in memory content.";
-                            }
+                            client.Logger.Log($"No relevant results for '{searchTerms}', returning fallback response");
+                            return $"No relevant information found online for '{searchTerms}'. Please refine your query.";
                         }
-                        else if (funcCall.Value.name == "delete_memories")
+                    }
+                    else if (funcCall.Value.name == "search_memory")
+                    {
+                        var searchTerms = funcCall.Value.args["search_terms"].ToString() ?? string.Empty;
+                        client.Logger.Log($"Initiating memory search for terms: {searchTerms}");
+
+                        if (string.IsNullOrEmpty(searchTerms))
                         {
-                            var idsJson = (JsonElement)funcCall.Value.args["ids"];
-                            var ids = idsJson.EnumerateArray().Select(id => id.GetInt64()).ToList();
-                            client.Logger.Log($"Deleting memories with IDs: [{string.Join(", ", ids)}]");
-                            try
-                            {
-                                client.MemoryManager.DeleteMemories(ids);
-                                var prompt = $"Successfully deleted memories with IDs [{string.Join(", ", ids)}].";
-                                return await SendToLLM(client, prompt) ?? "Couldn't delete memories.";
-                            }
-                            catch (Exception ex)
-                            {
-                                client.UpdateChat($"Failed to delete memories with IDs: {string.Join(", ", ids)}. Error: {ex.Message}\n", "system");
-                                var prompt = $"Failed to delete memories with IDs [{string.Join(", ", ids)}]. Error: {ex.Message}";
-                                return await SendToLLM(client, prompt) ?? "Couldn't delete memories.";
-                            }
+                            client.Logger.Log("No valid query provided for memory search.");
+                            var prompt = "No query provided to search memory content. Please provide a query or refine your request.";
+                            return await SendToLLM(client, prompt) ?? "No relevant information found in memory content.";
+                        }
+
+                        client.Logger.Log($"Initiating memory search for query: '{searchTerms}'");
+                        var memories = await client.MemoryManager.SearchMemory(searchTerms);
+
+                        if (memories.Any())
+                        {
+                            var memoryContent = string.Join("\n\n", memories.Select(m => $"Memory (ID: {m.id}, Score: {m.score:F3}):\n{m.content}"));
+                            var prompt = $"Found the following relevant memory content:\n\n{memoryContent}\n\nBased on these memories, please provide a helpful response to the user query: '{client.OriginalUserQuery}'.";
+
+                            // Append memory search results to history
+                            var memorySummary = $"System: Memory search for '{searchTerms}' returned {memories.Count} results:\n" +
+                                                string.Join("\n", memories.Select(m => $"- ID: {m.id}, Score: {m.score:F3}, Preview: {m.content.Substring(0, Math.Min(100, m.content.Length))}..."));
+                            var updatedHistory = new List<Dictionary<string, string>>(client.ConversationHistory)
+                                {
+                                    new Dictionary<string, string> { { "role", "system" }, { "content", memorySummary } }
+                                };
+                            client.ConversationHistory = updatedHistory; // Use property setter
+                            client.UpdateHistoryCounter();
+
+                            return await SendToLLM(client, prompt) ?? "No relevant information found in memory content.";
+                        }
+                        else
+                        {
+                            client.Logger.Log($"No relevant memories found for query '{searchTerms}'");
+                            var prompt = $"No memories found matching the query '{searchTerms}'. You might try a slightly different query.";
+                            return await SendToLLM(client, prompt) ?? "No relevant information found in memory content.";
+                        }
+                    }
+                    else if (funcCall.Value.name == "delete_memories")
+                    {
+                        var idsJson = (JsonElement)funcCall.Value.args["ids"];
+                        var ids = idsJson.EnumerateArray().Select(id => id.GetInt64()).ToList();
+                        client.Logger.Log($"Deleting memories with IDs: [{string.Join(", ", ids)}]");
+                        try
+                        {
+                            client.MemoryManager.DeleteMemories(ids);
+                            var prompt = $"Successfully deleted memories with IDs [{string.Join(", ", ids)}].";
+                            return await SendToLLM(client, prompt) ?? "Couldn't delete memories.";
+                        }
+                        catch (Exception ex)
+                        {
+                            client.UpdateChat($"Failed to delete memories with IDs: {string.Join(", ", ids)}. Error: {ex.Message}\n", "system");
+                            var prompt = $"Failed to delete memories with IDs [{string.Join(", ", ids)}]. Error: {ex.Message}";
+                            return await SendToLLM(client, prompt) ?? "Couldn't delete memories.";
                         }
                     }
                 }
             }
+            // Default return when no function calls are present
             return llmResponse.message;
         }
 
@@ -268,7 +343,7 @@ namespace Gemini
             catch (Exception ex)
             {
                 logger.Log($"Error extracting function call: {ex.Message}");
-                throw; // Propagate exception instead of silent null
+                throw;
             }
         }
 
