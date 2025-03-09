@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -13,83 +12,73 @@ namespace Gemini
     {
         private const int EmbeddingRpmLimit = 1500;
         private const int GenerationRpmLimit = 15;
-        private static readonly SemaphoreSlim RateLimiterEmbedding = new SemaphoreSlim(EmbeddingRpmLimit, EmbeddingRpmLimit);
-        private static readonly SemaphoreSlim RateLimiterGeneration = new SemaphoreSlim(GenerationRpmLimit, GenerationRpmLimit);
-        private static readonly TimeSpan RateLimitReset = TimeSpan.FromSeconds(60);
         private const int ExpectedEmbeddingDimension = 768;
+        private static readonly SemaphoreSlim EmbeddingRateLimiter = new(EmbeddingRpmLimit, EmbeddingRpmLimit);
+        private static readonly SemaphoreSlim GenerationRateLimiter = new(GenerationRpmLimit, GenerationRpmLimit);
+        private static readonly TimeSpan RateLimitReset = TimeSpan.FromSeconds(60);
 
-        private static async Task<(string?, RestResponse)> SendRequestToLLM(GeminiClient client, object payload, bool embed = false)
+        public static async Task<string?> SendToLLM(GeminiClient client, object payload, string? imageBase64 = null)
         {
-            var url = embed ? client.getEmbedUrl() : client.getUrl();
-            var clientRest = new RestClient(url);
+            var logger = client.Logger;
+            logger.Log($"Preparing LLM request with payload size: {JsonSerializer.Serialize(payload).Length} chars");
+
+            var (content, response) = await SendRequest(client, payload, imageBase64 != null);
+            if (content == null)
+            {
+                logger.Log("LLM request returned null content");
+                return null;
+            }
+
+            var data = JsonSerializer.Deserialize<JsonElement>(content);
+            var (message, functionCalls) = ExtractLLMResponse(logger, data);
+            return await ProcessLLMResponse(client, message, functionCalls);
+        }
+
+        private static async Task<(string?, RestResponse)> SendRequest(GeminiClient client, object payload, bool isImageRequest)
+        {
+            var url = isImageRequest ? client.GetGenerateUrl() : client.GetGenerateUrl();
+            var restClient = new RestClient(url);
             var request = new RestRequest { Method = Method.Post };
             request.AddHeader("Content-Type", "application/json");
 
-            var finalPayload = embed
-                ? new { content = new { parts = new[] { new { text = payload } } } }
-                : payload;
+            var jsonPayload = JsonSerializer.Serialize(payload);
+            request.AddJsonBody(payload);
+            client.Logger.Log($"Sending request to {url} with payload: {jsonPayload.Substring(0, Math.Min(500, jsonPayload.Length))}...");
 
-            var jsonPayload = JsonSerializer.Serialize(finalPayload);
-            client.Logger.Log($"Payload: {jsonPayload}");
-
-            request.AddJsonBody(finalPayload);
-
-            client.Logger.Log($"Sending request to {url}");
             client.UpdateStatus(Status.ReceivingData);
+            var rateLimiter = isImageRequest ? GenerationRateLimiter : GenerationRateLimiter;
 
             const int maxRetries = 3;
-            var rateLimiter = embed ? RateLimiterEmbedding : RateLimiterGeneration;
-
             try
             {
                 await rateLimiter.WaitAsync();
                 try
                 {
-                    for (int retryCount = 0; retryCount <= maxRetries; retryCount++)
+                    for (int retry = 0; retry <= maxRetries; retry++)
                     {
                         try
                         {
-                            if (retryCount == 0 && embed) await Task.Delay(100);
-                            var response = await clientRest.ExecuteAsync(request);
+                            var response = await restClient.ExecuteAsync(request);
                             if (response.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
                             {
-                                if (retryCount == maxRetries) return (null, response);
-                                int retryDelay = (int)Math.Pow(2, retryCount) * 1000;
-                                client.Logger.Log($"429 Too Many Requests. Retrying in {retryDelay / 1000} seconds (attempt {retryCount + 1}/{maxRetries})");
-                                await Task.Delay(retryDelay);
+                                if (retry == maxRetries)
+                                {
+                                    client.Logger.Log("Max retries reached for 429 error");
+                                    return (null, response);
+                                }
+                                int delay = (int)Math.Pow(2, retry) * 1000;
+                                client.Logger.Log($"429 Too Many Requests, retrying in {delay}ms (attempt {retry + 1}/{maxRetries})");
+                                await Task.Delay(delay);
                                 continue;
                             }
                             response.ThrowIfError();
-                            // Modify the response log if it contains an embedding section
-                            string modifiedResponse = response.Content ?? "";
-                            try
-                            {
-                                // Deserialize the raw response into a dictionary
-                                var dict = JsonSerializer.Deserialize<Dictionary<string, object>>(modifiedResponse);
-                                if (dict != null && dict.TryGetValue("embedding", out var embObj))
-                                {
-                                    if (embObj is JsonElement embElem &&
-                                        embElem.TryGetProperty("values", out var valuesElement) &&
-                                        valuesElement.ValueKind == JsonValueKind.Array)
-                                    {
-                                        int count = valuesElement.GetArrayLength();
-                                        // Replace the embedding section with a summary of the count
-                                        dict["embedding"] = $"{count} values not shown in the log";
-                                        modifiedResponse = JsonSerializer.Serialize(dict, new JsonSerializerOptions { WriteIndented = true });
-                                    }
-                                }
-                            }
-                            catch (Exception ex)
-                            {
-                                client.Logger.Log($"Error processing embedding section: {ex.Message}");
-                            }
-                            client.Logger.Log($"Raw LLM response: {modifiedResponse}");
+                            client.Logger.Log($"LLM response received: {response.Content?.Substring(0, Math.Min(500, response.Content?.Length ?? 0))}...");
                             return (response.Content, response);
                         }
                         catch (Exception ex)
                         {
-                            client.Logger.Log($"Error in SendRequestToLLM: {ex.Message}");
-                            return (null, new RestResponse());
+                            client.Logger.Log($"Request failed: {ex.Message}");
+                            throw;
                         }
                     }
                 }
@@ -98,6 +87,11 @@ namespace Gemini
                     rateLimiter.Release();
                 }
             }
+            catch (Exception ex)
+            {
+                client.Logger.Log($"SendRequest error: {ex.Message}");
+                return (null, new RestResponse());
+            }
             finally
             {
                 client.UpdateStatus(Status.Idle);
@@ -105,285 +99,243 @@ namespace Gemini
             return (null, new RestResponse());
         }
 
-        public static async Task<string?> SendToLLM(GeminiClient client, string prompt, string? imageBase64 = null, bool useHistory = true)
-        {
-            var userMessage = new Dictionary<string, string> { { "role", "user" } };
-            if (!string.IsNullOrEmpty(prompt)) userMessage["content"] = prompt;
-            if (imageBase64 != null) userMessage["image"] = imageBase64;
-
-            var messages = useHistory ? new List<Dictionary<string, string>>(client.ConversationHistory) { userMessage }
-                                      : new List<Dictionary<string, string>> { userMessage };
-
-            // Trim history if needed, but preserve recent context
-            if (useHistory && messages.Count > GeminiClient.MaxHistoryLength * 4)
-            {
-                client.Logger.Log($"Trimming history from {messages.Count} to {GeminiClient.MaxHistoryLength * 2} entries");
-                messages = messages.Skip(messages.Count - GeminiClient.MaxHistoryLength * 2).ToList();
-            }
-
-            var payload = new
-            {
-                contents = messages.Select(m =>
-                {
-                    var parts = new List<object>();
-                    if (m.ContainsKey("content")) parts.Add(new { text = m["content"] });
-                    if (m.ContainsKey("image")) parts.Add(new { inlineData = new { mimeType = "image/png", data = m["image"] } });
-                    return new { role = m["role"], parts };
-                }),
-                tools = client.Tools
-            };
-
-            client.Logger.Log($"Sending payload to LLM (prompt length: {prompt.Length} chars, history entries: {messages.Count})");
-            var (content, _) = await SendRequestToLLM(client, payload);
-            if (content == null)
-            {
-                client.Logger.Log("LLM returned null content");
-                return null;
-            }
-
-            var data = JsonSerializer.Deserialize<JsonElement>(content);
-            var llmResponse = ExtractLLMResponse(client.Logger, data);
-            var processedResponse = await HandleLLMResponse(client, llmResponse);
-
-            if (!string.IsNullOrEmpty(processedResponse) && useHistory)
-            {
-                // Update history only once, avoiding duplicates
-                var updatedHistory = new List<Dictionary<string, string>>(messages)
-        {
-            userMessage,
-            new Dictionary<string, string> { { "role", "model" }, { "content", processedResponse } }
-        };
-                client.ConversationHistory = updatedHistory; // Use setter
-                client.Logger.Log($"History updated, new length: {client.ConversationHistory.Count}");
-                client.UpdateHistoryCounter();
-            }
-            return processedResponse;
-        }
-
         private static (string message, List<JsonElement> functionCalls) ExtractLLMResponse(Logger logger, JsonElement data)
         {
-            if (data.TryGetProperty("candidates", out var candidates) && candidates.EnumerateArray().Any())
+            if (!data.TryGetProperty("candidates", out var candidates) || !candidates.EnumerateArray().Any())
             {
-                var messageParts = new List<string>();
-                var functionCalls = new List<JsonElement>();
-                foreach (var candidate in candidates.EnumerateArray())
-                {
-                    foreach (var part in candidate.GetProperty("content").GetProperty("parts").EnumerateArray())
-                    {
-                        if (part.TryGetProperty("text", out var text) && text.GetString() != null)
-                            messageParts.Add(text.GetString()!);
-                        else if (part.TryGetProperty("functionCall", out var func))
-                            functionCalls.Add(part);
-                    }
-                }
-                logger.Log($"Extracted message: {string.Join("", messageParts)}, Function calls count: {functionCalls.Count}");
-                return (string.Join("", messageParts), functionCalls);
+                logger.Log("No candidates in LLM response");
+                return (string.Empty, new List<JsonElement>());
             }
-            logger.Log("No candidates found in LLM response");
-            return (string.Empty, new List<JsonElement>());
-        }
 
-        private static async Task<string> HandleLLMResponse(GeminiClient client, (string message, List<JsonElement> functionCalls) llmResponse)
-        {
-            client.Logger.Log($"Handling LLM response - Message: {llmResponse.message}, Function calls: {llmResponse.functionCalls.Count}");
+            var messageParts = new List<string>();
+            var functionCalls = new List<JsonElement>();
 
-            if (llmResponse.functionCalls?.Any() == true)
+            foreach (var candidate in candidates.EnumerateArray())
             {
-                if (!string.IsNullOrEmpty(llmResponse.message))
+                foreach (var part in candidate.GetProperty("content").GetProperty("parts").EnumerateArray())
                 {
-                    client.UpdateChat($"{llmResponse.message}\n", "model");
+                    if (part.TryGetProperty("text", out var text) && text.GetString() is string textValue)
+                        messageParts.Add(textValue);
+                    else if (part.TryGetProperty("functionCall", out var func))
+                        functionCalls.Add(part);
                 }
+            }
 
-                foreach (var func in llmResponse.functionCalls)
+            var message = string.Join("", messageParts);
+            logger.Log($"Extracted: Message='{message.Substring(0, Math.Min(100, message.Length))}...', FunctionCalls={functionCalls.Count}");
+            return (message, functionCalls);
+        }
+        private static async Task<string> ProcessLLMResponse(GeminiClient client, string message, List<JsonElement> functionCalls)
+        {
+            if (functionCalls.Any())
+            {
+                if (!string.IsNullOrEmpty(message))
+                    client.UpdateChat($"{message}\n", "model");
+
+                foreach (var func in functionCalls)
                 {
                     var funcCall = ExtractFunctionCall(client.Logger, func);
+
                     if (!funcCall.HasValue) continue;
 
-                    if (funcCall.Value.name == "search_google")
+                    if (funcCall.Value.args == null)
                     {
-                        var searchTerms = funcCall.Value.args["search_terms"].ToString() ?? string.Empty;
-                        client.Logger.Log($"Initiating google search for terms: {searchTerms}");
+                        string errorMessage = $"Error: Function '{funcCall.Value.name}' requires arguments, but none were provided. Please retry with valid arguments.";
+                        client.Logger.Log(errorMessage);
+                        client.UpdateChat($"System: {errorMessage}\n", "system");
 
-                        if (string.IsNullOrEmpty(searchTerms))
-                        {
-                            client.Logger.Log("No valid query provided for google search.");
-                            return "No query provided to search google. Please provide a query or refine your request.";
-                        }
-
-                        var contentUrlPairs = await client.Search.PerformSearch(searchTerms, client.OriginalUserQuery, client.UpdateChat, client.UpdateStatus);
-                        client.UpdateStatus(Status.Idle);
-
-                        if (contentUrlPairs.Any())
-                        {
-                            client.Logger.Log($"Search returned {contentUrlPairs.Count} results:");
-                            foreach (var (content, url) in contentUrlPairs)
-                            {
-                                client.Logger.Log($"URL: {url}, Content length: {content.Length} chars, Preview: {content.Substring(0, Math.Min(100, content.Length))}...");
-                            }
-
-                            var prompt = ToolsAndPrompts.GetProcessedContentPrompt(searchTerms, client.OriginalUserQuery, contentUrlPairs);
-                            client.Logger.Log($"Prompt sent to LLM (length: {prompt.Length} chars): {prompt.Substring(0, Math.Min(500, prompt.Length))}...");
-
-                            // Recursive call with history disabled to avoid nesting issues
-                            var llmResponseText = await SendToLLM(client, prompt, null, false);
-                            if (!string.IsNullOrEmpty(llmResponseText))
-                            {
-                                client.Logger.Log($"LLM response (length: {llmResponseText.Length} chars): {llmResponseText.Substring(0, Math.Min(500, llmResponseText.Length))}...");
-
-                                // Append search summary as a system message
-                                var searchSummary = $"System: Search results for '{searchTerms}' have been stored. Found {contentUrlPairs.Count} items:\n" +
-                                                    string.Join("\n", contentUrlPairs.Select(p => $"- {p.url} (Content preview: {p.content.Substring(0, Math.Min(100, p.content.Length))}...)"));
-                                var updatedHistory = new List<Dictionary<string, string>>(client.ConversationHistory)
-                        {
-                            new Dictionary<string, string> { { "role", "system" }, { "content", searchSummary } }
-                        };
-                                client.ConversationHistory = updatedHistory; // Use setter
-                                client.UpdateHistoryCounter();
-
-                                return llmResponseText;
-                            }
-                            else
-                            {
-                                client.Logger.Log("LLM returned null or empty response, using fallback");
-                                return $"Search for '{searchTerms}' yielded {contentUrlPairs.Count} results, but no response was generated.";
-                            }
-                        }
-                        else
-                        {
-                            client.Logger.Log($"No relevant results for '{searchTerms}', returning fallback response");
-                            return $"No relevant information found online for '{searchTerms}'. Please refine your query.";
-                        }
+                        // Retry with original query plus error context
+                        string retryPrompt = $"{client.OriginalUserQuery}\nSystem: {errorMessage}";
+                        return await client.RetryWithPrompt(retryPrompt);
                     }
-                    else if (funcCall.Value.name == "search_memory")
+
+                    switch (funcCall.Value.name)
                     {
-                        var searchTerms = funcCall.Value.args["search_terms"].ToString() ?? string.Empty;
-                        client.Logger.Log($"Initiating memory search for terms: {searchTerms}");
-
-                        if (string.IsNullOrEmpty(searchTerms))
-                        {
-                            client.Logger.Log("No valid query provided for memory search.");
-                            var prompt = "No query provided to search memory content. Please provide a query or refine your request.";
-                            return await SendToLLM(client, prompt) ?? "No relevant information found in memory content.";
-                        }
-
-                        client.Logger.Log($"Initiating memory search for query: '{searchTerms}'");
-                        var memories = await client.MemoryManager.SearchMemory(searchTerms);
-
-                        if (memories.Any())
-                        {
-                            var memoryContent = string.Join("\n\n", memories.Select(m => $"Memory (ID: {m.id}, Score: {m.score:F3}):\n{m.content}"));
-                            var prompt = $"Found the following relevant memory content:\n\n{memoryContent}\n\nBased on these memories, please provide a helpful response to the user query: '{client.OriginalUserQuery}'.";
-
-                            // Append memory search results to history
-                            var memorySummary = $"System: Memory search for '{searchTerms}' returned {memories.Count} results:\n" +
-                                                string.Join("\n", memories.Select(m => $"- ID: {m.id}, Score: {m.score:F3}, Preview: {m.content.Substring(0, Math.Min(100, m.content.Length))}..."));
-                            var updatedHistory = new List<Dictionary<string, string>>(client.ConversationHistory)
-                                {
-                                    new Dictionary<string, string> { { "role", "system" }, { "content", memorySummary } }
-                                };
-                            client.ConversationHistory = updatedHistory; // Use property setter
-                            client.UpdateHistoryCounter();
-
-                            return await SendToLLM(client, prompt) ?? "No relevant information found in memory content.";
-                        }
-                        else
-                        {
-                            client.Logger.Log($"No relevant memories found for query '{searchTerms}'");
-                            var prompt = $"No memories found matching the query '{searchTerms}'. You might try a slightly different query.";
-                            return await SendToLLM(client, prompt) ?? "No relevant information found in memory content.";
-                        }
-                    }
-                    else if (funcCall.Value.name == "delete_memories")
-                    {
-                        var idsJson = (JsonElement)funcCall.Value.args["ids"];
-                        var ids = idsJson.EnumerateArray().Select(id => id.GetInt64()).ToList();
-                        client.Logger.Log($"Deleting memories with IDs: [{string.Join(", ", ids)}]");
-                        try
-                        {
-                            client.MemoryManager.DeleteMemories(ids);
-                            var prompt = $"Successfully deleted memories with IDs [{string.Join(", ", ids)}].";
-                            return await SendToLLM(client, prompt) ?? "Couldn't delete memories.";
-                        }
-                        catch (Exception ex)
-                        {
-                            client.UpdateChat($"Failed to delete memories with IDs: {string.Join(", ", ids)}. Error: {ex.Message}\n", "system");
-                            var prompt = $"Failed to delete memories with IDs [{string.Join(", ", ids)}]. Error: {ex.Message}";
-                            return await SendToLLM(client, prompt) ?? "Couldn't delete memories.";
-                        }
+                        case "search_google":
+                            return await HandleGoogleSearch(client, funcCall.Value.args);
+                        case "search_memory":
+                            return await HandleMemorySearch(client, funcCall.Value.args);
+                        case "delete_memories":
+                            return await HandleDeleteMemories(client, funcCall.Value.args);
+                        default:
+                            client.Logger.Log($"Unknown function call: {funcCall.Value.name}");
+                            break;
                     }
                 }
             }
-            // Default return when no function calls are present
-            return llmResponse.message;
+            return message;
         }
 
-        private static (string name, Dictionary<string, object> args)? ExtractFunctionCall(Logger logger, JsonElement functionCallJson)
+        private static async Task<string> HandleGoogleSearch(GeminiClient client, Dictionary<string, object> args)
+        {
+            var searchTerms = args.GetValueOrDefault("search_terms", "").ToString();
+            if (string.IsNullOrEmpty(searchTerms))
+            {
+                client.Logger.Log("Empty search terms for Google search");
+                return "No query provided for Google search.";
+            }
+
+            client.Logger.Log($"Executing Google search: {searchTerms}");
+            var results = await client.SearchService.PerformSearch(searchTerms, client.OriginalUserQuery);
+            if (!results.Any())
+                return $"No relevant results found for '{searchTerms}'.";
+
+            var chunks = ChunkSearchResults(results);
+            var combinedResponse = new List<string>();
+
+            foreach (var chunk in chunks)
+            {
+                var prompt = ToolsAndPrompts.GetProcessedContentPrompt(searchTerms, client.OriginalUserQuery, chunk);
+                var response = await SendToLLM(client, prompt);
+                if (!string.IsNullOrEmpty(response)) combinedResponse.Add(response);
+            }
+
+            var finalResponse = string.Join("\n", combinedResponse);
+            client.Logger.Log($"Google search processed, response length: {finalResponse.Length}");
+            return finalResponse;
+        }
+
+        private static async Task<string> HandleMemorySearch(GeminiClient client, Dictionary<string, object> args)
+        {
+            var searchTerms = args.GetValueOrDefault("search_terms", "").ToString();
+            if (string.IsNullOrEmpty(searchTerms))
+            {
+                client.Logger.Log("Empty search terms for memory search");
+                return "No query provided for memory search.";
+            }
+
+            var memories = await client.MemoryManager.SearchMemory(searchTerms);
+            if (!memories.Any())
+                return $"No memories found for '{searchTerms}'.";
+
+            var chunks = ChunkMemories(memories);
+            var combinedResponse = new List<string>();
+
+            foreach (var chunk in chunks)
+            {
+                var memoryContent = string.Join("\n\n", chunk.Select(m => $"Memory (ID: {m.id}, Score: {m.score:F3}):\n{m.content}"));
+                var prompt = $"Found relevant memories:\n\n{memoryContent}\n\nRespond to: '{client.OriginalUserQuery}'.";
+                var response = await SendToLLM(client, prompt);
+                if (!string.IsNullOrEmpty(response)) combinedResponse.Add(response);
+            }
+
+            var finalResponse = string.Join("\n", combinedResponse);
+            client.Logger.Log($"Memory search processed, response length: {finalResponse.Length}");
+            return finalResponse;
+        }
+
+        private static async Task<string> HandleDeleteMemories(GeminiClient client, Dictionary<string, object> args)
+        {
+            var idsJson = (JsonElement)args["ids"];
+            var ids = idsJson.EnumerateArray().Select(id => id.GetInt64()).ToList();
+            try
+            {
+                await Task.Run(() => client.MemoryManager.DeleteMemories(ids));
+                return $"Deleted memories with IDs: {string.Join(", ", ids)}.";
+            }
+            catch (Exception ex)
+            {
+                client.Logger.Log($"Failed to delete memories: {ex.Message}");
+                return $"Failed to delete memories: {ex.Message}";
+            }
+        }
+
+        private static List<List<(string content, string url)>> ChunkSearchResults(List<(string content, string url)> results)
+        {
+            const int maxTokens = 32000;
+            var chunks = new List<List<(string content, string url)>>();
+            var currentChunk = new List<(string content, string url)>();
+            int currentLength = 0;
+
+            foreach (var result in results)
+            {
+                int length = result.content.Length / 4; // Rough token estimate
+                if (currentLength + length > maxTokens && currentChunk.Any())
+                {
+                    chunks.Add(currentChunk);
+                    currentChunk = new List<(string content, string url)>();
+                    currentLength = 0;
+                }
+                currentChunk.Add(result);
+                currentLength += length;
+            }
+
+            if (currentChunk.Any()) chunks.Add(currentChunk);
+            return chunks;
+        }
+
+        private static List<List<(long id, string content, float score, DateTime createdAt)>> ChunkMemories(List<(long id, string content, float score, DateTime createdAt)> memories)
+        {
+            const int maxTokens = 32000;
+            var chunks = new List<List<(long id, string content, float score, DateTime createdAt)>>();
+            var currentChunk = new List<(long id, string content, float score, DateTime createdAt)>();
+            int currentLength = 0;
+
+            foreach (var memory in memories)
+            {
+                int length = memory.content.Length / 4; // Rough token estimate
+                if (currentLength + length > maxTokens && currentChunk.Any())
+                {
+                    chunks.Add(currentChunk);
+                    currentChunk = new List<(long id, string content, float score, DateTime createdAt)>();
+                    currentLength = 0;
+                }
+                currentChunk.Add(memory);
+                currentLength += length;
+            }
+
+            if (currentChunk.Any()) chunks.Add(currentChunk);
+            return chunks;
+        }
+
+        private static (string? name, Dictionary<string, object>? args)? ExtractFunctionCall(Logger logger, JsonElement functionCallJson)
         {
             try
             {
-                logger.Log($"Extracting function call from JSON: {functionCallJson.ToString()}");
-                if (!functionCallJson.TryGetProperty("functionCall", out var funcCallElement))
-                {
-                    logger.Log("No 'functionCall' property found in JSON");
+                if (!functionCallJson.TryGetProperty("functionCall", out var funcCall))
                     return null;
-                }
 
-                var name = funcCallElement.GetProperty("name").GetString();
-                var args = JsonSerializer.Deserialize<Dictionary<string, object>>(funcCallElement.GetProperty("args").ToString());
-
-                if (name != null && args != null)
-                {
-                    logger.Log($"Successfully extracted function call: name={name}, args={args.Count} entries");
-                    return (name, args);
-                }
-
-                logger.Log("Function call extraction failed: name or args is null");
-                return null;
+                var name = funcCall.GetProperty("name").GetString();
+                var args = JsonSerializer.Deserialize<Dictionary<string, object>>(funcCall.GetProperty("args").ToString());
+                return (name, args);
             }
             catch (Exception ex)
             {
                 logger.Log($"Error extracting function call: {ex.Message}");
-                throw;
+                return null;
             }
         }
 
         public static async Task<float[]> Embed(GeminiClient client, string text)
         {
+            await EmbeddingRateLimiter.WaitAsync();
             try
             {
-                var (content, _) = await SendRequestToLLM(client, text, true);
-
-                if (content == null)
-                {
-                    client.Logger.Log("Embedding API returned null content");
+                var payload = new { content = new { parts = new[] { new { text } } } };
+                var (content, _) = await SendRequest(client, payload, false);
+                if (string.IsNullOrEmpty(content))
                     return Array.Empty<float>();
-                }
 
                 var json = JsonDocument.Parse(content);
-                var root = json.RootElement;
+                var values = json.RootElement.GetProperty("embedding").GetProperty("values").EnumerateArray()
+                    .Select(v => v.GetSingle()).ToArray();
 
-                if (!root.TryGetProperty("embedding", out var embeddingElement) ||
-                    !embeddingElement.TryGetProperty("values", out var valuesElement))
+                if (values.Length != ExpectedEmbeddingDimension)
                 {
-                    client.Logger.Log($"Invalid embedding response format: {content}");
+                    client.Logger.Log($"Embedding dimension mismatch: expected {ExpectedEmbeddingDimension}, got {values.Length}");
                     return Array.Empty<float>();
                 }
 
-                var embeddings = valuesElement.EnumerateArray()
-                                             .Select(v => v.GetSingle())
-                                             .ToArray();
-                if (embeddings.Length != ExpectedEmbeddingDimension)
-                {
-                    client.Logger.Log($"Embedding dimension mismatch: expected {ExpectedEmbeddingDimension}, got {embeddings.Length}");
-                    return Array.Empty<float>();
-                }
-                client.Logger.Log($"Successfully retrieved embedding with {embeddings.Length} dimensions");
-                return embeddings;
+                return values;
             }
             catch (Exception ex)
             {
-                client.Logger.Log($"Error in Embed: {ex.Message}");
+                client.Logger.Log($"Embedding error: {ex.Message}");
                 return Array.Empty<float>();
+            }
+            finally
+            {
+                EmbeddingRateLimiter.Release();
             }
         }
     }

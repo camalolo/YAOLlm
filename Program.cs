@@ -14,7 +14,7 @@ namespace Gemini
             var logger = new Logger($"llm_log_{DateTime.Now:yyyyMMdd_HHmmss}.log");
             var statusManager = new StatusManager();
             var geminiClient = new GeminiClient(logger);
-            var mainForm = new MainForm(geminiClient, statusManager);
+            var mainForm = new MainForm(geminiClient, statusManager, logger);
             
             // Use a custom ApplicationContext
             var context = new TrayApplicationContext(mainForm);

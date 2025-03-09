@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using dotenv.net;
 
@@ -9,89 +10,83 @@ namespace Gemini
 {
     public class GeminiClient
     {
-        private readonly Logger _logger;
         private readonly string _apiKey;
-        private readonly Search _search;
-        private readonly MemoryManager _memoryManager;
-        public const int MaxHistoryLength = 32;
-        private string _apiBaseUrl => "https://generativelanguage.googleapis.com/v1beta/models/";
-        private string _embedModel = "text-embedding-004";
-        private string _model = "gemini-2.0-flash";
-        private List<Dictionary<string, string>> _conversationHistory; // Already private
+        private readonly List<Dictionary<string, string>> _conversationHistory;
         private readonly List<object> _tools;
-        private string _originalUserQuery;
         private readonly object _historyLock = new object();
+        private string _originalUserQuery = string.Empty;
+        private const int MaxHistoryLength = 32;
+        private const int MaxTokensPerChunk = 32000; // Approximate token limit for Gemini 2.0 Flash
+        private const string ApiBaseUrl = "https://generativelanguage.googleapis.com/v1beta/models/";
+        private string _model = "gemini-2.0-flash";
+        private string _embedModel = "text-embedding-004";
 
-        public Logger Logger => _logger;
-        public Search Search => _search;
-        public MemoryManager MemoryManager => _memoryManager;
-        public List<Dictionary<string, string>> ConversationHistory
+        public Action<string, string> UpdateChat { get; private set; } = (_, __) => { };
+        public Action UpdateHistoryCounter { get; private set; } = () => { };
+        public Action<Status> UpdateStatus { get; private set; } = (_) => { };
+        public Logger Logger { get; private set; }
+        public SearchService SearchService { get; private set; }
+        public MemoryManager MemoryManager { get; private set; }
+
+        public string OriginalUserQuery
         {
-            get
-            {
-                lock (_historyLock)
-                {
-                    return new List<Dictionary<string, string>>(_conversationHistory);
-                }
-            }
-            set // Add setter to ensure controlled updates
-            {
-                lock (_historyLock)
-                {
-                    _conversationHistory = new List<Dictionary<string, string>>(value);
-                }
-            }
+            get => _originalUserQuery;
+            set => _originalUserQuery = value ?? string.Empty;
         }
-        public List<object> Tools => _tools.ToList();
-        public string OriginalUserQuery { get => _originalUserQuery; set => _originalUserQuery = value; }
-
-        public Action<string, string> UpdateChat { get; set; }
-        public Action UpdateHistoryCounter { get; set; }
-        public Action<Status> UpdateStatus { get; set; }
 
         public GeminiClient(Logger logger)
         {
-            _logger = logger;
+            Logger = logger ?? throw new ArgumentNullException(nameof(logger));
+            LoadEnvironmentVariables();
+            _apiKey = Environment.GetEnvironmentVariable("GEMINI_API_KEY") ?? throw new ArgumentException("GEMINI_API_KEY not set");
+            var googleSearchApiKey = Environment.GetEnvironmentVariable("GOOGLE_SEARCH_API_KEY") ?? throw new ArgumentException("GOOGLE_SEARCH_API_KEY not set");
+            var googleSearchEngineId = Environment.GetEnvironmentVariable("GOOGLE_SEARCH_ENGINE_ID") ?? throw new ArgumentException("GOOGLE_SEARCH_ENGINE_ID not set");
+
+            MemoryManager = new MemoryManager(logger, this);
+            SearchService = new SearchService(this, googleSearchApiKey, googleSearchEngineId, MemoryManager.StoreSearchResults);
+            _tools = ToolsAndPrompts.DefineTools();
+            _conversationHistory = InitializeConversationHistory();
+
+            Logger.Log("GeminiClient initialized.");
+            UpdateHistoryCounter();
+        }
+
+        private void LoadEnvironmentVariables()
+        {
             var homeDir = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
             var geminiFile = Path.Combine(homeDir, ".gemini");
-
             try
             {
                 DotEnv.Load(new DotEnvOptions(envFilePaths: new[] { geminiFile }));
-                _apiKey = Environment.GetEnvironmentVariable("GEMINI_API_KEY") ?? throw new ArgumentException("GEMINI_API_KEY is not set");
-                var googleSearchApiKey = Environment.GetEnvironmentVariable("GOOGLE_SEARCH_API_KEY") ?? throw new ArgumentException("GOOGLE_SEARCH_API_KEY is not set");
-                var googleSearchEngineId = Environment.GetEnvironmentVariable("GOOGLE_SEARCH_ENGINE_ID") ?? throw new ArgumentException("GOOGLE_SEARCH_ENGINE_ID is not set");
-                _memoryManager = new MemoryManager(logger, this);
-                _search = new Search(this, googleSearchApiKey, googleSearchEngineId, CreateMemoryFromSearchResults);
             }
             catch (Exception ex)
             {
-                _logger.Log($"Error loading .gemini file: {ex.Message}");
-                throw new ArgumentException("Failed to load environment variables from .gemini", ex);
+                Logger.Log($"Error loading .gemini file: {ex.Message}");
+                throw new ArgumentException("Failed to load environment variables", ex);
             }
+        }
 
-            _conversationHistory = new List<Dictionary<string, string>> {
+        private List<Dictionary<string, string>> InitializeConversationHistory()
+        {
+            return new List<Dictionary<string, string>>
+            {
                 new() { { "role", "model" }, { "content", ToolsAndPrompts.GetInitialPrompt() } }
             };
-            _tools = ToolsAndPrompts.DefineTools();
-            _originalUserQuery = string.Empty;
-            UpdateChat = (_, __) => { };
-            UpdateHistoryCounter = () => { };
-            UpdateStatus = (_) => { };
         }
 
         public void SetUICallbacks(Action<string, string> updateChat, Action updateHistoryCounter, Action<Status> updateStatus)
         {
-            UpdateChat = updateChat;
-            UpdateHistoryCounter = updateHistoryCounter;
-            UpdateStatus = updateStatus;
+            UpdateChat = updateChat ?? throw new ArgumentNullException(nameof(updateChat));
+            UpdateHistoryCounter = updateHistoryCounter ?? throw new ArgumentNullException(nameof(updateHistoryCounter));
+            UpdateStatus = updateStatus ?? throw new ArgumentNullException(nameof(updateStatus));
+            UpdateHistoryCounter();
         }
 
         public int GetConversationHistoryLength()
         {
             lock (_historyLock)
             {
-                return _conversationHistory.Sum(turn => turn["content"].Length);
+                return _conversationHistory.Sum(turn => turn.GetValueOrDefault("content", "").Length);
             }
         }
 
@@ -99,9 +94,8 @@ namespace Gemini
         {
             lock (_historyLock)
             {
-                _conversationHistory = new List<Dictionary<string, string>> {
-                    new() { { "role", "model" }, { "content", ToolsAndPrompts.GetInitialPrompt() } }
-                };
+                _conversationHistory.Clear();
+                _conversationHistory.AddRange(InitializeConversationHistory());
                 UpdateHistoryCounter();
             }
         }
@@ -110,27 +104,22 @@ namespace Gemini
         {
             try
             {
-                _logger.Log($"Processing LLM request with prompt: {prompt}");
+                Logger.Log($"Processing LLM request: {prompt}");
                 UpdateStatus(Status.SendingData);
-                if (!string.IsNullOrEmpty(imageBase64))
-                {
-                    UpdateStatus(Status.AnalyzingImage);
-                    string describePrompt = ToolsAndPrompts.GetImageDescriptionPrompt(activeWindowTitle ?? string.Empty);
-                    var response = await ApiFunctions.SendToLLM(this, describePrompt, imageBase64);
 
-                    prompt = string.IsNullOrEmpty(prompt) ? ToolsAndPrompts.GetImageDescriptionDefaultUserPrompt() : prompt;
-                    response = await ApiFunctions.SendToLLM(this, prompt, imageBase64);
-                    if (response != null) UpdateChat(response + "\n", "model");
+                if (!string.IsNullOrEmpty(imageBase64) && !string.IsNullOrEmpty(activeWindowTitle))
+                {
+                    await ProcessImageRequest(prompt, imageBase64, activeWindowTitle);
                 }
                 else
                 {
-                    var response = await ApiFunctions.SendToLLM(this, prompt);
-                    if (response != null) UpdateChat(response + "\n", "model");
+                    string response = await SendChunkedRequest(prompt);
+                    if (!string.IsNullOrEmpty(response)) UpdateChat(response + "\n", "model");
                 }
             }
             catch (Exception ex)
             {
-                _logger.Log($"Error in ProcessLLMRequest: {ex.Message}");
+                Logger.Log($"Error in ProcessLLMRequest: {ex.Message}");
                 UpdateChat($"Error: {ex.Message}\n", "system");
             }
             finally
@@ -139,9 +128,118 @@ namespace Gemini
             }
         }
 
-        private async Task CreateMemoryFromSearchResults(List<(string content, string url)> results)
+        private async Task ProcessImageRequest(string prompt, string imageBase64, string activeWindowTitle)
         {
-            await MemoryManager.CreateMemoryFromSearchResults(_logger, _memoryManager, results);
+            UpdateStatus(Status.AnalyzingImage);
+            string describePrompt = ToolsAndPrompts.GetImageDescriptionPrompt(activeWindowTitle);
+            string? description = await ApiFunctions.SendToLLM(this, describePrompt, imageBase64);
+
+            prompt = string.IsNullOrEmpty(prompt)
+                ? ToolsAndPrompts.GetImageDescriptionDefaultUserPrompt()
+                : prompt;
+            string response = await SendChunkedRequest(prompt, imageBase64);
+            if (!string.IsNullOrEmpty(response)) UpdateChat(response + "\n", "model");
+        }
+
+        private async Task<string> SendChunkedRequest(string prompt, string? imageBase64 = null)
+        {
+            var messages = new List<Dictionary<string, string>>(GetHistorySnapshot());
+            var userMessage = new Dictionary<string, string> { { "role", "user" } };
+            if (!string.IsNullOrEmpty(prompt)) userMessage["content"] = prompt;
+            if (!string.IsNullOrEmpty(imageBase64)) userMessage["image"] = imageBase64;
+            messages.Add(userMessage);
+
+            TrimHistoryIfNeeded(messages);
+            var chunks = ChunkMessages(messages);
+            string finalResponse = string.Empty;
+
+            foreach (var chunk in chunks)
+            {
+                string chunkResponse = await SendSingleChunk(chunk);
+                if (!string.IsNullOrEmpty(chunkResponse))
+                {
+                    finalResponse += chunkResponse + "\n";
+                    UpdateHistory(messages, userMessage, chunkResponse);
+                }
+            }
+
+            return finalResponse.Trim();
+        }
+
+        private List<Dictionary<string, string>> GetHistorySnapshot()
+        {
+            lock (_historyLock)
+            {
+                return new List<Dictionary<string, string>>(_conversationHistory);
+            }
+        }
+
+        private void TrimHistoryIfNeeded(List<Dictionary<string, string>> messages)
+        {
+            if (messages.Count > MaxHistoryLength * 4)
+            {
+                Logger.Log($"Trimming history from {messages.Count} to {MaxHistoryLength * 2}");
+                messages.RemoveRange(0, messages.Count - MaxHistoryLength * 2);
+            }
+        }
+
+        private List<List<Dictionary<string, string>>> ChunkMessages(List<Dictionary<string, string>> messages)
+        {
+            var chunks = new List<List<Dictionary<string, string>>>();
+            var currentChunk = new List<Dictionary<string, string>>();
+            int currentLength = 0;
+
+            foreach (var msg in messages)
+            {
+                int msgLength = msg.GetValueOrDefault("content", "").Length + (msg.ContainsKey("image") ? 1000 : 0); // Rough estimate for image
+                if (currentLength + msgLength > MaxTokensPerChunk && currentChunk.Any())
+                {
+                    chunks.Add(currentChunk);
+                    currentChunk = new List<Dictionary<string, string>>();
+                    currentLength = 0;
+                }
+                currentChunk.Add(msg);
+                currentLength += msgLength;
+            }
+
+            if (currentChunk.Any()) chunks.Add(currentChunk);
+            Logger.Log($"Chunked messages into {chunks.Count} parts.");
+            return chunks;
+        }
+
+        private async Task<string> SendSingleChunk(List<Dictionary<string, string>> chunk)
+        {
+            var partsList = new List<object>();
+
+            var payload = new
+            {
+                contents = chunk.Select(m =>
+                {
+                    partsList.Clear(); // Reuse the list to avoid allocations per iteration
+
+                    if (m.ContainsKey("content"))
+                        partsList.Add(new { text = m["content"] });
+                    if (m.ContainsKey("image"))
+                        partsList.Add(new { inlineData = new { mimeType = "image/png", data = m["image"] } });
+
+                    return new { role = m["role"], parts = partsList.ToList() };
+                }),
+                tools = _tools
+            };
+
+            return await ApiFunctions.SendToLLM(this, payload) ?? string.Empty;
+        }
+
+        private void UpdateHistory(List<Dictionary<string, string>> messages, Dictionary<string, string> userMessage, string response)
+        {
+            lock (_historyLock)
+            {
+                _conversationHistory.Clear();
+                _conversationHistory.AddRange(messages);
+                _conversationHistory.Add(userMessage);
+                _conversationHistory.Add(new Dictionary<string, string> { { "role", "model" }, { "content", response } });
+                UpdateHistoryCounter();
+            }
         }
 
         public async Task<float[]> Embed(string text)
@@ -149,14 +247,13 @@ namespace Gemini
             return await ApiFunctions.Embed(this, text);
         }
 
-        public string getUrl()
+        public async Task<string> RetryWithPrompt(string prompt)
         {
-            return $"{_apiBaseUrl}{_model}:generateContent?key={_apiKey}";
+            Logger.Log($"Retrying LLM request with updated prompt: {prompt}");
+            return await SendChunkedRequest(prompt);
         }
 
-        public string getEmbedUrl()
-        {
-            return $"{_apiBaseUrl}{_embedModel}:embedContent?key={_apiKey}";
-        }
+        public string GetGenerateUrl() => $"{ApiBaseUrl}{_model}:generateContent?key={_apiKey}";
+        public string GetEmbedUrl() => $"{ApiBaseUrl}{_embedModel}:embedContent?key={_apiKey}";
     }
 }

@@ -16,36 +16,33 @@ namespace Gemini
                         new
                         {
                             name = "search_memory",
-                            description = "Searches information in the memories.",
+                            description = "Searches stored memories for relevant information.",
                             parameters = new
                             {
                                 type = "object",
-                                properties = new { search_terms = new { type = "string", description = "The search terms to use." } },
+                                properties = new { search_terms = new { type = "string", description = "Terms to search memories." } },
                                 required = new[] { "search_terms" }
                             }
                         },
                         new
                         {
                             name = "search_google",
-                            description = "Searches information on google search and returns fresh live online results.",
+                            description = "Performs a Google search for fresh online results.",
                             parameters = new
                             {
                                 type = "object",
-                                properties = new { search_terms = new { type = "string", description = "The search terms to use." } },
+                                properties = new { search_terms = new { type = "string", description = "Terms to search online." } },
                                 required = new[] { "search_terms" }
                             }
                         },
                         new
                         {
                             name = "delete_memories",
-                            description = "Deletes memories specified by a list of IDs.",
+                            description = "Deletes specified memories by their IDs.",
                             parameters = new
                             {
                                 type = "object",
-                                properties = new
-                                {
-                                    ids = new { type = "array", items = new { type = "integer" }, description = "List of memory IDs to delete." }
-                                },
+                                properties = new { ids = new { type = "array", items = new { type = "integer" }, description = "List of memory IDs to delete." } },
                                 required = new[] { "ids" }
                             }
                         }
@@ -54,42 +51,45 @@ namespace Gemini
             };
         }
 
-        public static string GetInitialPrompt() =>
-            $"Current Date: {DateTime.Now.ToString("yyyy-MM-dd")}\n" + // Updated to ToString()
-            "You have access to tools to search and delete local memory content, and perform Google searches.\n" +
-            "**Analyze and Extract:** When trying to respond to user queries, if your internal knowledge isn't enough, use 'search_memory' to find relevant information.\n" +
-            "**Adaptive Search:** If no relevant memories are found or details are insufficient, immediately use 'search_google' with refined search terms derived from the original query.\n" +
-            "**Efficiency vs Completeness:** Balance token usage and response accuracy. Prefer memories for information, but do not hesitate to resort online searches when necessary.\n" +
-            "If a memory search yields no results, refine the query by considering alternative phrasings, synonyms, and contextual clues before defaulting to online search.\n" +
-            "NEVER ask for user confirmation to use tools. Decide autonomously based on context.";
-
-        public static string GetProcessedContentPrompt(string searchTerms, string originalUserQuery, List<(string content, string url)> contentUrlPairs)
+        public static string GetInitialPrompt()
         {
-            var contentWithUrls = string.Join("\n\n", contentUrlPairs.Select(p => $"Content from: {p.url}\n\n{p.content}"));
-            return $"*processed search request result*\n" +
-                   $"I searched for '{searchTerms}' to help answer '{originalUserQuery}'.\n\n" +
-                   "Here is the resulting content: \n\n" +
-                   $"<content>\n{contentWithUrls}\n</content>\n\n" +
-                   $"Based on this content, please provide a helpful response to '{originalUserQuery}'.\n\n";
+            return $"Current Date: {DateTime.Now:yyyy-MM-dd}\n" +
+                   "You are an AI assistant with access to tools for searching local memories, Google, and deleting memories.\n" +
+                   "**Memory Search**: Use 'search_memory' to find relevant stored information when responding to queries.\n" +
+                   "**Online Search**: If memory lacks sufficient data, use 'search_google' with refined terms derived from the query.\n" +
+                   "**Efficiency**: Prefer memory over online searches, but switch to Google if memory results are inadequate.\n" +
+                   "**Query Refinement**: If memory search fails, refine terms (synonyms, context) before resorting to Google.\n" +
+                   "**Autonomy**: Do not ask for user confirmation to use tools; decide based on query context.\n" +
+                   "**Chunking**: Responses and data may be split into chunks; process each chunk and provide a cohesive answer.";
         }
 
-        public static string GetNoRelevantResultsPrompt(string searchRequest, string originalUserQuery) =>
-            $"The previous search produced no relevant results for '{searchRequest}'. " +
-            "Please use the 'search_google' tool immediately to try again with different, more specific, or refined search terms. " +
-            $"Base your new search terms on the original user query: '{originalUserQuery}'. " +
-            "Do not ask the user for confirmation or to repeat their question — proceed directly with the new search.";
+        public static string GetProcessedContentPrompt(string searchTerms, string originalQuery, List<(string content, string url)> contentUrlPairs)
+        {
+            var contentString = string.Join("\n\n", contentUrlPairs.Select(p => $"Source: {p.url}\n{p.content}"));
+            return $"*Processed Search Results*\n" +
+                   $"Searched for '{searchTerms}' to answer: '{originalQuery}'.\n" +
+                   "Results:\n" +
+                   $"<content>\n{contentString}\n</content>\n" +
+                   $"Provide a helpful response to '{originalQuery}' based on this content.";
+        }
 
-        public static string GetImageDescriptionPrompt(string windowTitle) =>
-            string.IsNullOrEmpty(windowTitle)
-                ? "This is a screenshot."
-                : $"This is a screenshot. The screenshot was taken from an application with the window title '{windowTitle}'. " +
-                  "Describe accurately the screenshot components in an organized way, including all the text you can read, " +
-                  "for future reference, as we might need to use that information later.";
+        public static string GetNoRelevantResultsPrompt(string searchRequest, string originalQuery)
+        {
+            return $"No relevant results found for '{searchRequest}'.\n" +
+                   $"Immediately use 'search_google' with refined terms based on: '{originalQuery}'.\n" +
+                   "Do not ask for confirmation; proceed with the new search.";
+        }
 
-        public static string GetImageDescriptionDefaultUserPrompt() =>
-            "If the screenshot is from a video game, it likely is a puzzle, a missing person or a list of collectibles. " +
-            "Please help me find the most likely solution to the question/puzzle/enigma, or find the missing collectibles. " +
-            "If the screenshot is from another type of application and shows an error message, or a coding language issue, " +
-            "please find how to solve it. If it's just a cute or strange picture, please respond to it in a fun and engaging way.";
+        public static string GetImageDescriptionPrompt(string windowTitle)
+        {
+            return $"Describe this screenshot from '{windowTitle}' accurately, including all visible text and components, for future reference.";
+        }
+
+        public static string GetImageDescriptionDefaultUserPrompt()
+        {
+            return "If this screenshot is from a video game, it may depict a puzzle, missing person, or collectibles list—suggest the most likely solution or locate missing items.\n" +
+                   "If it’s from another application showing an error or code issue, provide a solution.\n" +
+                   "If it’s a cute or unusual image, respond in a fun, engaging way.";
+        }
     }
 }

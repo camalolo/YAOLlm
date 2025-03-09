@@ -2,12 +2,11 @@ using System;
 using System.Drawing;
 using System.Windows.Forms;
 using System.Threading;
+using System.Threading.Tasks;
+using System.Runtime.InteropServices;
+using System.Reflection;
 using System.IO;
 using System.Drawing.Imaging;
-using System.Runtime.InteropServices;
-using System.Threading.Tasks;
-using static System.Windows.Forms.VisualStyles.VisualStyleElement;
-using System.Reflection;
 
 namespace Gemini
 {
@@ -15,107 +14,114 @@ namespace Gemini
     {
         private readonly GeminiClient _geminiClient;
         private readonly StatusManager _statusManager;
-        private NotifyIcon _trayIcon;
         private readonly Logger _logger;
+        private NotifyIcon? _trayIcon;
+        private RichTextBox? _chatBox;
+        private TextBox? _inputField;
+        private Label? _statusLabel;
+        private Label? _historyLabel;
 
-        // Windows API constants and imports for global hotkey
+        // Global hotkey constants
         private const int WM_HOTKEY = 0x0312;
-        private const int HOTKEY_ID = 1; // Unique ID for the hotkey
-        private const int MOD_CONTROL = 0x0002; // Modifier for Ctrl
-        private const int VK_F12 = 0x7B; // Virtual key code for F12
+        private const int HOTKEY_ID = 1;
+        private const int MOD_CONTROL = 0x0002;
+        private const int VK_F12 = 0x7B;
 
         [DllImport("user32.dll")]
         private static extern bool RegisterHotKey(IntPtr hWnd, int id, int fsModifiers, int vk);
 
         [DllImport("user32.dll")]
         private static extern bool UnregisterHotKey(IntPtr hWnd, int id);
-        public MainForm(GeminiClient geminiClient, StatusManager statusManager)
+
+        public MainForm(GeminiClient geminiClient, StatusManager statusManager, Logger logger)
         {
-            _geminiClient = geminiClient;
-            _statusManager = statusManager;
-            _logger = new Logger($"llm_ui_log_{DateTime.Now:yyyyMMdd_HHmmss}.log");
-
-            _geminiClient.SetUICallbacks(UpdateChat, UpdateHistoryCounter, statusManager.SetStatus);
-
-            _chatBox = new RichTextBox();
-            _inputField = new System.Windows.Forms.TextBox();
-            _statusLabel = new Label();
-            _historyLabel = new Label();
+            _geminiClient = geminiClient ?? throw new ArgumentNullException(nameof(geminiClient));
+            _statusManager = statusManager ?? throw new ArgumentNullException(nameof(statusManager));
+            _logger = logger ?? throw new ArgumentNullException(nameof(logger));
             _trayIcon = new NotifyIcon();
 
-            SetupUI();
-
-            this.Visible = false; // Reinforce hidden state
-            _logger.Log($"Post-SetupUI: Visible = {this.Visible}");
-
+            InitializeComponents();
+            ConfigureForm();
             SetupTrayIcon();
+            RegisterGlobalHotkey();
+
+            _geminiClient.SetUICallbacks(UpdateChat, UpdateHistoryCounter, _statusManager.SetStatus);
+            if (_statusLabel != null) _statusManager.StatusChanged += status => _statusLabel.InvokeIfRequired(() => _statusLabel.Text = status.ToString());
             this.FormClosing += MainForm_FormClosing;
-
-            // Register the global hotkey (Ctrl+F12)
-            if (!RegisterHotKey(this.Handle, HOTKEY_ID, MOD_CONTROL, VK_F12))
-            {
-                _logger.Log("Failed to register global hotkey Ctrl+F12. It may be in use by another application.");
-            }
-            else
-            {
-                _logger.Log("Global hotkey Ctrl+F12 registered.");
-            }
-
-            statusManager.StatusChanged += status => _statusLabel.Invoke((System.Windows.Forms.MethodInvoker)(() => _statusLabel.Text = status.ToString()));
-
         }
-        protected override void WndProc(ref Message m)
+
+        private void InitializeComponents()
         {
-            base.WndProc(ref m);
-
-            if (m.Msg == WM_HOTKEY && m.WParam.ToInt32() == HOTKEY_ID)
-            {
-                ToggleVisibility();
-            }
+            _chatBox = CreateChatBox();
+            _inputField = CreateInputField();
+            _statusLabel = CreateLabel("Idle", DockStyle.None, new Point(0, 0));
+            _historyLabel = CreateLabel("[0]", DockStyle.Right);
         }
 
-        private void SetupUI()
+        private void ConfigureForm()
         {
             this.FormBorderStyle = FormBorderStyle.None;
             this.Opacity = 0.8;
             this.TopMost = true;
             this.BackColor = Color.Black;
-            this.Size = new Size(Screen.PrimaryScreen?.Bounds.Width ?? 0, Screen.PrimaryScreen?.Bounds.Height ?? 0);
+            this.Size = Screen.PrimaryScreen?.Bounds.Size ?? new Size(0, 0);
             this.Location = new Point(0, 0);
             this.Padding = new Padding(32, 0, 32, 0);
+            this.Visible = false;
 
-            var topPanel = new Panel { Dock = DockStyle.Top, BackColor = Color.Black, Height = 40 };
+            var topPanel = CreateTopPanel();
+            var buttonPanel = CreateButtonPanel();
+            var spacerPanel = new Panel { Height = 10, Dock = DockStyle.Bottom, BackColor = Color.Black };
 
-            var hideButton = new System.Windows.Forms.Button
+            if (_chatBox != null && _inputField != null)
+                this.Controls.AddRange(new Control[] { _chatBox, spacerPanel, _inputField, buttonPanel, topPanel });
+            _logger.Log($"Form configured: Visible = {this.Visible}");
+        }
+
+        private Panel CreateTopPanel()
+        {
+            var panel = new Panel { Dock = DockStyle.Top, BackColor = Color.Black, Height = 40 };
+            panel.Controls.Add(CreateButton("-", DockStyle.Right, HideOverlay, 0));
+            panel.Controls.Add(CreateButton("X", DockStyle.Right, Application.Exit, 0));
+            return panel;
+        }
+
+        private Panel CreateButtonPanel()
+        {
+            var panel = new Panel { Dock = DockStyle.Bottom, BackColor = Color.Black, Height = 48 };
+            var buttons = new (string id, string text, Action action)[]
             {
-                Text = "-",
-                Font = new Font("Consolas", 12),
-                BackColor = Color.Black,
-                ForeColor = Color.White,
-                FlatStyle = FlatStyle.Flat,
-                Dock = DockStyle.Right,
-                Width = 20,
-                FlatAppearance = { BorderSize = 0 }
+                ("send", "Send", SendMessage),
+                ("capture_send", "Capture && Send", CaptureAndSend),
+                ("proceed", "Proceed", () => SendPresetMessage("[Proceed]")),
+                ("search_online", "Search Online", () => SendPresetMessage("[Search online]")),
+                ("playing", "Playing", SendPlayingMessage),
+                ("clear", "Clear", ClearChat)
             };
-            hideButton.Click += (s, e) => HideOverlay();
 
-            var closeButton = new System.Windows.Forms.Button
+            int x = 0;
+            foreach (var (id, text, action) in buttons)
             {
-                Text = "X",
-                Font = new Font("Consolas", 12),
-                BackColor = Color.Black,
-                ForeColor = Color.White,
-                FlatStyle = FlatStyle.Flat,
-                Dock = DockStyle.Right,
-                Width = 20,
-                FlatAppearance = { BorderSize = 0 }
-            };
-            closeButton.Click += (s, e) => Application.Exit();
+                var btn = CreateButton(text, DockStyle.None, action, 1, new Point(x, 5));
+                btn.Tag = id;
+                panel.Controls.Add(btn);
+                x += btn.Width + 10;
+            }
 
-            topPanel.Controls.Add(hideButton);
-            topPanel.Controls.Add(closeButton);
+            if (_statusLabel != null)
+            {
+                _statusLabel.Location = new Point(x, 10);
+                panel.Controls.Add(_statusLabel);
+            }
+            if (_historyLabel != null)
+                panel.Controls.Add(_historyLabel);
 
-            var chatBox = new RichTextBox
+            return panel;
+        }
+
+        private RichTextBox CreateChatBox()
+        {
+            return new RichTextBox
             {
                 Dock = DockStyle.Fill,
                 ReadOnly = true,
@@ -125,17 +131,11 @@ namespace Gemini
                 BorderStyle = BorderStyle.FixedSingle,
                 Padding = new Padding(10)
             };
-            _chatBox = chatBox;  // Store the reference
+        }
 
-            // Add spacer panel between chat and input
-            var spacerPanel = new Panel
-            {
-                Height = 10,
-                Dock = DockStyle.Bottom,
-                BackColor = Color.Black
-            };
-
-            var inputField = new System.Windows.Forms.TextBox
+        private TextBox CreateInputField()
+        {
+            var input = new TextBox
             {
                 Dock = DockStyle.Bottom,
                 BackColor = Color.Black,
@@ -147,121 +147,89 @@ namespace Gemini
                 Multiline = true,
                 AcceptsReturn = true
             };
-            inputField.KeyDown += InputField_KeyDown;
-            _inputField = inputField;
-
-            var buttonPanel = new Panel { Dock = DockStyle.Bottom, BackColor = Color.Black, Height = 48 };
-            var buttonData = new Dictionary<string, string>
-            {
-                { "send", "Send" },
-                { "capture_send", "Capture && Send" },
-                { "proceed", "Proceed" },
-                { "search_online", "Search Online" },
-                { "playing", "Playing" },
-                { "clear", "Clear" }
-            };
-
-            var buttons = new System.Windows.Forms.Button[buttonData.Count];
-            int i = 0;
-            foreach (var data in buttonData)
-            {
-                buttons[i] = new System.Windows.Forms.Button
-                {
-                    Text = data.Value,
-                    FlatStyle = FlatStyle.Flat,
-                    BackColor = Color.Black,
-                    ForeColor = Color.White,
-                    Font = new Font("Consolas", 12),
-                    Height = 38,
-                    Width = TextRenderer.MeasureText(data.Value, new Font("Consolas", 12)).Width + 20,
-                    Tag = data.Key // Use Tag property to store the button ID
-                };
-                i++;
-            }
-
-            int x = 0;
-            for (int k = 0; k < buttons.Length; k++)
-            {
-                var btn = buttons[k];
-                btn.Location = new Point(x, 5);
-                btn.Click += Button_Click;
-                buttonPanel.Controls.Add(btn);
-                x += btn.Width + 10;
-            }
-
-            var statusLabel = new Label { Text = "Idle", Font = new Font("Consolas", 12), ForeColor = Color.White, BackColor = Color.Black, Location = new Point(x, 10), Height = 38, Width = TextRenderer.MeasureText("Idle", new Font("Consolas", 12)).Width * 2 };
-            _statusLabel = statusLabel;
-            buttonPanel.Controls.Add(statusLabel);
-
-            var historyLabel = new Label { Text = "[0]", Font = new Font("Consolas", 12), ForeColor = Color.White, BackColor = Color.Black, Dock = DockStyle.Right, Height = 38 };
-            _historyLabel = historyLabel;
-            buttonPanel.Controls.Add(historyLabel);
-
-            this.Controls.Add(chatBox);
-            this.Controls.Add(spacerPanel);
-            this.Controls.Add(inputField);
-            this.Controls.Add(buttonPanel);
-            this.Controls.Add(topPanel);
-
-            this.Visible = false;
-
+            input.KeyDown += InputField_KeyDown;
+            return input;
         }
 
-        private RichTextBox _chatBox;
-        private System.Windows.Forms.TextBox _inputField;
-        private Label _statusLabel;
-        private Label _historyLabel;
+        private Button CreateButton(string text, DockStyle dock, Action click, int border, Point? location = null)
+        {
+            var btn = new Button
+            {
+                Text = text,
+                Font = new Font("Consolas", 12),
+                BackColor = Color.Black,
+                ForeColor = Color.White,
+                FlatStyle = FlatStyle.Flat,
+                Dock = dock,
+                Width = dock == DockStyle.None ? TextRenderer.MeasureText(text, new Font("Consolas", 12)).Width + 20 : 20,
+                Height = 38,
+                FlatAppearance = { BorderSize = border }
+            };
+            if (location.HasValue) btn.Location = location.Value;
+            btn.Click += (s, e) => click();
+            return btn;
+        }
+
+        private Label CreateLabel(string text, DockStyle dock, Point? location = null)
+        {
+            var label = new Label
+            {
+                Text = text,
+                Font = new Font("Consolas", 12),
+                ForeColor = Color.White,
+                BackColor = Color.Black,
+                Dock = dock,
+                Height = 38
+            };
+            if (location.HasValue) label.Location = location.Value;
+            if (dock == DockStyle.None) label.Width = TextRenderer.MeasureText(text, new Font("Consolas", 12)).Width * 2;
+            return label;
+        }
 
         private void SetupTrayIcon()
         {
-            _trayIcon = new NotifyIcon
+            if (_trayIcon != null)
             {
-                Text = "Gemini Overlay",
-                Visible = true,
-                ContextMenuStrip = new ContextMenuStrip()
-            };
+                _trayIcon.Text = "Gemini Overlay";
+                _trayIcon.Visible = true;
+                _trayIcon.ContextMenuStrip = new ContextMenuStrip();
+                _trayIcon.ContextMenuStrip.Items.Add("Quit", null, (s, e) => Application.Exit());
+                _trayIcon.DoubleClick += (s, e) => ToggleVisibility();
 
-            try
-            {
-                // Load the embedded icon.ico resource
-                using (var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream("Gemini.icon.ico"))
+                try
                 {
-                    if (stream != null)
-                    {
-                        using (var bitmap = new Bitmap(stream))
-                        {
-                            IntPtr hIcon = bitmap.GetHicon();
-                            _trayIcon.Icon = Icon.FromHandle(hIcon);
-                            _logger.Log("Embedded tray icon loaded from icon.ico.");
-                        }
-                    }
-                    else
-                    {
-                        _logger.Log("Embedded resource 'icon.ico' not found. Using default icon.");
-                        _trayIcon.Icon = SystemIcons.Application; // Fallback to default
-                    }
+                    using var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream("Gemini.icon.ico");
+                    _trayIcon.Icon = stream != null ? new Icon(stream) : SystemIcons.Application;
+                    _logger.Log(stream != null ? "Tray icon loaded from embedded resource." : "Using default tray icon.");
+                }
+                catch (Exception ex)
+                {
+                    _trayIcon.Icon = SystemIcons.Application;
+                    _logger.Log($"Error loading tray icon: {ex.Message}");
                 }
             }
-            catch (Exception ex)
-            {
-                _logger.Log($"Error loading embedded tray icon: {ex.Message}");
+        }
 
-                _trayIcon.Icon = SystemIcons.Application; // Fallback to default on error
-            }
+        private void RegisterGlobalHotkey()
+        {
+            if (RegisterHotKey(this.Handle, HOTKEY_ID, MOD_CONTROL, VK_F12))
+                _logger.Log("Global hotkey Ctrl+F12 registered.");
+            else
+                _logger.Log("Failed to register Ctrl+F12 hotkey.");
+        }
 
-            if (_trayIcon.ContextMenuStrip != null)
-            {
-                _trayIcon.ContextMenuStrip.Items.Add("Quit", null, (s, e) => Application.Exit());
-            }
-            _trayIcon.DoubleClick += (s, e) => ToggleVisibility();
+        protected override void WndProc(ref Message m)
+        {
+            base.WndProc(ref m);
+            if (m.Msg == WM_HOTKEY && m.WParam.ToInt32() == HOTKEY_ID)
+                ToggleVisibility();
         }
 
         private void MainForm_FormClosing(object? sender, FormClosingEventArgs e)
         {
-            // Unregister the hotkey when the form closes
             UnregisterHotKey(this.Handle, HOTKEY_ID);
-            _logger.Log("Global hotkey Ctrl+F12 unregistered.");
-            _trayIcon.Dispose();
+            _trayIcon?.Dispose();
+            _logger.Log("Hotkey unregistered and tray icon disposed.");
         }
 
         private void InputField_KeyDown(object? sender, KeyEventArgs e)
@@ -275,140 +243,128 @@ namespace Gemini
                 HideOverlay();
         }
 
-        private void Button_Click(object? sender, EventArgs e)
-        {
-            if (sender is System.Windows.Forms.Button btn)
-            {
-                string? buttonId = btn.Tag as string;
-                switch (buttonId)
-                {
-                    case null:
-                        _logger.Log("Error: Button ID is null.");
-                        return;
-                    case "send": SendMessage(); break;
-                    case "capture_send": CaptureAndSend(); break;
-                    case "proceed": SendPresetMessage("[Proceed]"); break;
-                    case "search_online": SendPresetMessage("[Search online]"); break;
-                    case "playing": SendPlayingMessage(); break;
-                    case "clear": ClearChat(); break;
-                }
-            }
-        }
-
         private void SendMessage()
         {
-            string message = _inputField.Text.Trim();
-            if (!string.IsNullOrEmpty(message))
+            if (_inputField != null)
             {
+                string message = _inputField.Text.Trim();
+                if (string.IsNullOrEmpty(message)) return;
                 UpdateChat($"You: {message}\r\n", "white");
                 _geminiClient.OriginalUserQuery = message;
                 _inputField.Text = "";
-                Task.Run(() => _geminiClient.ProcessLLMRequest(message, string.Empty, string.Empty));
+                Task.Run(() => _geminiClient.ProcessLLMRequest(message));
             }
         }
 
         private void CaptureAndSend()
         {
-            string message = _inputField.Text.Trim();
-            if (!string.IsNullOrEmpty(message))
+            if (_inputField != null)
             {
-                UpdateChat($"You: {message}\r\n", "white");
-                _inputField.Text = "";
-            }
-            var (imageBase64, activeWindowTitle) = CaptureScreenAndEncode();
-            if (imageBase64 != null)
-            {
-                Task.Run(() => _geminiClient.ProcessLLMRequest(message, imageBase64, activeWindowTitle));
-            }
-            else
-            {
-                UpdateChat("Error: Could not capture screen.\r\n", "grey");
+                string message = _inputField.Text.Trim();
+                if (!string.IsNullOrEmpty(message))
+                {
+                    UpdateChat($"You: {message}\r\n", "white");
+                    _inputField.Text = "";
+                }
+                var (imageBase64, title) = CaptureScreen();
+                if (!string.IsNullOrEmpty(imageBase64))
+                    Task.Run(() => _geminiClient.ProcessLLMRequest(message, imageBase64, title));
+                else
+                    UpdateChat("Error: Screen capture failed.\r\n", "grey");
             }
         }
 
         private void SendPresetMessage(string message)
         {
             UpdateChat($"You: {message}\r\n", "white");
-            Task.Run(() => _geminiClient.ProcessLLMRequest(message, string.Empty, string.Empty));
+            Task.Run(() => _geminiClient.ProcessLLMRequest(message));
         }
 
         private void SendPlayingMessage()
         {
             this.Visible = false;
             Thread.Sleep(500);
-            string activeWindowTitle = GetActiveWindowTitle();
+            string title = GetActiveWindowTitle();
             this.Visible = true;
             FocusInputField();
-            if (!string.IsNullOrEmpty(activeWindowTitle) && activeWindowTitle != "Gemini Overlay")
+            if (!string.IsNullOrEmpty(title) && title != "Gemini Overlay")
             {
-                string message = $"[I am now playing: {activeWindowTitle}]";
-                UpdateChat($"You: {message}\r\n", "white");
-                Task.Run(() => _geminiClient.ProcessLLMRequest(message, string.Empty, string.Empty));
+                string message = $"[I am now playing: {title}]";
+                SendPresetMessage(message);
             }
             else
-            {
-                UpdateChat("Error: Could not get active window title.\r\n", "grey");
-            }
+                UpdateChat("Error: Could not detect active window.\r\n", "grey");
         }
 
         private void ClearChat()
         {
-            _chatBox.Clear();
-            _geminiClient.ClearConversationHistory();
-            UpdateHistoryCounter();
+            if (_chatBox != null)
+            {
+                _chatBox.Clear();
+                _geminiClient.ClearConversationHistory();
+                UpdateHistoryCounter();
+            }
         }
 
         private void UpdateChat(string message, string role)
         {
-            Color color = role == "model" ? Color.Yellow : role == "system" ? Color.Gray : Color.White;
-            _chatBox?.Invoke((System.Windows.Forms.MethodInvoker)(() =>
+            if (_chatBox != null)
+            {
+            Color color = role switch
+            {
+                "model" => Color.Yellow,
+                "system" => Color.Gray,
+                _ => Color.White
+            };
+            _chatBox.InvokeIfRequired(() =>
             {
                 _chatBox.SelectionColor = color;
                 _chatBox.AppendText(message);
                 _chatBox.ScrollToCaret();
-            }));
+            });
+            }
         }
 
         private void UpdateHistoryCounter()
         {
-            int totalChars = _geminiClient.GetConversationHistoryLength();
-            _historyLabel?.Invoke((System.Windows.Forms.MethodInvoker)(() => _historyLabel.Text = $"[{totalChars}]"));
+            if (_historyLabel != null)
+            {
+            int length = _geminiClient.GetConversationHistoryLength();
+            _historyLabel.InvokeIfRequired(() => _historyLabel.Text = $"[{length}]");
+            }
         }
 
-        private (string, string) CaptureScreenAndEncode()
+        private (string, string) CaptureScreen()
         {
             try
             {
                 this.Visible = false;
                 Thread.Sleep(500);
-                string activeWindowTitle = GetActiveWindowTitle();
-                Bitmap screenshot = new Bitmap(Screen.PrimaryScreen?.Bounds.Width ?? 0, Screen.PrimaryScreen?.Bounds.Height ?? 0);
-                using (Graphics g = Graphics.FromImage(screenshot))
-                {
+                string title = GetActiveWindowTitle();
+                using var screenshot = new Bitmap(Screen.PrimaryScreen?.Bounds.Width ?? 0, Screen.PrimaryScreen?.Bounds.Height ?? 0);
+                using (var g = Graphics.FromImage(screenshot))
                     g.CopyFromScreen(0, 0, 0, 0, screenshot.Size);
-                }
                 this.Visible = true;
+                
+                var message = "[Screenshot Taken]";
+                UpdateChat($"You: {message}\r\n", "white");
+
                 FocusInputField();
 
-                using (var ms = new MemoryStream())
-                {
-                    screenshot.Resize(640, 360).Save(ms, ImageFormat.Png);
-                    return (Convert.ToBase64String(ms.ToArray()), activeWindowTitle);
-                }
+                using var ms = new MemoryStream();
+                screenshot.Resize(640, 360).Save(ms, ImageFormat.Png);
+                return (Convert.ToBase64String(ms.ToArray()), title);
             }
             catch (Exception ex)
             {
-                _logger.Log($"Error capturing screen: {ex.Message}");
-
-                UpdateChat($"Error capturing screen: {ex.Message}\r\n", "grey");
+                _logger.Log($"Screen capture error: {ex.Message}");
                 return (string.Empty, string.Empty);
             }
         }
 
         private void FocusInputField()
         {
-            this.Activate();
-            _inputField.Focus();
+            if (_inputField != null) _inputField.InvokeIfRequired(() => { this.Activate(); _inputField.Focus(); });
         }
 
         private void ToggleVisibility()
@@ -417,10 +373,7 @@ namespace Gemini
             if (this.Visible) FocusInputField();
         }
 
-        private void HideOverlay()
-        {
-            this.Visible = false;
-        }
+        private void HideOverlay() => this.Visible = false;
 
         [DllImport("user32.dll")]
         private static extern IntPtr GetForegroundWindow();
@@ -431,29 +384,29 @@ namespace Gemini
         private string GetActiveWindowTitle()
         {
             const int nChars = 256;
-            System.Text.StringBuilder buff = new System.Text.StringBuilder(nChars);
-            IntPtr handle = GetForegroundWindow();
-            if (GetWindowText(handle, buff, nChars) > 0)
-            {
-                string title = buff.ToString();
-                return title != "Gemini Overlay" ? title : string.Empty;
-            }
-            return string.Empty;
+            var buff = new System.Text.StringBuilder(nChars);
+            return GetWindowText(GetForegroundWindow(), buff, nChars) > 0 && buff.ToString() != "Gemini Overlay"
+                ? buff.ToString()
+                : string.Empty;
         }
-
     }
 
-    public static class BitmapExtensions
+    public static class ControlExtensions
     {
+        public static void InvokeIfRequired(this Control control, Action action)
+        {
+            if (control.InvokeRequired)
+                control.Invoke(action);
+            else
+                action();
+        }
+
         public static Bitmap Resize(this Bitmap image, int width, int height)
         {
-            var destRect = new Rectangle(0, 0, width, height);
             var destImage = new Bitmap(width, height);
             destImage.SetResolution(image.HorizontalResolution, image.VerticalResolution);
             using (var g = Graphics.FromImage(destImage))
-            {
-                g.DrawImage(image, destRect, 0, 0, image.Width, image.Height, GraphicsUnit.Pixel);
-            }
+                g.DrawImage(image, new Rectangle(0, 0, width, height), 0, 0, image.Width, image.Height, GraphicsUnit.Pixel);
             return destImage;
         }
     }

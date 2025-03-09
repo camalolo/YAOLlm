@@ -1,9 +1,8 @@
 using Microsoft.Data.Sqlite;
 using System;
 using System.Collections.Generic;
-using System.IO;
 using System.Linq;
-using System.Threading.Tasks; // Added for async
+using System.Threading.Tasks;
 
 namespace Gemini
 {
@@ -13,15 +12,16 @@ namespace Gemini
         private readonly string _dbPath;
         private readonly Logger _logger;
         private bool _disposed;
-        private const int ExpectedEmbeddingDimension = 768; // Added constant for consistency
+        private const int ExpectedEmbeddingDimension = 768;
 
         public SQLiteMemoryStore(string dbPath, Logger logger)
         {
-            _dbPath = dbPath;
+            _dbPath = dbPath ?? throw new ArgumentNullException(nameof(dbPath));
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
             _connection = new SqliteConnection($"Data Source={_dbPath}");
             _connection.Open();
             InitializeDatabase();
+            _logger.Log($"SQLiteMemoryStore initialized at: {_dbPath}");
         }
 
         private void InitializeDatabase()
@@ -31,152 +31,156 @@ namespace Gemini
                 CREATE TABLE IF NOT EXISTS memory_content (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     content TEXT NOT NULL,
-                    embedding BLOB NOT NULL, -- Store embeddings as binary data
+                    embedding BLOB NOT NULL,
                     url TEXT,
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
                 )";
             command.ExecuteNonQuery();
+            _logger.Log("Memory content table initialized.");
         }
 
         public long StoreMemory(string content, float[] embedding, string? url = null)
         {
             if (_disposed) throw new ObjectDisposedException(nameof(SQLiteMemoryStore));
             if (string.IsNullOrEmpty(content)) throw new ArgumentNullException(nameof(content));
-            if (embedding == null || embedding.Length == 0) throw new ArgumentNullException(nameof(embedding));
+            if (embedding == null || embedding.Length != ExpectedEmbeddingDimension)
+                throw new ArgumentException($"Embedding must be {ExpectedEmbeddingDimension} dimensions", nameof(embedding));
 
             using var transaction = _connection.BeginTransaction();
             try
             {
-                // Check if URL already exists
                 if (!string.IsNullOrEmpty(url))
                 {
-                    using var checkCmd = _connection.CreateCommand();
-                    checkCmd.CommandText = "SELECT id FROM memory_content WHERE url = $url";
-                    checkCmd.Parameters.AddWithValue("$url", url);
-                    var existingId = checkCmd.ExecuteScalar();
-                    if (existingId != null)
+                    long? existingId = CheckExistingUrl(url);
+                    if (existingId.HasValue)
                     {
-                        _logger.Log($"Memory with URL '{url}' already exists with ID: {existingId}, rolling back transaction");
+                        _logger.Log($"Memory with URL '{url}' already exists as ID: {existingId}");
                         transaction.Rollback();
-                        return Convert.ToInt64(existingId);
+                        return existingId.Value;
                     }
                 }
 
-                // Convert embedding to byte array
                 byte[] embeddingBytes = embedding.SelectMany(BitConverter.GetBytes).ToArray();
-
-                using var cmd = _connection.CreateCommand();
-                cmd.CommandText = "INSERT INTO memory_content (content, embedding, url) VALUES ($content, $embedding, $url)";
-                cmd.Parameters.AddWithValue("$content", content);
-                cmd.Parameters.AddWithValue("$embedding", embeddingBytes);
-                cmd.Parameters.AddWithValue("$url", url != null ? (object)url : DBNull.Value);
-                cmd.ExecuteNonQuery();
-
-                using var idCmd = _connection.CreateCommand();
-                idCmd.CommandText = "SELECT last_insert_rowid()";
-                long id = Convert.ToInt64(idCmd.ExecuteScalar() ?? throw new InvalidOperationException("Failed to retrieve last inserted row ID"));
+                long id = InsertMemory(content, embeddingBytes, url);
 
                 transaction.Commit();
-                _logger.Log($"Stored new memory with ID: {id}, URL: {url}");
+                _logger.Log($"Stored memory ID: {id}, URL: {url}");
                 return id;
             }
             catch (Exception ex)
             {
                 transaction.Rollback();
-                _logger.Log($"Error storing memory in SQLite: {ex.Message}");
+                _logger.Log($"Error storing memory: {ex.Message}");
                 throw;
             }
         }
 
-        public async Task<List<(long id, string content, float score, DateTime createdAt)>> SearchMemory(string query, GeminiClient geminiClient, int maxResults = 3) // Made async
+        private long? CheckExistingUrl(string url)
+        {
+            using var command = _connection.CreateCommand();
+            command.CommandText = "SELECT id FROM memory_content WHERE url = $url LIMIT 1";
+            command.Parameters.AddWithValue("$url", url);
+            return command.ExecuteScalar() as long?;
+        }
+
+        private long InsertMemory(string content, byte[] embeddingBytes, string? url)
+        {
+            using var command = _connection.CreateCommand();
+            command.CommandText = "INSERT INTO memory_content (content, embedding, url) VALUES ($content, $embedding, $url)";
+            command.Parameters.AddWithValue("$content", content);
+            command.Parameters.AddWithValue("$embedding", embeddingBytes);
+            command.Parameters.AddWithValue("$url", url ?? (object)DBNull.Value);
+            command.ExecuteNonQuery();
+
+            using var idCommand = _connection.CreateCommand();
+            idCommand.CommandText = "SELECT last_insert_rowid()";
+            return Convert.ToInt64(idCommand.ExecuteScalar() ?? throw new InvalidOperationException("Failed to get last insert ID"));
+        }
+
+        public async Task<List<(long id, string content, float score, DateTime createdAt)>> SearchMemory(string query, GeminiClient client, int maxResults = 3)
         {
             if (_disposed) throw new ObjectDisposedException(nameof(SQLiteMemoryStore));
             if (string.IsNullOrEmpty(query)) throw new ArgumentNullException(nameof(query));
-            if (geminiClient == null) throw new ArgumentNullException(nameof(geminiClient));
+            if (client == null) throw new ArgumentNullException(nameof(client));
 
-            var results = new List<(long id, string content, float score, DateTime createdAt)>();
             try
             {
-                _logger.Log($"Searching memory for query: '{query}'");
-
-                // Generate query embedding asynchronously
-                float[] queryEmbedding = await geminiClient.Embed(query); // Await instead of .Result
-                if (queryEmbedding.Length != ExpectedEmbeddingDimension) // Use constant
+                float[] queryEmbedding = await client.Embed(query);
+                if (queryEmbedding.Length != ExpectedEmbeddingDimension)
                 {
-                    _logger.Log($"Query embedding dimension mismatch: expected {ExpectedEmbeddingDimension}, got {queryEmbedding.Length}");
-                    return results;
+                    _logger.Log($"Query embedding mismatch: expected {ExpectedEmbeddingDimension}, got {queryEmbedding.Length}");
+                    return new List<(long, string, float, DateTime)>();
                 }
 
-                // Fetch all memories
-                using var command = _connection.CreateCommand();
-                command.CommandText = "SELECT id, content, embedding, created_at FROM memory_content ORDER BY created_at DESC";
-
-                using var reader = command.ExecuteReader();
-                while (reader.Read())
-                {
-                    long id = reader.GetInt64(0);
-                    string content = reader.GetString(1);
-                    byte[] embeddingBytes = (byte[])reader.GetValue(2);
-                    DateTime createdAt = reader.GetDateTime(3);
-
-                    // Convert byte array back to float array
-                    float[] embedding = new float[embeddingBytes.Length / sizeof(float)];
-                    Buffer.BlockCopy(embeddingBytes, 0, embedding, 0, embeddingBytes.Length);
-
-                    // Compute cosine similarity
-                    float score = CosineSimilarity(embedding, queryEmbedding);
-                    results.Add((id, content, score, createdAt));
-                }
-
-                // Sort by score and take top maxResults
-                results = results.OrderByDescending(r => r.score).Take(maxResults).ToList();
-                _logger.Log($"Found {results.Count} top matches for query '{query}'");
+                var results = FetchAllMemories(queryEmbedding);
+                return results.OrderByDescending(r => r.score).Take(maxResults).ToList();
             }
             catch (Exception ex)
             {
-                _logger.Log($"Error in SearchMemory: {ex.Message}");
+                _logger.Log($"SearchMemory error: {ex.Message}");
+                return new List<(long, string, float, DateTime)>();
             }
+        }
+
+        private List<(long id, string content, float score, DateTime createdAt)> FetchAllMemories(float[] queryEmbedding)
+        {
+            var results = new List<(long id, string content, float score, DateTime createdAt)>();
+            using var command = _connection.CreateCommand();
+            command.CommandText = "SELECT id, content, embedding, created_at FROM memory_content ORDER BY created_at DESC";
+
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                long id = reader.GetInt64(0);
+                string content = reader.GetString(1);
+                byte[] embeddingBytes = (byte[])reader.GetValue(2);
+                DateTime createdAt = reader.GetDateTime(3);
+
+                float[] embedding = new float[ExpectedEmbeddingDimension];
+                Buffer.BlockCopy(embeddingBytes, 0, embedding, 0, embeddingBytes.Length);
+                float score = CosineSimilarity(embedding, queryEmbedding);
+
+                results.Add((id, content, score, createdAt));
+            }
+
+            _logger.Log($"Fetched {results.Count} memories for scoring");
             return results;
         }
 
         public void DeleteMemories(List<long> ids)
         {
             if (_disposed) throw new ObjectDisposedException(nameof(SQLiteMemoryStore));
-            if (ids == null || ids.Count == 0)
+            if (ids == null || !ids.Any())
             {
-                _logger.Log("DeleteMemories: No IDs provided, nothing to delete.");
+                _logger.Log("No IDs provided for deletion");
                 return;
             }
 
             using var transaction = _connection.BeginTransaction();
             try
             {
-                string idPlaceholder = string.Join(",", ids.Select((_, i) => $"${i}"));
-                using var cmd = _connection.CreateCommand();
-                cmd.Transaction = transaction;
-                cmd.CommandText = $"DELETE FROM memory_content WHERE id IN ({idPlaceholder})";
+                string placeholders = string.Join(",", ids.Select((_, i) => $"${i}"));
+                using var command = _connection.CreateCommand();
+                command.CommandText = $"DELETE FROM memory_content WHERE id IN ({placeholders})";
                 for (int i = 0; i < ids.Count; i++)
-                    cmd.Parameters.AddWithValue($"${i}", ids[i]);
-                int rowsAffected = cmd.ExecuteNonQuery();
+                    command.Parameters.AddWithValue($"${i}", ids[i]);
 
+                int affected = command.ExecuteNonQuery();
                 transaction.Commit();
-                _logger.Log($"Deleted {rowsAffected} memories with IDs: {string.Join(", ", ids)}");
+                _logger.Log($"Deleted {affected} memories with IDs: {string.Join(", ", ids)}");
             }
             catch (Exception ex)
             {
                 transaction.Rollback();
-                _logger.Log($"Error deleting memories with IDs [{string.Join(", ", ids)}]: {ex.Message}");
+                _logger.Log($"Delete error for IDs {string.Join(", ", ids)}: {ex.Message}");
                 throw;
             }
         }
 
         private static float CosineSimilarity(float[] a, float[] b)
         {
-            int length = Math.Min(a.Length, b.Length);
-            if (length == 0) return 0;
-
             float dot = 0, magA = 0, magB = 0;
-            for (int i = 0; i < length; i++)
+            for (int i = 0; i < ExpectedEmbeddingDimension; i++)
             {
                 dot += a[i] * b[i];
                 magA += a[i] * a[i];
@@ -198,10 +202,9 @@ namespace Gemini
             if (!_disposed)
             {
                 if (disposing)
-                {
                     _connection?.Dispose();
-                }
                 _disposed = true;
+                _logger.Log("SQLiteMemoryStore disposed.");
             }
         }
 
