@@ -13,7 +13,7 @@ namespace Gemini
         private bool _disposed;
         private const int ExpectedEmbeddingDimension = 768;
         private const int MaxContentLengthPerChunk = 32000; // Rough token limit for storage
-
+        private const int MaxCharsForEmbedding = 8000;
         public MemoryManager(Logger logger, GeminiClient client)
         {
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
@@ -44,20 +44,21 @@ namespace Gemini
 
             try
             {
-                var chunks = ChunkContent(content);
+                var chunks = ChunkContentForEmbedding(content);
                 var ids = new List<long>();
 
-                foreach (var chunk in chunks)
+                for (int i = 0; i < chunks.Count; i++)
                 {
-                    float[] embedding = await _client.Embed(chunk);
+                    string chunkUrl = chunks.Count > 1 && url != null ? $"{url}#chunk{i + 1}" : url ?? "";
+                    float[] embedding = await _client.Embed(chunks[i]);
                     if (embedding.Length != ExpectedEmbeddingDimension)
                     {
                         _logger.Log($"Embedding mismatch: expected {ExpectedEmbeddingDimension}, got {embedding.Length}");
                         throw new InvalidOperationException("Invalid embedding dimension");
                     }
-                    long id = _store.StoreMemory(chunk, embedding, url);
+                    long id = _store.StoreMemory(chunks[i], embedding, chunkUrl);
                     ids.Add(id);
-                    _logger.Log($"Stored memory chunk with ID: {id}, URL: {url}");
+                    _logger.Log($"Stored memory chunk with ID: {id}, URL: {chunkUrl}");
                 }
 
                 return ids;
@@ -107,19 +108,18 @@ namespace Gemini
             }
         }
 
-        private List<string> ChunkContent(string content)
+        private List<string> ChunkContentForEmbedding(string content)
         {
-            if (content.Length <= MaxContentLengthPerChunk)
+            if (content.Length <= MaxCharsForEmbedding)
                 return new List<string> { content };
 
             var chunks = new List<string>();
             int start = 0;
             while (start < content.Length)
             {
-                int length = Math.Min(MaxContentLengthPerChunk, content.Length - start);
+                int length = Math.Min(MaxCharsForEmbedding, content.Length - start);
                 int end = start + length;
 
-                // Try to split at a natural boundary (e.g., period or newline)
                 if (end < content.Length)
                 {
                     int lastPeriod = content.LastIndexOf('.', end - 1, length);
@@ -132,7 +132,7 @@ namespace Gemini
                 start = end;
             }
 
-            _logger.Log($"Chunked content into {chunks.Count} parts");
+            _logger.Log($"Chunked content for embedding into {chunks.Count} parts (max {MaxCharsForEmbedding} chars each)");
             return chunks;
         }
 

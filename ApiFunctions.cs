@@ -20,12 +20,13 @@ namespace Gemini
         public static async Task<string?> SendToLLM(GeminiClient client, object payload, string? imageBase64 = null)
         {
             var logger = client.Logger;
-            logger.Log($"Preparing LLM request with payload size: {JsonSerializer.Serialize(payload).Length} chars");
+            var jsonPayload = JsonSerializer.Serialize(payload);
+            logger.Log($"Preparing LLM request with payload size: {jsonPayload.Length} chars");
 
-            var (content, response) = await SendRequest(client, payload, imageBase64 != null);
+            var (content, response) = await SendRequest(client, payload, imageBase64 != null, isEmbedding: false);
             if (content == null)
             {
-                logger.Log("LLM request returned null content");
+                logger.Log($"LLM request failed: StatusCode={response.StatusCode}, Error={response.ErrorMessage}");
                 return null;
             }
 
@@ -34,9 +35,9 @@ namespace Gemini
             return await ProcessLLMResponse(client, message, functionCalls);
         }
 
-        private static async Task<(string?, RestResponse)> SendRequest(GeminiClient client, object payload, bool isImageRequest)
+        private static async Task<(string?, RestResponse)> SendRequest(GeminiClient client, object payload, bool isImageRequest, bool isEmbedding)
         {
-            var url = isImageRequest ? client.GetGenerateUrl() : client.GetGenerateUrl();
+            var url = isEmbedding ? client.GetEmbedUrl() : client.GetGenerateUrl();
             var restClient = new RestClient(url);
             var request = new RestRequest { Method = Method.Post };
             request.AddHeader("Content-Type", "application/json");
@@ -46,7 +47,7 @@ namespace Gemini
             client.Logger.Log($"Sending request to {url} with payload: {jsonPayload.Substring(0, Math.Min(500, jsonPayload.Length))}...");
 
             client.UpdateStatus(Status.ReceivingData);
-            var rateLimiter = isImageRequest ? GenerationRateLimiter : GenerationRateLimiter;
+            var rateLimiter = isImageRequest || !isEmbedding ? GenerationRateLimiter : EmbeddingRateLimiter;
 
             const int maxRetries = 3;
             try
@@ -72,7 +73,7 @@ namespace Gemini
                                 continue;
                             }
                             response.ThrowIfError();
-                            client.Logger.Log($"LLM response received: {response.Content?.Substring(0, Math.Min(500, response.Content?.Length ?? 0))}...");
+                            client.Logger.Log($"Response received: {response.Content?.Substring(0, Math.Min(500, response.Content?.Length ?? 0))}...");
                             return (response.Content, response);
                         }
                         catch (Exception ex)
@@ -185,9 +186,27 @@ namespace Gemini
 
             foreach (var chunk in chunks)
             {
-                var prompt = ToolsAndPrompts.GetProcessedContentPrompt(searchTerms, client.OriginalUserQuery, chunk);
-                var response = await SendToLLM(client, prompt);
-                if (!string.IsNullOrEmpty(response)) combinedResponse.Add(response);
+                var resultText = string.Join("\n\n", chunk.Select(r => $"Source: {r.url}\n{r.content}"));
+                var promptText = ToolsAndPrompts.GetProcessedContentPrompt(searchTerms, client.OriginalUserQuery, chunk);
+                var payload = new
+                {
+                    contents = new[]
+                    {
+                        new { role = "user", parts = new[] { new { text = promptText } } }
+                    }
+                };
+
+                client.Logger.Log($"Sending LLM prompt (length: {promptText.Length}): {promptText.Substring(0, Math.Min(500, promptText.Length))}...");
+                var response = await SendToLLM(client, payload);
+                if (!string.IsNullOrEmpty(response))
+                {
+                    combinedResponse.Add(response);
+                }
+                else
+                {
+                    client.Logger.Log("LLM returned empty response for chunk");
+                    combinedResponse.Add($"Failed to process results from: {string.Join(", ", chunk.Select(c => c.url))}");
+                }
             }
 
             var finalResponse = string.Join("\n", combinedResponse);
@@ -209,14 +228,33 @@ namespace Gemini
                 return $"No memories found for '{searchTerms}'.";
 
             var chunks = ChunkMemories(memories);
+            client.Logger.Log($"Chunked {memories.Count} memories into {chunks.Count} parts");
             var combinedResponse = new List<string>();
 
             foreach (var chunk in chunks)
             {
                 var memoryContent = string.Join("\n\n", chunk.Select(m => $"Memory (ID: {m.id}, Score: {m.score:F3}):\n{m.content}"));
                 var prompt = $"Found relevant memories:\n\n{memoryContent}\n\nRespond to: '{client.OriginalUserQuery}'.";
-                var response = await SendToLLM(client, prompt);
-                if (!string.IsNullOrEmpty(response)) combinedResponse.Add(response);
+                var payload = new
+                {
+                    contents = new[]
+                    {
+                        new { role = "user", parts = new[] { new { text = prompt } } }
+                    }
+                };
+
+                var promptLength = prompt.Length;
+                client.Logger.Log($"Sending LLM prompt for chunk (length: {promptLength} chars): {prompt.Substring(0, Math.Min(500, promptLength))}...");
+                var response = await SendToLLM(client, payload);
+                if (!string.IsNullOrEmpty(response))
+                {
+                    combinedResponse.Add(response);
+                }
+                else
+                {
+                    client.Logger.Log($"LLM failed for chunk (length: {promptLength} chars), using fallback");
+                    combinedResponse.Add($"Summary of memory IDs {string.Join(", ", chunk.Select(m => m.id))}: Relevant to '{searchTerms}', but processing failed.");
+                }
             }
 
             var finalResponse = string.Join("\n", combinedResponse);
@@ -266,15 +304,15 @@ namespace Gemini
 
         private static List<List<(long id, string content, float score, DateTime createdAt)>> ChunkMemories(List<(long id, string content, float score, DateTime createdAt)> memories)
         {
-            const int maxTokens = 32000;
+            const int maxChars = 10000; // Safe limit for generateContent
             var chunks = new List<List<(long id, string content, float score, DateTime createdAt)>>();
             var currentChunk = new List<(long id, string content, float score, DateTime createdAt)>();
             int currentLength = 0;
 
             foreach (var memory in memories)
             {
-                int length = memory.content.Length / 4; // Rough token estimate
-                if (currentLength + length > maxTokens && currentChunk.Any())
+                int length = memory.content.Length + 100; // Overhead for metadata and formatting
+                if (currentLength + length > maxChars && currentChunk.Any())
                 {
                     chunks.Add(currentChunk);
                     currentChunk = new List<(long id, string content, float score, DateTime createdAt)>();
@@ -312,9 +350,12 @@ namespace Gemini
             try
             {
                 var payload = new { content = new { parts = new[] { new { text } } } };
-                var (content, _) = await SendRequest(client, payload, false);
+                var (content, response) = await SendRequest(client, payload, isImageRequest: false, isEmbedding: true);
                 if (string.IsNullOrEmpty(content))
+                {
+                    client.Logger.Log("Embedding request returned empty content");
                     return Array.Empty<float>();
+                }
 
                 var json = JsonDocument.Parse(content);
                 var values = json.RootElement.GetProperty("embedding").GetProperty("values").EnumerateArray()

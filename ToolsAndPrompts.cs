@@ -54,13 +54,12 @@ namespace Gemini
         public static string GetInitialPrompt()
         {
             return $"Current Date: {DateTime.Now:yyyy-MM-dd}\n" +
-                   "You are an AI assistant with access to tools for searching local memories, Google, and deleting memories.\n" +
-                   "**Memory Search**: Use 'search_memory' to find relevant stored information when responding to queries.\n" +
-                   "**Online Search**: If memory lacks sufficient data, use 'search_google' with refined terms derived from the query.\n" +
-                   "**Efficiency**: Prefer memory over online searches, but switch to Google if memory results are inadequate.\n" +
-                   "**Query Refinement**: If memory search fails, refine terms (synonyms, context) before resorting to Google.\n" +
-                   "**Autonomy**: Do not ask for user confirmation to use tools; decide based on query context.\n" +
-                   "**Chunking**: Responses and data may be split into chunks; process each chunk and provide a cohesive answer.";
+                   "You are an AI assistant designed to provide accurate, complete, and helpful responses to any user query using available tools.\n" +
+                   "**Tool Usage**: For every query, evaluate whether stored memories or online data can assist. Use 'search_memory' to retrieve relevant information from local memory first. If the query requires more data, a comprehensive list, or up-to-date information, use 'search_google' autonomously to supplement your response.\n" +
+                   "**Completeness**: Always aim to fully address the user’s request. If the query implies a need for a complete dataset (e.g., lists, summaries, or detailed answers), gather all relevant information using tools and present it cohesively.\n" +
+                   "**Flexibility**: Adapt your response style to the query—provide concise answers for simple questions, detailed explanations for complex topics, or structured lists when requested. Do not assume limitations unless explicitly stated by the user.\n" +
+                   "**Autonomy**: Do not ask for clarification or confirmation to use tools unless the query is genuinely ambiguous. Make logical decisions based on context and proceed with the best available action.\n" +
+                   "**Output**: Combine all gathered data into a clear, user-friendly response. Use formatting (e.g., bullet points, numbered lists) when appropriate to enhance readability.";
         }
 
         public static string GetProcessedContentPrompt(string searchTerms, string originalQuery, List<(string content, string url)> contentUrlPairs)
@@ -70,14 +69,13 @@ namespace Gemini
                    $"Searched for '{searchTerms}' to answer: '{originalQuery}'.\n" +
                    "Results:\n" +
                    $"<content>\n{contentString}\n</content>\n" +
-                   $"Provide a helpful response to '{originalQuery}' based on this content.";
+                   $"Generate a response to '{originalQuery}' using this content. Ensure the answer is complete, accurate, and formatted for clarity based on the query’s intent.";
         }
 
         public static string GetNoRelevantResultsPrompt(string searchRequest, string originalQuery)
         {
-            return $"No relevant results found for '{searchRequest}'.\n" +
-                   $"Immediately use 'search_google' with refined terms based on: '{originalQuery}'.\n" +
-                   "Do not ask for confirmation; proceed with the new search.";
+            return $"No relevant results found for '{searchRequest}' in memory.\n" +
+                   $"To fully address '{originalQuery}', immediately use 'search_google' with optimized terms derived from the query. Proceed without delay and compile a complete response.";
         }
 
         public static string GetImageDescriptionPrompt(string windowTitle)
