@@ -13,7 +13,6 @@ namespace Gemini
             var geminiClient = new GeminiClient(logger);
             var mainForm = new MainForm(geminiClient, statusManager, logger);
             
-            // Use a custom ApplicationContext
             var context = new TrayApplicationContext(mainForm);
             Application.Run(context);
         }
@@ -25,7 +24,7 @@ namespace Gemini
 
         public TrayApplicationContext(MainForm form)
         {
-            _mainForm = form;
+            _mainForm = form ?? throw new ArgumentNullException(nameof(form));
             _mainForm.Visible = false; // Ensure it starts hidden
             _mainForm.FormClosed += (s, e) => Application.Exit(); // Exit when form closes
         }

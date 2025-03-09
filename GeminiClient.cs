@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Threading;
 using System.Threading.Tasks;
 using dotenv.net;
 
@@ -15,8 +14,8 @@ namespace Gemini
         private readonly List<object> _tools;
         private readonly object _historyLock = new object();
         private string _originalUserQuery = string.Empty;
-        private const int MaxHistoryLength = 32;
-        private const int MaxCharsPerChunk = 32000; // Approximate token limit for Gemini 2.0 Flash
+        private const int MaxHistoryEntries = 32;
+        private const int MaxCharsPerChunk = 32000; // For generateContent
         private const string ApiBaseUrl = "https://generativelanguage.googleapis.com/v1beta/models/";
         private string _model = "gemini-2.0-flash";
         private string _embedModel = "text-embedding-004";
@@ -176,10 +175,10 @@ namespace Gemini
 
         private void TrimHistoryIfNeeded(List<Dictionary<string, string>> messages)
         {
-            if (messages.Count > MaxHistoryLength * 4)
+            if (messages.Count > MaxHistoryEntries)
             {
-                Logger.Log($"Trimming history from {messages.Count} to {MaxHistoryLength * 2}");
-                messages.RemoveRange(0, messages.Count - MaxHistoryLength * 2);
+                Logger.Log($"Trimming history from {messages.Count} to {MaxHistoryEntries}");
+                messages.RemoveRange(0, messages.Count - MaxHistoryEntries);
             }
         }
 
@@ -191,15 +190,20 @@ namespace Gemini
 
             foreach (var msg in messages)
             {
-                int msgLength = msg.GetValueOrDefault("content", "").Length + (msg.ContainsKey("image") ? msg.GetValueOrDefault("image", "").Length : 0); // Rough estimate for image
-                if (currentLength + msgLength > MaxCharsPerChunk && currentChunk.Any())
+                string content = msg.GetValueOrDefault("content", "") + (msg.ContainsKey("image") ? "[image]" : ""); // Rough image placeholder
+                var msgChunks = Utils.ChunkText(content, MaxCharsPerChunk);
+                foreach (var chunk in msgChunks)
                 {
-                    chunks.Add(currentChunk);
-                    currentChunk = new List<Dictionary<string, string>>();
-                    currentLength = 0;
+                    var chunkMsg = new Dictionary<string, string>(msg) { ["content"] = chunk };
+                    if (currentLength + chunk.Length > MaxCharsPerChunk && currentChunk.Any())
+                    {
+                        chunks.Add(currentChunk);
+                        currentChunk = new List<Dictionary<string, string>>();
+                        currentLength = 0;
+                    }
+                    currentChunk.Add(chunkMsg);
+                    currentLength += chunk.Length;
                 }
-                currentChunk.Add(msg);
-                currentLength += msgLength;
             }
 
             if (currentChunk.Any()) chunks.Add(currentChunk);
@@ -215,8 +219,7 @@ namespace Gemini
             {
                 contents = chunk.Select(m =>
                 {
-                    partsList.Clear(); // Reuse the list to avoid allocations per iteration
-
+                    partsList.Clear();
                     if (m.ContainsKey("content"))
                         partsList.Add(new { text = m["content"] });
                     if (m.ContainsKey("image"))
@@ -228,31 +231,6 @@ namespace Gemini
             };
 
             return await ApiFunctions.SendToLLM(this, payload) ?? string.Empty;
-        }
-
-        public async Task<string> ExtractKeywords(string content)
-        {
-            string prompt = $"Given the following content, extract the 5 most relevant keywords that best summarize its topic. Include original search terms if available in the contents. Return them as a space-separated list:\n\n{content}";
-            var payload = new
-            {
-                contents = new[]
-                {
-                    new { role = "user", parts = new[] { new { text = prompt } } }
-                }
-            };
-
-            string? response = await ApiFunctions.SendToLLM(this, payload);
-            if (string.IsNullOrEmpty(response))
-            {
-                Logger.Log("LLM failed to provide keywords; falling back to 'unknown'");
-                return "unknown";
-            }
-
-            // Clean and validate the response
-            string topic = response.Trim();
-
-            Logger.Log($"Extracted keywords from LLM: {topic}");
-            return topic;
         }
 
         private void UpdateHistory(List<Dictionary<string, string>> messages, Dictionary<string, string> userMessage, string response)

@@ -22,6 +22,7 @@
   <ItemGroup>
     <PackageReference Include="dotenv.net" Version="3.2.1" />
     <PackageReference Include="HtmlAgilityPack" Version="1.11.74" />
+    <PackageReference Include="Markdig" Version="0.40.0" />
     <PackageReference Include="Microsoft.Data.SQLite" Version="9.0.2" />
     <PackageReference Include="RestSharp" Version="112.1.0" />
     <PackageReference Include="SentenceTransformers" Version="25.2.56400" />

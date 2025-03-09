@@ -20,17 +20,6 @@ namespace Gemini
                                 properties = new { query = new { type = "string", description = "The search query." } },
                                 required = new[] { "query" }
                             }
-                        },
-                        new
-                        {
-                            name = "delete_memories",
-                            description = "Deletes specified memories by their IDs.",
-                            parameters = new
-                            {
-                                type = "object",
-                                properties = new { ids = new { type = "array", items = new { type = "integer" }, description = "List of memory IDs to delete." } },
-                                required = new[] { "ids" }
-                            }
                         }
                     }
                 }

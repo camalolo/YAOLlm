@@ -1,6 +1,7 @@
 using System.Runtime.InteropServices;
 using System.Reflection;
 using System.Drawing.Imaging;
+using System.Text;
 
 namespace Gemini
 {
@@ -9,11 +10,11 @@ namespace Gemini
         private readonly GeminiClient _geminiClient;
         private readonly StatusManager _statusManager;
         private readonly Logger _logger;
-        private NotifyIcon? _trayIcon;
-        private RichTextBox? _chatBox;
-        private TextBox? _inputField;
-        private Label? _statusLabel;
-        private Label? _historyLabel;
+        private readonly NotifyIcon _trayIcon = new NotifyIcon();
+        private readonly RichTextBox _chatBox;
+        private readonly TextBox _inputField;
+        private readonly Label _statusLabel;
+        private readonly Label _historyLabel;
 
         // Global hotkey constants
         private const int WM_HOTKEY = 0x0312;
@@ -32,24 +33,19 @@ namespace Gemini
             _geminiClient = geminiClient ?? throw new ArgumentNullException(nameof(geminiClient));
             _statusManager = statusManager ?? throw new ArgumentNullException(nameof(statusManager));
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
-            _trayIcon = new NotifyIcon();
 
-            InitializeComponents();
+            _chatBox = CreateChatBox();
+            _inputField = CreateInputField();
+            _statusLabel = CreateLabel("Idle", DockStyle.None, new Point(0, 0));
+            _historyLabel = CreateLabel("[0]", DockStyle.Right);
+
             ConfigureForm();
             SetupTrayIcon();
             RegisterGlobalHotkey();
 
             _geminiClient.SetUICallbacks(UpdateChat, UpdateHistoryCounter, _statusManager.SetStatus);
-            if (_statusLabel != null) _statusManager.StatusChanged += status => _statusLabel.InvokeIfRequired(() => _statusLabel.Text = status.ToString());
+            _statusManager.StatusChanged += status => _statusLabel.InvokeIfRequired(() => _statusLabel.Text = status.ToString());
             this.FormClosing += MainForm_FormClosing;
-        }
-
-        private void InitializeComponents()
-        {
-            _chatBox = CreateChatBox();
-            _inputField = CreateInputField();
-            _statusLabel = CreateLabel("Idle", DockStyle.None, new Point(0, 0));
-            _historyLabel = CreateLabel("[0]", DockStyle.Right);
         }
 
         private void ConfigureForm()
@@ -67,7 +63,6 @@ namespace Gemini
             var buttonPanel = CreateButtonPanel();
             var spacerPanel = new Panel { Height = 10, Dock = DockStyle.Bottom, BackColor = Color.Black };
 
-            if (_chatBox != null && _inputField != null)
                 this.Controls.AddRange(new Control[] { _chatBox, spacerPanel, _inputField, buttonPanel, topPanel });
             _logger.Log($"Form configured: Visible = {this.Visible}");
         }
@@ -83,18 +78,17 @@ namespace Gemini
         private Panel CreateButtonPanel()
         {
             var panel = new Panel { Dock = DockStyle.Bottom, BackColor = Color.Black, Height = 48 };
-            var buttons = new (string id, string text, Action action)[]
+            var buttons = new Dictionary<string, (string text, Action action)>
             {
-                ("send", "Send", SendMessage),
-                ("capture_send", "Capture && Send", CaptureAndSend),
-                ("proceed", "Proceed", () => SendPresetMessage("[Proceed]")),
-                ("search_online", "Search Online", () => SendPresetMessage("[Search online]")),
-                ("playing", "Playing", SendPlayingMessage),
-                ("clear", "Clear", ClearChat)
+                ["send"] = ("Send", SendMessage),
+                ["playing"] = ("Playing", SendPlayingMessage),
+                ["capture_send"] = ("Capture && Send", CaptureAndSend),
+                ["proceed"] = ("Proceed", () => SendPresetMessage("Please proceed")),
+                ["clear"] = ("Clear", ClearChat)
             };
 
             int x = 0;
-            foreach (var (id, text, action) in buttons)
+            foreach (var (id, (text, action)) in buttons)
             {
                 var btn = CreateButton(text, DockStyle.None, action, 1, new Point(x, 5));
                 btn.Tag = id;
@@ -102,12 +96,8 @@ namespace Gemini
                 x += btn.Width + 10;
             }
 
-            if (_statusLabel != null)
-            {
                 _statusLabel.Location = new Point(x, 10);
                 panel.Controls.Add(_statusLabel);
-            }
-            if (_historyLabel != null)
                 panel.Controls.Add(_historyLabel);
 
             return panel;
@@ -181,8 +171,6 @@ namespace Gemini
         }
 
         private void SetupTrayIcon()
-        {
-            if (_trayIcon != null)
             {
                 _trayIcon.Text = "Gemini Overlay";
                 _trayIcon.Visible = true;
@@ -200,7 +188,6 @@ namespace Gemini
                 {
                     _trayIcon.Icon = SystemIcons.Application;
                     _logger.Log($"Error loading tray icon: {ex.Message}");
-                }
             }
         }
 
@@ -222,7 +209,7 @@ namespace Gemini
         private void MainForm_FormClosing(object? sender, FormClosingEventArgs e)
         {
             UnregisterHotKey(this.Handle, HOTKEY_ID);
-            _trayIcon?.Dispose();
+            _trayIcon.Dispose();
             _logger.Log("Hotkey unregistered and tray icon disposed.");
         }
 
@@ -237,41 +224,29 @@ namespace Gemini
                 HideOverlay();
         }
 
-        private void SendMessage()
-        {
-            if (_inputField != null)
-            {
-                string message = _inputField.Text.Trim();
-                if (string.IsNullOrEmpty(message)) return;
-                UpdateChat($"You: {message}\r\n", "white");
-                _geminiClient.OriginalUserQuery = message;
-                _inputField.Text = "";
-                Task.Run(() => _geminiClient.ProcessLLMRequest(message));
-            }
-        }
+        private void SendMessage() => SendMessage(_inputField.Text);
 
         private void CaptureAndSend()
-        {
-            if (_inputField != null)
             {
                 string message = _inputField.Text.Trim();
-                if (!string.IsNullOrEmpty(message))
-                {
-                    UpdateChat($"You: {message}\r\n", "white");
-                    _inputField.Text = "";
-                }
                 var (imageBase64, title) = CaptureScreen();
                 if (!string.IsNullOrEmpty(imageBase64))
-                    Task.Run(() => _geminiClient.ProcessLLMRequest(message, imageBase64, title));
+                SendMessage(message, imageBase64, title);
                 else
-                    UpdateChat("Error: Screen capture failed.\r\n", "grey");
-            }
+                    UpdateChat("Error: Screen capture failed.\r\n", "system");
         }
 
-        private void SendPresetMessage(string message)
+        private void SendPresetMessage(string message) => SendMessage(message);
+
+        private void SendMessage(string message, string? imageBase64 = null, string? title = null)
         {
-            UpdateChat($"You: {message}\r\n", "white");
-            Task.Run(() => _geminiClient.ProcessLLMRequest(message));
+            message = message.Trim();
+            if (string.IsNullOrEmpty(message) && string.IsNullOrEmpty(imageBase64)) return;
+
+            UpdateChat($"You: {message}\r\n", "user");
+            _geminiClient.OriginalUserQuery = message;
+            _inputField.Text = "";
+            Task.Run(() => _geminiClient.ProcessLLMRequest(message, imageBase64, title));
         }
 
         private void SendPlayingMessage()
@@ -287,17 +262,14 @@ namespace Gemini
                 SendPresetMessage(message);
             }
             else
-                UpdateChat("Error: Could not detect active window.\r\n", "grey");
+                UpdateChat("Error: Could not detect active window.\r\n", "system");
         }
 
         private void ClearChat()
-        {
-            if (_chatBox != null)
             {
                 _chatBox.Clear();
                 _geminiClient.ClearConversationHistory();
                 UpdateHistoryCounter();
-            }
         }
 
         private void UpdateChat(string message, string role)
@@ -320,12 +292,9 @@ namespace Gemini
         }
 
         private void UpdateHistoryCounter()
-        {
-            if (_historyLabel != null)
             {
             int length = _geminiClient.GetConversationHistoryLength();
             _historyLabel.InvokeIfRequired(() => _historyLabel.Text = $"[{length}]");
-            }
         }
 
         private (string, string) CaptureScreen()
@@ -341,7 +310,7 @@ namespace Gemini
                 this.Visible = true;
                 
                 var message = "[Screenshot Taken]";
-                UpdateChat($"You: {message}\r\n", "white");
+                UpdateChat($"You: {message}\r\n", "user");
 
                 FocusInputField();
 
@@ -358,7 +327,7 @@ namespace Gemini
 
         private void FocusInputField()
         {
-            if (_inputField != null) _inputField.InvokeIfRequired(() => { this.Activate(); _inputField.Focus(); });
+            _inputField.InvokeIfRequired(() => { this.Activate(); _inputField.Focus(); });
         }
 
         private void ToggleVisibility()

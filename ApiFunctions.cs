@@ -7,10 +7,8 @@ namespace Gemini
     {
         private const int EmbeddingRpmLimit = 1500;
         private const int GenerationRpmLimit = 15;
-        private const int ExpectedEmbeddingDimension = 768;
         private static readonly SemaphoreSlim EmbeddingRateLimiter = new(EmbeddingRpmLimit, EmbeddingRpmLimit);
         private static readonly SemaphoreSlim GenerationRateLimiter = new(GenerationRpmLimit, GenerationRpmLimit);
-        private static readonly TimeSpan RateLimitReset = TimeSpan.FromSeconds(60);
 
         public static async Task<string?> SendToLLM(GeminiClient client, object payload, string? imageBase64 = null)
         {
@@ -121,6 +119,7 @@ namespace Gemini
             logger.Log($"Extracted: Message='{message.Substring(0, Math.Min(100, message.Length))}...', FunctionCalls={functionCalls.Count}");
             return (message, functionCalls);
         }
+
         private static async Task<string> ProcessLLMResponse(GeminiClient client, string message, List<JsonElement> functionCalls)
         {
             if (functionCalls.Any())
@@ -146,8 +145,6 @@ namespace Gemini
                     {
                         case "search":
                             return await HandleSearch(client, funcCall.Value.args);
-                        case "delete_memories":
-                            return await HandleDeleteMemories(client, funcCall.Value.args);
                         default:
                             client.Logger.Log($"Unknown function call: {funcCall.Value.name}");
                             break;
@@ -166,11 +163,9 @@ namespace Gemini
                 return "No query provided for search.";
             }
 
-            // Search memories first
             var memories = await client.MemoryManager.SearchMemory(query);
             if (memories.Any())
             {
-                // Process memories
                 var chunks = ChunkMemories(memories);
                 var combinedResponse = new List<string>();
                 foreach (var chunk in chunks)
@@ -181,29 +176,23 @@ namespace Gemini
                     {
                         contents = new[]
                         {
-                    new { role = "user", parts = new[] { new { text = prompt } } }
-                }
+                            new { role = "user", parts = new[] { new { text = prompt } } }
+                        }
                     };
                     var response = await SendToLLM(client, payload);
                     if (!string.IsNullOrEmpty(response))
-                    {
                         combinedResponse.Add(response);
-                    }
                     else
-                    {
                         combinedResponse.Add($"Failed to process memories.");
-                    }
                 }
                 return string.Join("\n", combinedResponse);
             }
             else
             {
-                // No memories found, perform Google search
                 var results = await client.SearchService.PerformSearch(query, client.OriginalUserQuery);
                 if (!results.Any())
-                {
                     return $"No relevant results found for '{query}'.";
-                }
+
                 var chunks = ChunkSearchResults(results);
                 var combinedResponse = new List<string>();
                 foreach (var chunk in chunks)
@@ -214,56 +203,40 @@ namespace Gemini
                     {
                         contents = new[]
                         {
-                    new { role = "user", parts = new[] { new { text = promptText } } }
-                }
+                            new { role = "user", parts = new[] { new { text = promptText } } }
+                        }
                     };
                     var response = await SendToLLM(client, payload);
                     if (!string.IsNullOrEmpty(response))
-                    {
                         combinedResponse.Add(response);
-                    }
                     else
-                    {
                         combinedResponse.Add($"Failed to process search results.");
-                    }
                 }
                 return string.Join("\n", combinedResponse);
-            }
-        }
-        private static async Task<string> HandleDeleteMemories(GeminiClient client, Dictionary<string, object> args)
-        {
-            var idsJson = (JsonElement)args["ids"];
-            var ids = idsJson.EnumerateArray().Select(id => id.GetInt64()).ToList();
-            try
-            {
-                await Task.Run(() => client.MemoryManager.DeleteMemories(ids));
-                return $"Deleted memories with IDs: {string.Join(", ", ids)}.";
-            }
-            catch (Exception ex)
-            {
-                client.Logger.Log($"Failed to delete memories: {ex.Message}");
-                return $"Failed to delete memories: {ex.Message}";
             }
         }
 
         private static List<List<(string content, string url)>> ChunkSearchResults(List<(string content, string url)> results)
         {
-            const int maxTokens = 32000;
             var chunks = new List<List<(string content, string url)>>();
             var currentChunk = new List<(string content, string url)>();
             int currentLength = 0;
 
             foreach (var result in results)
             {
-                int length = result.content.Length / 4; // Rough token estimate
-                if (currentLength + length > maxTokens && currentChunk.Any())
+                var resultChunks = Utils.ChunkText(result.content, Utils.MaxCharsForGenerating);
+                foreach (var chunk in resultChunks)
                 {
-                    chunks.Add(currentChunk);
-                    currentChunk = new List<(string content, string url)>();
-                    currentLength = 0;
+                    var chunkedResult = (chunk, result.url);
+                    if (currentLength + chunk.Length > Utils.MaxCharsForGenerating && currentChunk.Any())
+                    {
+                        chunks.Add(currentChunk);
+                        currentChunk = new List<(string content, string url)>();
+                        currentLength = 0;
+                    }
+                    currentChunk.Add(chunkedResult);
+                    currentLength += chunk.Length;
                 }
-                currentChunk.Add(result);
-                currentLength += length;
             }
 
             if (currentChunk.Any()) chunks.Add(currentChunk);
@@ -272,22 +245,25 @@ namespace Gemini
 
         private static List<List<(long id, string content, float score, DateTime createdAt)>> ChunkMemories(List<(long id, string content, float score, DateTime createdAt)> memories)
         {
-            const int maxChars = 10000; // Safe limit for generateContent
             var chunks = new List<List<(long id, string content, float score, DateTime createdAt)>>();
             var currentChunk = new List<(long id, string content, float score, DateTime createdAt)>();
             int currentLength = 0;
 
             foreach (var memory in memories)
             {
-                int length = memory.content.Length + 100; // Overhead for metadata and formatting
-                if (currentLength + length > maxChars && currentChunk.Any())
+                var memoryChunks = Utils.ChunkText(memory.content, Utils.MaxCharsForGenerating);
+                foreach (var chunk in memoryChunks)
                 {
-                    chunks.Add(currentChunk);
-                    currentChunk = new List<(long id, string content, float score, DateTime createdAt)>();
-                    currentLength = 0;
+                    var chunkedMemory = (memory.id, chunk, memory.score, memory.createdAt);
+                    if (currentLength + chunk.Length > Utils.MaxCharsForGenerating && currentChunk.Any())
+                    {
+                        chunks.Add(currentChunk);
+                        currentChunk = new List<(long id, string content, float score, DateTime createdAt)>();
+                        currentLength = 0;
+                    }
+                    currentChunk.Add(chunkedMemory);
+                    currentLength += chunk.Length;
                 }
-                currentChunk.Add(memory);
-                currentLength += length;
             }
 
             if (currentChunk.Any()) chunks.Add(currentChunk);
@@ -302,7 +278,10 @@ namespace Gemini
                     return null;
 
                 var name = funcCall.GetProperty("name").GetString();
-                var args = JsonSerializer.Deserialize<Dictionary<string, object>>(funcCall.GetProperty("args").ToString());
+                var argsJson = funcCall.GetProperty("args");
+                var args = argsJson.ValueKind == JsonValueKind.Object
+                    ? JsonSerializer.Deserialize<Dictionary<string, object>>(argsJson.ToString())
+                    : null;
                 return (name, args);
             }
             catch (Exception ex)
@@ -329,9 +308,9 @@ namespace Gemini
                 var values = json.RootElement.GetProperty("embedding").GetProperty("values").EnumerateArray()
                     .Select(v => v.GetSingle()).ToArray();
 
-                if (values.Length != ExpectedEmbeddingDimension)
+                if (values.Length != Utils.ExpectedEmbeddingDimension)
                 {
-                    client.Logger.Log($"Embedding dimension mismatch: expected {ExpectedEmbeddingDimension}, got {values.Length}");
+                    client.Logger.Log($"Embedding dimension mismatch: expected {Utils.ExpectedEmbeddingDimension}, got {values.Length}");
                     return Array.Empty<float>();
                 }
 

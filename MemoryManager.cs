@@ -6,8 +6,6 @@ namespace Gemini
         private readonly GeminiClient _client;
         private readonly SQLiteMemoryStore _store;
         private bool _disposed;
-        private const int ExpectedEmbeddingDimension = 768;
-        private const int MaxCharsForEmbedding = 8000;
 
         public MemoryManager(Logger logger, GeminiClient client)
         {
@@ -39,31 +37,24 @@ namespace Gemini
 
             try
             {
-                var chunks = ChunkContentForEmbedding(content);
+                var chunks = Utils.ChunkText(content, maxLength: Utils.MaxCharsForEmbedding); // Using your updated call
                 var ids = new List<long>();
 
                 for (int i = 0; i < chunks.Count; i++)
                 {
-                    string currentChunk = chunks[i].ToString();
-
+                    string currentChunk = chunks[i];
                     string chunkUrl = chunks.Count > 1 && url != null ? $"{url}#chunk{i + 1}" : url ?? "";
 
-                    var embeddingTask = _client.Embed(currentChunk);
-                    var topicTask = _client.ExtractKeywords(currentChunk);
-                    await Task.WhenAll(embeddingTask, topicTask);
-                    float[] embedding = embeddingTask.Result;
-                    
-                    if (embedding.Length != ExpectedEmbeddingDimension)
+                    float[] embedding = await _client.Embed(currentChunk);
+                    if (embedding.Length != Utils.ExpectedEmbeddingDimension)
                     {
-                        _logger.Log($"Embedding mismatch: expected {ExpectedEmbeddingDimension}, got {embedding.Length}");
+                        _logger.Log($"Embedding mismatch: expected {Utils.ExpectedEmbeddingDimension}, got {embedding.Length}");
                         throw new InvalidOperationException("Invalid embedding dimension");
                     }
-                    
-                    string topic = topicTask.Result;
 
-                    long id = _store.StoreMemory(currentChunk, embedding, chunkUrl, topic);
+                    long id = _store.StoreMemory(currentChunk, embedding, chunkUrl);
                     ids.Add(id);
-                    _logger.Log($"Stored memory chunk with ID: {id}, URL: {chunkUrl}, Topic: {topic}");
+                    _logger.Log($"Stored memory chunk with ID: {id}, URL: {chunkUrl}");
                 }
 
                 return ids;
@@ -84,18 +75,6 @@ namespace Gemini
             return await _store.SearchMemory(query, _client, maxResults);
         }
 
-        public void DeleteMemories(List<long> ids)
-        {
-            if (_disposed) throw new ObjectDisposedException(nameof(MemoryManager));
-            if (ids == null || !ids.Any())
-            {
-                _logger.Log("No memory IDs provided for deletion");
-                return;
-            }
-
-            _store.DeleteMemories(ids);
-        }
-
         public async Task StoreSearchResults(List<(string content, string url)> results)
         {
             foreach (var (content, url) in results)
@@ -111,34 +90,6 @@ namespace Gemini
                     _logger.Log($"Failed to store search result for URL {url}: {ex.Message}");
                 }
             }
-        }
-
-        private List<string> ChunkContentForEmbedding(string content)
-        {
-            if (content.Length <= MaxCharsForEmbedding)
-                return new List<string> { content };
-
-            var chunks = new List<string>();
-            int start = 0;
-            while (start < content.Length)
-            {
-                int length = Math.Min(MaxCharsForEmbedding, content.Length - start);
-                int end = start + length;
-
-                if (end < content.Length)
-                {
-                    int lastPeriod = content.LastIndexOf('.', end - 1, length);
-                    int lastNewline = content.LastIndexOf('\n', end - 1, length);
-                    int splitPoint = Math.Max(lastPeriod, lastNewline);
-                    if (splitPoint > start) end = splitPoint + 1;
-                }
-
-                chunks.Add(content.Substring(start, end - start).Trim());
-                start = end;
-            }
-
-            _logger.Log($"Chunked content for embedding into {chunks.Count} parts (max {MaxCharsForEmbedding} chars each)");
-            return chunks;
         }
 
         public void Dispose()

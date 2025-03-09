@@ -13,25 +13,20 @@
 
             _logFilePath = Path.Combine(LogDirectory, logFileName);
             EnsureLogDirectoryExists();
-            WriteInitialLog();
+            Log($"Logger initialized. Log file: {_logFilePath}", isInternal: true);
         }
 
         private void EnsureLogDirectoryExists()
         {
             var directory = Path.GetDirectoryName(_logFilePath);
-            if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
+            if (directory != null && !Directory.Exists(directory)) // Simplified check
             {
                 Directory.CreateDirectory(directory);
-                LogInternal($"Created log directory: {directory}");
+                Log($"Created log directory: {directory}", isInternal: true);
             }
         }
 
-        private void WriteInitialLog()
-        {
-            LogInternal($"Logger initialized. Log file: {_logFilePath}");
-        }
-
-        public void Log(string message)
+        public void Log(string message, bool isInternal = false)
         {
             try
             {
@@ -44,22 +39,8 @@
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Logging error: {ex.Message} - Original message: {message}");
-            }
-        }
-
-        private void LogInternal(string message)
-        {
-            try
-            {
-                lock (_lock)
-                {
-                    File.AppendAllText(_logFilePath, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - {message}" + Environment.NewLine);
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Internal logging error: {ex.Message} - Message: {message}");
+                var errorType = isInternal ? "Internal logging error" : "Logging error";
+                Console.WriteLine($"{errorType}: {ex.Message} - Message: {message}");
             }
         }
     }

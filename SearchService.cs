@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using RestSharp;
 using HtmlAgilityPack;
+using System.Net.Http;
 
 namespace Gemini
 {
@@ -13,13 +14,9 @@ namespace Gemini
         private readonly string _googleSearchApiKey;
         private readonly string _googleSearchEngineId;
         private readonly Func<List<(string content, string url)>, Task> _onSearchComplete;
-        private readonly ConcurrentDictionary<string, List<string>> _urlCache = new();
-        private readonly ConcurrentDictionary<string, int> _startIndices = new();
-        private readonly ConcurrentDictionary<string, (string content, float[] embedding)> _contentCache = new();
         private static readonly HttpClient _httpClient = new();
         private const int MaxResultsPerSearch = 10;
         private const double RelevanceThreshold = 0.5;
-        private const int ExpectedEmbeddingDimension = 768;
 
         static SearchService()
         {
@@ -47,7 +44,7 @@ namespace Gemini
             }
 
             _client.UpdateStatus(Status.Searching);
-            var urls = await FetchSearchUrls(searchTerms);
+            var urls = await PerformGoogleSearch(searchTerms);
             if (!urls.Any())
             {
                 _logger.Log($"No URLs found for: {searchTerms}");
@@ -74,32 +71,17 @@ namespace Gemini
             return results;
         }
 
-        private async Task<List<string>> FetchSearchUrls(string searchTerms)
-        {
-            if (_urlCache.TryGetValue(searchTerms, out var cachedUrls))
-            {
-                _logger.Log($"Using cached URLs for '{searchTerms}': {string.Join(", ", cachedUrls)}");
-                return cachedUrls;
-            }
-
-            var urls = await PerformGoogleSearch(searchTerms);
-            _urlCache[searchTerms] = urls;
-            return urls;
-        }
-
         private async Task<List<string>> PerformGoogleSearch(string searchTerms)
         {
             try
             {
                 _logger.Log($"Google search: {searchTerms}");
-                _startIndices.TryAdd(searchTerms, 1); // Initialize if not present
                 var client = new RestClient("https://www.googleapis.com/customsearch/v1");
                 var request = new RestRequest { Method = Method.Get };
                 request.AddParameter("key", _googleSearchApiKey);
                 request.AddParameter("cx", _googleSearchEngineId);
                 request.AddParameter("q", searchTerms);
                 request.AddParameter("num", MaxResultsPerSearch);
-                request.AddParameter("start", _startIndices[searchTerms]);
 
                 var response = await client.ExecuteAsync(request);
                 response.ThrowIfError();
@@ -113,7 +95,6 @@ namespace Gemini
                 var data = JsonSerializer.Deserialize<JsonElement>(response.Content);
                 if (data.TryGetProperty("items", out var items))
                 {
-                    _startIndices[searchTerms] += MaxResultsPerSearch;
                     var urls = items.EnumerateArray()
                         .Select(item => item.GetProperty("link").GetString() ?? string.Empty)
                         .Where(url => !string.IsNullOrEmpty(url))
@@ -136,12 +117,6 @@ namespace Gemini
         {
             return await Task.WhenAll(urls.Select(async url =>
             {
-                if (_contentCache.TryGetValue(url, out var cached))
-                {
-                    _logger.Log($"Using cached content for: {url}");
-                    return cached;
-                }
-
                 try
                 {
                     var html = await _httpClient.GetStringAsync(url);
@@ -161,10 +136,8 @@ namespace Gemini
                     var embedding = await _client.Embed(text);
                     text = $"Content based on search terms: {searchterms} and retrieved from {url}:\n\n" + text;
 
-                    var result = (text, embedding);
-                    _contentCache[url] = result;
                     _logger.Log($"Scraped {text.Length} chars from: {url}");
-                    return result;
+                    return (text, embedding);
                 }
                 catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.Forbidden)
                 {
@@ -202,11 +175,11 @@ namespace Gemini
         }
 
         private async Task<List<(string content, string url)>> ProcessScrapedData(
-    (string content, float[] embedding)[] scrapedData, string searchTerms, List<string> urls, string originalQuery)
+            (string content, float[] embedding)[] scrapedData, string searchTerms, List<string> urls, string originalQuery)
         {
             var validData = scrapedData
                 .Select((data, i) => (data.content, data.embedding, url: urls[i], searchterms: searchTerms))
-                .Where(d => !string.IsNullOrEmpty(d.content) && d.embedding.Length == ExpectedEmbeddingDimension)
+                .Where(d => !string.IsNullOrEmpty(d.content) && d.embedding.Length == Utils.ExpectedEmbeddingDimension)
                 .ToList();
 
             if (!validData.Any())
@@ -216,21 +189,20 @@ namespace Gemini
             }
 
             var queryEmbedding = await _client.Embed(searchTerms);
-            if (queryEmbedding.Length != ExpectedEmbeddingDimension)
+            if (queryEmbedding.Length != Utils.ExpectedEmbeddingDimension)
             {
-                _logger.Log($"Query embedding mismatch: expected {ExpectedEmbeddingDimension}, got {queryEmbedding.Length}");
+                _logger.Log($"Query embedding mismatch: expected {Utils.ExpectedEmbeddingDimension}, got {queryEmbedding.Length}");
                 return new List<(string, string)>();
             }
 
-            // Calculate max content length for normalization
             var maxLength = validData.Max(d => d.content.Length);
-            const float LengthWeight = 0.3f; // Adjust this to balance length vs similarity (0 to 1)
+            const float LengthWeight = 0.3f;
 
             var scores = validData.Select(d =>
             {
-                float similarity = CosineSimilarity(d.embedding, queryEmbedding);
-                float lengthFactor = maxLength > 0 ? (float)d.content.Length / maxLength : 0; // Normalize length
-                return (1 - LengthWeight) * similarity + LengthWeight * lengthFactor; // Weighted combination
+                float similarity = Utils.CosineSimilarity(d.embedding, queryEmbedding);
+                float lengthFactor = maxLength > 0 ? (float)d.content.Length / maxLength : 0;
+                return (1 - LengthWeight) * similarity + LengthWeight * lengthFactor;
             }).ToList();
 
             var results = validData
@@ -243,23 +215,6 @@ namespace Gemini
 
             _logger.Log($"Processed {results.Count} relevant results for '{searchTerms}'");
             return results;
-        }
-
-        private static float CosineSimilarity(float[] a, float[] b)
-        {
-            int length = Math.Min(a.Length, b.Length);
-            if (length == 0) return 0;
-
-            float dot = 0, magA = 0, magB = 0;
-            for (int i = 0; i < length; i++)
-            {
-                dot += a[i] * b[i];
-                magA += a[i] * a[i];
-                magB += b[i] * b[i];
-            }
-            magA = (float)Math.Sqrt(magA);
-            magB = (float)Math.Sqrt(magB);
-            return magA * magB == 0 ? 0 : dot / (magA * magB);
         }
     }
 }
