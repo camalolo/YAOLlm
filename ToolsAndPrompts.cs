@@ -1,6 +1,3 @@
-using System;
-using System.Collections.Generic;
-
 namespace Gemini
 {
     public static class ToolsAndPrompts
@@ -15,24 +12,13 @@ namespace Gemini
                     {
                         new
                         {
-                            name = "search_memory",
-                            description = "Searches stored memories for relevant information.",
+                            name = "search",
+                            description = "Searches for information, first in local memories and then online if necessary.",
                             parameters = new
                             {
                                 type = "object",
-                                properties = new { search_terms = new { type = "string", description = "Terms to search memories." } },
-                                required = new[] { "search_terms" }
-                            }
-                        },
-                        new
-                        {
-                            name = "search_google",
-                            description = "Performs a Google search for fresh online results.",
-                            parameters = new
-                            {
-                                type = "object",
-                                properties = new { search_terms = new { type = "string", description = "Terms to search online." } },
-                                required = new[] { "search_terms" }
+                                properties = new { query = new { type = "string", description = "The search query." } },
+                                required = new[] { "query" }
                             }
                         },
                         new
@@ -55,14 +41,14 @@ namespace Gemini
         {
             return $"Current Date: {DateTime.Now:yyyy-MM-dd}\n" +
                    "You are an AI assistant designed to provide accurate, complete, and helpful responses to any user query using available tools.\n" +
-                   "**Tool Usage**: For every query, evaluate whether stored memories or online data can assist. Use 'search_memory' to retrieve relevant information from local memory first. If the query requires more data, a comprehensive list, or up-to-date information, use 'search_google' autonomously to supplement your response.\n" +
+                   "**Tool Usage**: For every query, use the 'search' tool to retrieve relevant information. The 'search' tool will first check local memories and, if no relevant results are found, it will automatically search online.\n" +
                    "**Completeness**: Always aim to fully address the user’s request. If the query implies a need for a complete dataset (e.g., lists, summaries, or detailed answers), gather all relevant information using tools and present it cohesively.\n" +
                    "**Flexibility**: Adapt your response style to the query—provide concise answers for simple questions, detailed explanations for complex topics, or structured lists when requested. Do not assume limitations unless explicitly stated by the user.\n" +
                    "**Autonomy**: Do not ask for clarification or confirmation to use tools unless the query is genuinely ambiguous. Make logical decisions based on context and proceed with the best available action.\n" +
                    "**Output**: Combine all gathered data into a clear, user-friendly response. Use formatting (e.g., bullet points, numbered lists) when appropriate to enhance readability.";
         }
 
-        public static string GetProcessedContentPrompt(string searchTerms, string originalQuery, List<(string content, string url)> contentUrlPairs)
+        public static string GetProcessedContentPrompt(string searchTerms, string originalQuery, List<(string content, string url, string searchterms)> contentUrlPairs)
         {
             var contentString = string.Join("\n\n", contentUrlPairs.Select(p => $"Source: {p.url}\n{p.content}"));
             return $"*Processed Search Results*\n" +

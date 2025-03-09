@@ -1,11 +1,5 @@
-using System;
-using System.Drawing;
-using System.Windows.Forms;
-using System.Threading;
-using System.Threading.Tasks;
 using System.Runtime.InteropServices;
 using System.Reflection;
-using System.IO;
 using System.Drawing.Imaging;
 
 namespace Gemini

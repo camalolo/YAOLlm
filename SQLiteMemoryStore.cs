@@ -1,8 +1,4 @@
 using Microsoft.Data.Sqlite;
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Threading.Tasks;
 
 namespace Gemini
 {
@@ -13,6 +9,7 @@ namespace Gemini
         private readonly Logger _logger;
         private bool _disposed;
         private const int ExpectedEmbeddingDimension = 768;
+        private const float RelevanceThreshold = 0.5f;
 
         public SQLiteMemoryStore(string dbPath, Logger logger)
         {
@@ -33,13 +30,14 @@ namespace Gemini
                     content TEXT NOT NULL,
                     embedding BLOB NOT NULL,
                     url TEXT,
+                    topic TEXT,
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
                 )";
             command.ExecuteNonQuery();
             _logger.Log("Memory content table initialized.");
         }
 
-        public long StoreMemory(string content, float[] embedding, string? url = null)
+        public long StoreMemory(string content, float[] embedding, string? url = null, string? topic = null)
         {
             if (_disposed) throw new ObjectDisposedException(nameof(SQLiteMemoryStore));
             if (string.IsNullOrEmpty(content)) throw new ArgumentNullException(nameof(content));
@@ -61,7 +59,7 @@ namespace Gemini
                 }
 
                 byte[] embeddingBytes = embedding.SelectMany(BitConverter.GetBytes).ToArray();
-                long id = InsertMemory(content, embeddingBytes, url);
+                long id = InsertMemory(content, embeddingBytes, url, topic);
 
                 transaction.Commit();
                 _logger.Log($"Stored memory ID: {id}, URL: {url}");
@@ -83,13 +81,14 @@ namespace Gemini
             return command.ExecuteScalar() as long?;
         }
 
-        private long InsertMemory(string content, byte[] embeddingBytes, string? url)
+        private long InsertMemory(string content, byte[] embeddingBytes, string? url, string? topic)
         {
             using var command = _connection.CreateCommand();
-            command.CommandText = "INSERT INTO memory_content (content, embedding, url) VALUES ($content, $embedding, $url)";
+            command.CommandText = "INSERT INTO memory_content (content, embedding, url, topic) VALUES ($content, $embedding, $url, $topic)";
             command.Parameters.AddWithValue("$content", content);
             command.Parameters.AddWithValue("$embedding", embeddingBytes);
             command.Parameters.AddWithValue("$url", url ?? (object)DBNull.Value);
+            command.Parameters.AddWithValue("$topic", topic ?? (object)DBNull.Value);
             command.ExecuteNonQuery();
 
             using var idCommand = _connection.CreateCommand();
@@ -113,6 +112,7 @@ namespace Gemini
                 }
 
                 var results = FetchAllMemories(queryEmbedding);
+                results = results.Where(r => r.score > RelevanceThreshold).ToList(); 
                 return results.OrderByDescending(r => r.score).Take(maxResults).ToList();
             }
             catch (Exception ex)
@@ -122,7 +122,7 @@ namespace Gemini
             }
         }
 
-        private List<(long id, string content, float score, DateTime createdAt)> FetchAllMemories(float[] queryEmbedding)
+        private List<(long id, string content, float score, DateTime createdAt)> FetchAllMemories(float[]? queryEmbedding)
         {
             var results = new List<(long id, string content, float score, DateTime createdAt)>();
             using var command = _connection.CreateCommand();
@@ -133,12 +133,18 @@ namespace Gemini
             {
                 long id = reader.GetInt64(0);
                 string content = reader.GetString(1);
-                byte[] embeddingBytes = (byte[])reader.GetValue(2);
+
                 DateTime createdAt = reader.GetDateTime(3);
 
-                float[] embedding = new float[ExpectedEmbeddingDimension];
-                Buffer.BlockCopy(embeddingBytes, 0, embedding, 0, embeddingBytes.Length);
-                float score = CosineSimilarity(embedding, queryEmbedding);
+                float score = 1;
+
+                if (queryEmbedding != null)
+                {
+                    byte[] embeddingBytes = (byte[])reader.GetValue(2);
+                    float[] embedding = new float[ExpectedEmbeddingDimension];
+                    Buffer.BlockCopy(embeddingBytes, 0, embedding, 0, embeddingBytes.Length);
+                    score = CosineSimilarity(embedding, queryEmbedding);
+                }
 
                 results.Add((id, content, score, createdAt));
             }

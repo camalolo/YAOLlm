@@ -1,9 +1,4 @@
-using System;
-using System.Collections.Generic;
-using System.Linq;
 using System.Text.Json;
-using System.Threading;
-using System.Threading.Tasks;
 using RestSharp;
 
 namespace Gemini
@@ -136,7 +131,6 @@ namespace Gemini
                 foreach (var func in functionCalls)
                 {
                     var funcCall = ExtractFunctionCall(client.Logger, func);
-
                     if (!funcCall.HasValue) continue;
 
                     if (funcCall.Value.args == null)
@@ -144,18 +138,14 @@ namespace Gemini
                         string errorMessage = $"Error: Function '{funcCall.Value.name}' requires arguments, but none were provided. Please retry with valid arguments.";
                         client.Logger.Log(errorMessage);
                         client.UpdateChat($"System: {errorMessage}\n", "system");
-
-                        // Retry with original query plus error context
                         string retryPrompt = $"{client.OriginalUserQuery}\nSystem: {errorMessage}";
                         return await client.RetryWithPrompt(retryPrompt);
                     }
 
                     switch (funcCall.Value.name)
                     {
-                        case "search_google":
-                            return await HandleGoogleSearch(client, funcCall.Value.args);
-                        case "search_memory":
-                            return await HandleMemorySearch(client, funcCall.Value.args);
+                        case "search":
+                            return await HandleSearch(client, funcCall.Value.args);
                         case "delete_memories":
                             return await HandleDeleteMemories(client, funcCall.Value.args);
                         default:
@@ -167,101 +157,79 @@ namespace Gemini
             return message;
         }
 
-        private static async Task<string> HandleGoogleSearch(GeminiClient client, Dictionary<string, object> args)
+        private static async Task<string> HandleSearch(GeminiClient client, Dictionary<string, object> args)
         {
-            var searchTerms = args.GetValueOrDefault("search_terms", "").ToString();
-            if (string.IsNullOrEmpty(searchTerms))
+            var query = args.GetValueOrDefault("query", "").ToString();
+            if (string.IsNullOrEmpty(query))
             {
-                client.Logger.Log("Empty search terms for Google search");
-                return "No query provided for Google search.";
+                client.Logger.Log("Empty query for search");
+                return "No query provided for search.";
             }
 
-            client.Logger.Log($"Executing Google search: {searchTerms}");
-            var results = await client.SearchService.PerformSearch(searchTerms, client.OriginalUserQuery);
-            if (!results.Any())
-                return $"No relevant results found for '{searchTerms}'.";
-
-            var chunks = ChunkSearchResults(results);
-            var combinedResponse = new List<string>();
-
-            foreach (var chunk in chunks)
+            // Search memories first
+            var memories = await client.MemoryManager.SearchMemory(query);
+            if (memories.Any())
             {
-                var resultText = string.Join("\n\n", chunk.Select(r => $"Source: {r.url}\n{r.content}"));
-                var promptText = ToolsAndPrompts.GetProcessedContentPrompt(searchTerms, client.OriginalUserQuery, chunk);
-                var payload = new
+                // Process memories
+                var chunks = ChunkMemories(memories);
+                var combinedResponse = new List<string>();
+                foreach (var chunk in chunks)
                 {
-                    contents = new[]
+                    var memoryContent = string.Join("\n\n", chunk.Select(m => $"Memory (ID: {m.id}, Score: {m.score:F3}):\n{m.content}"));
+                    var prompt = $"Found relevant memories:\n\n{memoryContent}\n\nRespond to: '{client.OriginalUserQuery}'.";
+                    var payload = new
                     {
-                        new { role = "user", parts = new[] { new { text = promptText } } }
-                    }
-                };
-
-                client.Logger.Log($"Sending LLM prompt (length: {promptText.Length}): {promptText.Substring(0, Math.Min(500, promptText.Length))}...");
-                var response = await SendToLLM(client, payload);
-                if (!string.IsNullOrEmpty(response))
-                {
-                    combinedResponse.Add(response);
+                        contents = new[]
+                        {
+                    new { role = "user", parts = new[] { new { text = prompt } } }
                 }
-                else
-                {
-                    client.Logger.Log("LLM returned empty response for chunk");
-                    combinedResponse.Add($"Failed to process results from: {string.Join(", ", chunk.Select(c => c.url))}");
-                }
-            }
-
-            var finalResponse = string.Join("\n", combinedResponse);
-            client.Logger.Log($"Google search processed, response length: {finalResponse.Length}");
-            return finalResponse;
-        }
-
-        private static async Task<string> HandleMemorySearch(GeminiClient client, Dictionary<string, object> args)
-        {
-            var searchTerms = args.GetValueOrDefault("search_terms", "").ToString();
-            if (string.IsNullOrEmpty(searchTerms))
-            {
-                client.Logger.Log("Empty search terms for memory search");
-                return "No query provided for memory search.";
-            }
-
-            var memories = await client.MemoryManager.SearchMemory(searchTerms);
-            if (!memories.Any())
-                return $"No memories found for '{searchTerms}'.";
-
-            var chunks = ChunkMemories(memories);
-            client.Logger.Log($"Chunked {memories.Count} memories into {chunks.Count} parts");
-            var combinedResponse = new List<string>();
-
-            foreach (var chunk in chunks)
-            {
-                var memoryContent = string.Join("\n\n", chunk.Select(m => $"Memory (ID: {m.id}, Score: {m.score:F3}):\n{m.content}"));
-                var prompt = $"Found relevant memories:\n\n{memoryContent}\n\nRespond to: '{client.OriginalUserQuery}'.";
-                var payload = new
-                {
-                    contents = new[]
+                    };
+                    var response = await SendToLLM(client, payload);
+                    if (!string.IsNullOrEmpty(response))
                     {
-                        new { role = "user", parts = new[] { new { text = prompt } } }
+                        combinedResponse.Add(response);
                     }
-                };
-
-                var promptLength = prompt.Length;
-                client.Logger.Log($"Sending LLM prompt for chunk (length: {promptLength} chars): {prompt.Substring(0, Math.Min(500, promptLength))}...");
-                var response = await SendToLLM(client, payload);
-                if (!string.IsNullOrEmpty(response))
-                {
-                    combinedResponse.Add(response);
+                    else
+                    {
+                        combinedResponse.Add($"Failed to process memories.");
+                    }
                 }
-                else
-                {
-                    client.Logger.Log($"LLM failed for chunk (length: {promptLength} chars), using fallback");
-                    combinedResponse.Add($"Summary of memory IDs {string.Join(", ", chunk.Select(m => m.id))}: Relevant to '{searchTerms}', but processing failed.");
-                }
+                return string.Join("\n", combinedResponse);
             }
-
-            var finalResponse = string.Join("\n", combinedResponse);
-            client.Logger.Log($"Memory search processed, response length: {finalResponse.Length}");
-            return finalResponse;
+            else
+            {
+                // No memories found, perform Google search
+                var results = await client.SearchService.PerformSearch(query, client.OriginalUserQuery);
+                if (!results.Any())
+                {
+                    return $"No relevant results found for '{query}'.";
+                }
+                var chunks = ChunkSearchResults(results);
+                var combinedResponse = new List<string>();
+                foreach (var chunk in chunks)
+                {
+                    var resultText = string.Join("\n\n", chunk.Select(r => $"Source: {r.url}\n{r.content}"));
+                    var promptText = ToolsAndPrompts.GetProcessedContentPrompt(query, client.OriginalUserQuery, chunk);
+                    var payload = new
+                    {
+                        contents = new[]
+                        {
+                    new { role = "user", parts = new[] { new { text = promptText } } }
+                }
+                    };
+                    var response = await SendToLLM(client, payload);
+                    if (!string.IsNullOrEmpty(response))
+                    {
+                        combinedResponse.Add(response);
+                    }
+                    else
+                    {
+                        combinedResponse.Add($"Failed to process search results.");
+                    }
+                }
+                return string.Join("\n", combinedResponse);
+            }
         }
-
         private static async Task<string> HandleDeleteMemories(GeminiClient client, Dictionary<string, object> args)
         {
             var idsJson = (JsonElement)args["ids"];
@@ -278,11 +246,11 @@ namespace Gemini
             }
         }
 
-        private static List<List<(string content, string url)>> ChunkSearchResults(List<(string content, string url)> results)
+        private static List<List<(string content, string url, string searchterms)>> ChunkSearchResults(List<(string content, string url, string searchterms)> results)
         {
             const int maxTokens = 32000;
-            var chunks = new List<List<(string content, string url)>>();
-            var currentChunk = new List<(string content, string url)>();
+            var chunks = new List<List<(string content, string url, string searchterms)>>();
+            var currentChunk = new List<(string content, string url, string searchterms)>();
             int currentLength = 0;
 
             foreach (var result in results)
@@ -291,7 +259,7 @@ namespace Gemini
                 if (currentLength + length > maxTokens && currentChunk.Any())
                 {
                     chunks.Add(currentChunk);
-                    currentChunk = new List<(string content, string url)>();
+                    currentChunk = new List<(string content, string url, string searchterms)>();
                     currentLength = 0;
                 }
                 currentChunk.Add(result);

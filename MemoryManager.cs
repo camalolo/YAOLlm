@@ -1,8 +1,3 @@
-using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Threading.Tasks;
-
 namespace Gemini
 {
     public class MemoryManager : IDisposable
@@ -12,8 +7,8 @@ namespace Gemini
         private readonly SQLiteMemoryStore _store;
         private bool _disposed;
         private const int ExpectedEmbeddingDimension = 768;
-        private const int MaxContentLengthPerChunk = 32000; // Rough token limit for storage
         private const int MaxCharsForEmbedding = 8000;
+
         public MemoryManager(Logger logger, GeminiClient client)
         {
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
@@ -37,7 +32,7 @@ namespace Gemini
             }
         }
 
-        public async Task<List<long>> StoreMemory(string content, string? url = null)
+        public async Task<List<long>> StoreMemory(string content, string url, string searchterms)
         {
             if (_disposed) throw new ObjectDisposedException(nameof(MemoryManager));
             if (string.IsNullOrEmpty(content)) throw new ArgumentNullException(nameof(content));
@@ -49,16 +44,27 @@ namespace Gemini
 
                 for (int i = 0; i < chunks.Count; i++)
                 {
+                    string currentChunk = chunks[i].ToString();
+                    currentChunk = $"Content based on search terms : {searchterms} and retrieved from {url}:\n\n" + currentChunk;
+
                     string chunkUrl = chunks.Count > 1 && url != null ? $"{url}#chunk{i + 1}" : url ?? "";
-                    float[] embedding = await _client.Embed(chunks[i]);
+
+                    var embeddingTask = _client.Embed(currentChunk);
+                    var topicTask = _client.ExtractKeywords(currentChunk);
+                    await Task.WhenAll(embeddingTask, topicTask);
+                    float[] embedding = embeddingTask.Result;
+                    
                     if (embedding.Length != ExpectedEmbeddingDimension)
                     {
                         _logger.Log($"Embedding mismatch: expected {ExpectedEmbeddingDimension}, got {embedding.Length}");
                         throw new InvalidOperationException("Invalid embedding dimension");
                     }
-                    long id = _store.StoreMemory(chunks[i], embedding, chunkUrl);
+                    
+                    string topic = topicTask.Result;
+
+                    long id = _store.StoreMemory(currentChunk, embedding, chunkUrl, topic);
                     ids.Add(id);
-                    _logger.Log($"Stored memory chunk with ID: {id}, URL: {chunkUrl}");
+                    _logger.Log($"Stored memory chunk with ID: {id}, URL: {chunkUrl}, Topic: {topic}");
                 }
 
                 return ids;
@@ -91,14 +97,14 @@ namespace Gemini
             _store.DeleteMemories(ids);
         }
 
-        public async Task StoreSearchResults(List<(string content, string url)> results)
+        public async Task StoreSearchResults(List<(string content, string url, string searchterms)> results)
         {
-            foreach (var (content, url) in results)
+            foreach (var (content, url, searchterms) in results)
             {
                 if (string.IsNullOrEmpty(content)) continue;
                 try
                 {
-                    var ids = await StoreMemory(content, url);
+                    var ids = await StoreMemory(content, url, searchterms);
                     _logger.Log($"Stored search result memory with IDs: {string.Join(", ", ids)}, URL: {url}");
                 }
                 catch (Exception ex)

@@ -1,7 +1,4 @@
-﻿using System;
-using System.IO;
-
-namespace Gemini
+﻿namespace Gemini
 {
     public class Logger
     {

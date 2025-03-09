@@ -1,6 +1,4 @@
-﻿using System;
-
-namespace Gemini
+﻿namespace Gemini
 {
     public enum Status
     {

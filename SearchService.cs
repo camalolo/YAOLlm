@@ -1,11 +1,6 @@
-using System;
 using System.Collections.Concurrent;
-using System.Collections.Generic;
-using System.Linq;
-using System.Net.Http;
 using System.Text.Json;
 using System.Text.RegularExpressions;
-using System.Threading.Tasks;
 using RestSharp;
 using HtmlAgilityPack;
 
@@ -17,7 +12,7 @@ namespace Gemini
         private readonly Logger _logger;
         private readonly string _googleSearchApiKey;
         private readonly string _googleSearchEngineId;
-        private readonly Func<List<(string content, string url)>, Task> _onSearchComplete;
+        private readonly Func<List<(string content, string url, string searchterms)>, Task> _onSearchComplete;
         private readonly ConcurrentDictionary<string, List<string>> _urlCache = new();
         private readonly ConcurrentDictionary<string, int> _startIndices = new();
         private readonly ConcurrentDictionary<string, (string content, float[] embedding)> _contentCache = new();
@@ -33,7 +28,7 @@ namespace Gemini
             _httpClient.Timeout = TimeSpan.FromSeconds(10);
         }
 
-        public SearchService(GeminiClient client, string googleSearchApiKey, string googleSearchEngineId, Func<List<(string content, string url)>, Task> onSearchComplete)
+        public SearchService(GeminiClient client, string googleSearchApiKey, string googleSearchEngineId, Func<List<(string content, string url, string searchterms)>, Task> onSearchComplete)
         {
             _client = client ?? throw new ArgumentNullException(nameof(client));
             _logger = client.Logger ?? throw new ArgumentNullException(nameof(client.Logger));
@@ -42,13 +37,13 @@ namespace Gemini
             _onSearchComplete = onSearchComplete ?? (_ => Task.CompletedTask);
         }
 
-        public async Task<List<(string content, string url)>> PerformSearch(string searchTerms, string originalQuery)
+        public async Task<List<(string content, string url, string searchterms)>> PerformSearch(string searchTerms, string originalQuery)
         {
             if (string.IsNullOrWhiteSpace(searchTerms))
             {
                 _logger.Log("Search terms are empty");
                 _client.UpdateChat("System: Cannot search with empty terms.\n", "system");
-                return new List<(string, string)>();
+                return new List<(string, string, string)>();
             }
 
             _client.UpdateStatus(Status.Searching);
@@ -57,11 +52,11 @@ namespace Gemini
             {
                 _logger.Log($"No URLs found for: {searchTerms}");
                 _client.UpdateChat($"System: No results for '{searchTerms}'.\n", "system");
-                return new List<(string, string)>();
+                return new List<(string, string, string)>();
             }
 
             _client.UpdateStatus(Status.Scraping);
-            var scrapedData = await ScrapeUrls(urls);
+            var scrapedData = await ScrapeUrls(urls, searchTerms);
 
             _client.UpdateStatus(Status.Processing);
             var results = await ProcessScrapedData(scrapedData, searchTerms, urls, originalQuery);
@@ -137,7 +132,7 @@ namespace Gemini
             }
         }
 
-        private async Task<(string content, float[] embedding)[]> ScrapeUrls(List<string> urls)
+        private async Task<(string content, float[] embedding)[]> ScrapeUrls(List<string> urls, string searchterms)
         {
             return await Task.WhenAll(urls.Select(async url =>
             {
@@ -156,6 +151,8 @@ namespace Gemini
                     RemoveUnwantedNodes(doc);
                     var contentNode = GetContentNode(doc);
                     var text = CleanText(contentNode?.InnerText ?? doc.DocumentNode.InnerText);
+
+                    text = $"Content based on search terms : {searchterms} and retrieved from {url}:\n\n" + text;
 
                     if (string.IsNullOrWhiteSpace(text))
                     {
@@ -205,34 +202,44 @@ namespace Gemini
             return text;
         }
 
-        private async Task<List<(string content, string url)>> ProcessScrapedData(
-            (string content, float[] embedding)[] scrapedData, string searchTerms, List<string> urls, string originalQuery)
+        private async Task<List<(string content, string url, string searchterms)>> ProcessScrapedData(
+    (string content, float[] embedding)[] scrapedData, string searchTerms, List<string> urls, string originalQuery)
         {
             var validData = scrapedData
-                .Select((data, i) => (data.content, data.embedding, url: urls[i]))
+                .Select((data, i) => (data.content, data.embedding, url: urls[i], searchterms: searchTerms))
                 .Where(d => !string.IsNullOrEmpty(d.content) && d.embedding.Length == ExpectedEmbeddingDimension)
                 .ToList();
 
             if (!validData.Any())
             {
                 _logger.Log("No valid scraped data after filtering");
-                return new List<(string, string)>();
+                return new List<(string, string, string)>();
             }
 
             var queryEmbedding = await _client.Embed(searchTerms);
             if (queryEmbedding.Length != ExpectedEmbeddingDimension)
             {
                 _logger.Log($"Query embedding mismatch: expected {ExpectedEmbeddingDimension}, got {queryEmbedding.Length}");
-                return new List<(string, string)>();
+                return new List<(string, string, string)>();
             }
 
-            var scores = validData.Select(d => CosineSimilarity(d.embedding, queryEmbedding)).ToList();
+            // Calculate max content length for normalization
+            var maxLength = validData.Max(d => d.content.Length);
+            const float LengthWeight = 0.3f; // Adjust this to balance length vs similarity (0 to 1)
+
+            var scores = validData.Select(d =>
+            {
+                float similarity = CosineSimilarity(d.embedding, queryEmbedding);
+                float lengthFactor = maxLength > 0 ? (float)d.content.Length / maxLength : 0; // Normalize length
+                return (1 - LengthWeight) * similarity + LengthWeight * lengthFactor; // Weighted combination
+            }).ToList();
+
             var results = validData
-                .Zip(scores, (d, s) => (d.content, d.url, s))
+                .Zip(scores, (d, s) => (d.content, d.url, d.searchterms, s))
                 .Where(x => x.s > RelevanceThreshold)
                 .OrderByDescending(x => x.s)
                 .Take(3)
-                .Select(x => (x.content, x.url))
+                .Select(x => (x.content, x.url, x.searchterms))
                 .ToList();
 
             _logger.Log($"Processed {results.Count} relevant results for '{searchTerms}'");

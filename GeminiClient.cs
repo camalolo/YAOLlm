@@ -16,7 +16,7 @@ namespace Gemini
         private readonly object _historyLock = new object();
         private string _originalUserQuery = string.Empty;
         private const int MaxHistoryLength = 32;
-        private const int MaxTokensPerChunk = 32000; // Approximate token limit for Gemini 2.0 Flash
+        private const int MaxCharsPerChunk = 32000; // Approximate token limit for Gemini 2.0 Flash
         private const string ApiBaseUrl = "https://generativelanguage.googleapis.com/v1beta/models/";
         private string _model = "gemini-2.0-flash";
         private string _embedModel = "text-embedding-004";
@@ -191,8 +191,8 @@ namespace Gemini
 
             foreach (var msg in messages)
             {
-                int msgLength = msg.GetValueOrDefault("content", "").Length + (msg.ContainsKey("image") ? 1000 : 0); // Rough estimate for image
-                if (currentLength + msgLength > MaxTokensPerChunk && currentChunk.Any())
+                int msgLength = msg.GetValueOrDefault("content", "").Length + (msg.ContainsKey("image") ? msg.GetValueOrDefault("image", "").Length : 0); // Rough estimate for image
+                if (currentLength + msgLength > MaxCharsPerChunk && currentChunk.Any())
                 {
                     chunks.Add(currentChunk);
                     currentChunk = new List<Dictionary<string, string>>();
@@ -228,6 +228,31 @@ namespace Gemini
             };
 
             return await ApiFunctions.SendToLLM(this, payload) ?? string.Empty;
+        }
+
+        public async Task<string> ExtractKeywords(string content)
+        {
+            string prompt = $"Given the following content, extract the 5 most relevant keywords that best summarize its topic. Include original search terms if available in the contents. Return them as a space-separated list:\n\n{content}";
+            var payload = new
+            {
+                contents = new[]
+                {
+                    new { role = "user", parts = new[] { new { text = prompt } } }
+                }
+            };
+
+            string? response = await ApiFunctions.SendToLLM(this, payload);
+            if (string.IsNullOrEmpty(response))
+            {
+                Logger.Log("LLM failed to provide keywords; falling back to 'unknown'");
+                return "unknown";
+            }
+
+            // Clean and validate the response
+            string topic = response.Trim();
+
+            Logger.Log($"Extracted keywords from LLM: {topic}");
+            return topic;
         }
 
         private void UpdateHistory(List<Dictionary<string, string>> messages, Dictionary<string, string> userMessage, string response)
