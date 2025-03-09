@@ -48,7 +48,7 @@ namespace Gemini
                    "**Output**: Combine all gathered data into a clear, user-friendly response. Use formatting (e.g., bullet points, numbered lists) when appropriate to enhance readability.";
         }
 
-        public static string GetProcessedContentPrompt(string searchTerms, string originalQuery, List<(string content, string url, string searchterms)> contentUrlPairs)
+        public static string GetProcessedContentPrompt(string searchTerms, string originalQuery, List<(string content, string url)> contentUrlPairs)
         {
             var contentString = string.Join("\n\n", contentUrlPairs.Select(p => $"Source: {p.url}\n{p.content}"));
             return $"*Processed Search Results*\n" +

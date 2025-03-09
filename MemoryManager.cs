@@ -32,7 +32,7 @@ namespace Gemini
             }
         }
 
-        public async Task<List<long>> StoreMemory(string content, string url, string searchterms)
+        public async Task<List<long>> StoreMemory(string content, string url)
         {
             if (_disposed) throw new ObjectDisposedException(nameof(MemoryManager));
             if (string.IsNullOrEmpty(content)) throw new ArgumentNullException(nameof(content));
@@ -45,7 +45,6 @@ namespace Gemini
                 for (int i = 0; i < chunks.Count; i++)
                 {
                     string currentChunk = chunks[i].ToString();
-                    currentChunk = $"Content based on search terms : {searchterms} and retrieved from {url}:\n\n" + currentChunk;
 
                     string chunkUrl = chunks.Count > 1 && url != null ? $"{url}#chunk{i + 1}" : url ?? "";
 
@@ -97,14 +96,14 @@ namespace Gemini
             _store.DeleteMemories(ids);
         }
 
-        public async Task StoreSearchResults(List<(string content, string url, string searchterms)> results)
+        public async Task StoreSearchResults(List<(string content, string url)> results)
         {
-            foreach (var (content, url, searchterms) in results)
+            foreach (var (content, url) in results)
             {
                 if (string.IsNullOrEmpty(content)) continue;
                 try
                 {
-                    var ids = await StoreMemory(content, url, searchterms);
+                    var ids = await StoreMemory(content, url);
                     _logger.Log($"Stored search result memory with IDs: {string.Join(", ", ids)}, URL: {url}");
                 }
                 catch (Exception ex)

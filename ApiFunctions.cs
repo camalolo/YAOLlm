@@ -246,11 +246,11 @@ namespace Gemini
             }
         }
 
-        private static List<List<(string content, string url, string searchterms)>> ChunkSearchResults(List<(string content, string url, string searchterms)> results)
+        private static List<List<(string content, string url)>> ChunkSearchResults(List<(string content, string url)> results)
         {
             const int maxTokens = 32000;
-            var chunks = new List<List<(string content, string url, string searchterms)>>();
-            var currentChunk = new List<(string content, string url, string searchterms)>();
+            var chunks = new List<List<(string content, string url)>>();
+            var currentChunk = new List<(string content, string url)>();
             int currentLength = 0;
 
             foreach (var result in results)
@@ -259,7 +259,7 @@ namespace Gemini
                 if (currentLength + length > maxTokens && currentChunk.Any())
                 {
                     chunks.Add(currentChunk);
-                    currentChunk = new List<(string content, string url, string searchterms)>();
+                    currentChunk = new List<(string content, string url)>();
                     currentLength = 0;
                 }
                 currentChunk.Add(result);

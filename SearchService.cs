@@ -12,7 +12,7 @@ namespace Gemini
         private readonly Logger _logger;
         private readonly string _googleSearchApiKey;
         private readonly string _googleSearchEngineId;
-        private readonly Func<List<(string content, string url, string searchterms)>, Task> _onSearchComplete;
+        private readonly Func<List<(string content, string url)>, Task> _onSearchComplete;
         private readonly ConcurrentDictionary<string, List<string>> _urlCache = new();
         private readonly ConcurrentDictionary<string, int> _startIndices = new();
         private readonly ConcurrentDictionary<string, (string content, float[] embedding)> _contentCache = new();
@@ -28,7 +28,7 @@ namespace Gemini
             _httpClient.Timeout = TimeSpan.FromSeconds(10);
         }
 
-        public SearchService(GeminiClient client, string googleSearchApiKey, string googleSearchEngineId, Func<List<(string content, string url, string searchterms)>, Task> onSearchComplete)
+        public SearchService(GeminiClient client, string googleSearchApiKey, string googleSearchEngineId, Func<List<(string content, string url)>, Task> onSearchComplete)
         {
             _client = client ?? throw new ArgumentNullException(nameof(client));
             _logger = client.Logger ?? throw new ArgumentNullException(nameof(client.Logger));
@@ -37,13 +37,13 @@ namespace Gemini
             _onSearchComplete = onSearchComplete ?? (_ => Task.CompletedTask);
         }
 
-        public async Task<List<(string content, string url, string searchterms)>> PerformSearch(string searchTerms, string originalQuery)
+        public async Task<List<(string content, string url)>> PerformSearch(string searchTerms, string originalQuery)
         {
             if (string.IsNullOrWhiteSpace(searchTerms))
             {
                 _logger.Log("Search terms are empty");
                 _client.UpdateChat("System: Cannot search with empty terms.\n", "system");
-                return new List<(string, string, string)>();
+                return new List<(string, string)>();
             }
 
             _client.UpdateStatus(Status.Searching);
@@ -52,7 +52,7 @@ namespace Gemini
             {
                 _logger.Log($"No URLs found for: {searchTerms}");
                 _client.UpdateChat($"System: No results for '{searchTerms}'.\n", "system");
-                return new List<(string, string, string)>();
+                return new List<(string, string)>();
             }
 
             _client.UpdateStatus(Status.Scraping);
@@ -202,7 +202,7 @@ namespace Gemini
             return text;
         }
 
-        private async Task<List<(string content, string url, string searchterms)>> ProcessScrapedData(
+        private async Task<List<(string content, string url)>> ProcessScrapedData(
     (string content, float[] embedding)[] scrapedData, string searchTerms, List<string> urls, string originalQuery)
         {
             var validData = scrapedData
@@ -213,14 +213,14 @@ namespace Gemini
             if (!validData.Any())
             {
                 _logger.Log("No valid scraped data after filtering");
-                return new List<(string, string, string)>();
+                return new List<(string, string)>();
             }
 
             var queryEmbedding = await _client.Embed(searchTerms);
             if (queryEmbedding.Length != ExpectedEmbeddingDimension)
             {
                 _logger.Log($"Query embedding mismatch: expected {ExpectedEmbeddingDimension}, got {queryEmbedding.Length}");
-                return new List<(string, string, string)>();
+                return new List<(string, string)>();
             }
 
             // Calculate max content length for normalization
@@ -235,11 +235,11 @@ namespace Gemini
             }).ToList();
 
             var results = validData
-                .Zip(scores, (d, s) => (d.content, d.url, d.searchterms, s))
+                .Zip(scores, (d, s) => (d.content, d.url, s))
                 .Where(x => x.s > RelevanceThreshold)
                 .OrderByDescending(x => x.s)
                 .Take(3)
-                .Select(x => (x.content, x.url, x.searchterms))
+                .Select(x => (x.content, x.url))
                 .ToList();
 
             _logger.Log($"Processed {results.Count} relevant results for '{searchTerms}'");
