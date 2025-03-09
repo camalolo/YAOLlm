@@ -24,7 +24,7 @@ namespace Gemini
         static SearchService()
         {
             _httpClient.DefaultRequestHeaders.UserAgent.ParseAdd(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.36");
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36");
             _httpClient.Timeout = TimeSpan.FromSeconds(10);
         }
 
@@ -152,8 +152,6 @@ namespace Gemini
                     var contentNode = GetContentNode(doc);
                     var text = CleanText(contentNode?.InnerText ?? doc.DocumentNode.InnerText);
 
-                    text = $"Content based on search terms : {searchterms} and retrieved from {url}:\n\n" + text;
-
                     if (string.IsNullOrWhiteSpace(text))
                     {
                         _logger.Log($"No content scraped from: {url}");
@@ -161,6 +159,8 @@ namespace Gemini
                     }
 
                     var embedding = await _client.Embed(text);
+                    text = $"Content based on search terms: {searchterms} and retrieved from {url}:\n\n" + text;
+
                     var result = (text, embedding);
                     _contentCache[url] = result;
                     _logger.Log($"Scraped {text.Length} chars from: {url}");
@@ -198,7 +198,6 @@ namespace Gemini
         {
             text = HtmlEntity.DeEntitize(text);
             text = Regex.Replace(text, @"\s+", " ").Trim();
-            text = Regex.Replace(text, @"(Something went wrong|Try again|Please enable Javascript|Subscribe to our newsletter)", "", RegexOptions.IgnoreCase);
             return text;
         }
 
