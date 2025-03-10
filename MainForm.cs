@@ -63,7 +63,7 @@ namespace Gemini
             var buttonPanel = CreateButtonPanel();
             var spacerPanel = new Panel { Height = 10, Dock = DockStyle.Bottom, BackColor = Color.Black };
 
-                this.Controls.AddRange(new Control[] { _chatBox, spacerPanel, _inputField, buttonPanel, topPanel });
+            this.Controls.AddRange(new Control[] { _chatBox, spacerPanel, _inputField, buttonPanel, topPanel });
             _logger.Log($"Form configured: Visible = {this.Visible}");
         }
 
@@ -96,9 +96,9 @@ namespace Gemini
                 x += btn.Width + 10;
             }
 
-                _statusLabel.Location = new Point(x, 10);
-                panel.Controls.Add(_statusLabel);
-                panel.Controls.Add(_historyLabel);
+            _statusLabel.Location = new Point(x, 10);
+            panel.Controls.Add(_statusLabel);
+            panel.Controls.Add(_historyLabel);
 
             return panel;
         }
@@ -171,23 +171,23 @@ namespace Gemini
         }
 
         private void SetupTrayIcon()
-            {
-                _trayIcon.Text = "Gemini Overlay";
-                _trayIcon.Visible = true;
-                _trayIcon.ContextMenuStrip = new ContextMenuStrip();
-                _trayIcon.ContextMenuStrip.Items.Add("Quit", null, (s, e) => Application.Exit());
-                _trayIcon.DoubleClick += (s, e) => ToggleVisibility();
+        {
+            _trayIcon.Text = "Gemini Overlay";
+            _trayIcon.Visible = true;
+            _trayIcon.ContextMenuStrip = new ContextMenuStrip();
+            _trayIcon.ContextMenuStrip.Items.Add("Quit", null, (s, e) => Application.Exit());
+            _trayIcon.DoubleClick += (s, e) => ToggleVisibility();
 
-                try
-                {
-                    using var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream("Gemini.icon.ico");
-                    _trayIcon.Icon = stream != null ? new Icon(stream) : SystemIcons.Application;
-                    _logger.Log(stream != null ? "Tray icon loaded from embedded resource." : "Using default tray icon.");
-                }
-                catch (Exception ex)
-                {
-                    _trayIcon.Icon = SystemIcons.Application;
-                    _logger.Log($"Error loading tray icon: {ex.Message}");
+            try
+            {
+                using var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream("Gemini.icon.ico");
+                _trayIcon.Icon = stream != null ? new Icon(stream) : SystemIcons.Application;
+                _logger.Log(stream != null ? "Tray icon loaded from embedded resource." : "Using default tray icon.");
+            }
+            catch (Exception ex)
+            {
+                _trayIcon.Icon = SystemIcons.Application;
+                _logger.Log($"Error loading tray icon: {ex.Message}");
             }
         }
 
@@ -227,13 +227,13 @@ namespace Gemini
         private void SendMessage() => SendMessage(_inputField.Text);
 
         private void CaptureAndSend()
-            {
-                string message = _inputField.Text.Trim();
-                var (imageBase64, title) = CaptureScreen();
-                if (!string.IsNullOrEmpty(imageBase64))
+        {
+            string message = _inputField.Text.Trim();
+            var (imageBase64, title) = CaptureScreen();
+            if (!string.IsNullOrEmpty(imageBase64))
                 SendMessage(message, imageBase64, title);
-                else
-                    UpdateChat("Error: Screen capture failed.\r\n", "system");
+            else
+                UpdateChat("Error: Screen capture failed.\r\n", "system");
         }
 
         private void SendPresetMessage(string message) => SendMessage(message);
@@ -266,33 +266,154 @@ namespace Gemini
         }
 
         private void ClearChat()
-            {
-                _chatBox.Clear();
-                _geminiClient.ClearConversationHistory();
-                UpdateHistoryCounter();
+        {
+            _chatBox.Clear();
+            _geminiClient.ClearConversationHistory();
+            UpdateHistoryCounter();
         }
 
         private void UpdateChat(string message, string role)
         {
-            if (_chatBox != null)
-            {
-            Color color = role switch
-            {
-                "model" => Color.Yellow,
-                "system" => Color.Gray,
-                _ => Color.White
-            };
             _chatBox.InvokeIfRequired(() =>
             {
-                _chatBox.SelectionColor = color;
-                _chatBox.AppendText(message);
+                // Set default font and color for the entire message
+                _chatBox.SelectionStart = _chatBox.TextLength;
+                Font defaultFont = new Font("Consolas", 18f); // Fallback font
+                Color roleColor = role switch
+                {
+                    "model" => Color.Yellow,
+                    "system" => Color.LightGray,
+                    _ => Color.White
+                };
+                _chatBox.SelectionFont = defaultFont;
+                _chatBox.SelectionColor = roleColor;
+
+                // Split message into lines
+                var lines = message.Split(new[] { "\n", "\r\n" }, StringSplitOptions.None);
+                bool inList = false;
+
+                foreach (string line in lines)
+                {
+                    string trimmedLine = line.Trim();
+                    if (string.IsNullOrEmpty(trimmedLine))
+                    {
+                        if (inList) inList = false;
+                        _chatBox.AppendText(Environment.NewLine);
+                        continue;
+                    }
+
+                    // Ensure color persists for each line
+                    _chatBox.SelectionColor = roleColor;
+
+                    // Handle headings
+                    if (trimmedLine.StartsWith("# "))
+                    {
+                        _chatBox.SelectionFont = new Font("Consolas", 24f, FontStyle.Bold); // Larger heading
+                        FormatInlineText(trimmedLine.Substring(2));
+                        _chatBox.SelectionFont = defaultFont; // Reset
+                        _chatBox.AppendText(Environment.NewLine);
+                    }
+                    else if (trimmedLine.StartsWith("## "))
+                    {
+                        _chatBox.SelectionFont = new Font("Consolas", 20f, FontStyle.Bold); // Medium heading
+                        FormatInlineText(trimmedLine.Substring(3));
+                        _chatBox.SelectionFont = defaultFont; // Reset
+                        _chatBox.AppendText(Environment.NewLine);
+                    }
+                    // Handle bulleted lists with * or -
+                    else if (trimmedLine.StartsWith("* ") || trimmedLine.StartsWith("- "))
+                    {
+                        if (!inList)
+                        {
+                            inList = true;
+                            _chatBox.AppendText(" • "); // Bullet character
+                        }
+                        else
+                        {
+                            _chatBox.AppendText(Environment.NewLine + " • ");
+                        }
+                        _chatBox.SelectionIndent = 20; // Indent list items
+                        FormatInlineText(trimmedLine.Substring(2));
+                        _chatBox.SelectionIndent = 0; // Reset indent
+                    }
+                    // Regular text
+                    else
+                    {
+                        if (inList) inList = false;
+                        FormatInlineText(trimmedLine);
+                        _chatBox.AppendText(Environment.NewLine);
+                    }
+                }
+
+                _chatBox.SelectionStart = _chatBox.TextLength;
                 _chatBox.ScrollToCaret();
             });
+        }
+
+        // Helper function to handle bold and italic inline formatting
+        private void FormatInlineText(string text)
+        {
+            int start = 0;
+            Font defaultFont = new Font("Consolas", 18f); // Fallback font
+
+            while (start < text.Length)
+            {
+                // Look for bold (**text** or __text__)
+                int boldStart = text.IndexOf("**", start);
+                if (boldStart == -1) boldStart = text.IndexOf("__", start);
+                if (boldStart == -1)
+                {
+                    _chatBox.AppendText(text.Substring(start));
+                    break;
+                }
+
+                _chatBox.AppendText(text.Substring(start, boldStart - start));
+                int boldEnd = text.IndexOf("**", boldStart + 2);
+                if (boldEnd == -1) boldEnd = text.IndexOf("__", boldStart + 2);
+                if (boldEnd == -1)
+                {
+                    _chatBox.AppendText(text.Substring(boldStart));
+                    break;
+                }
+
+                Font currentFont = _chatBox.SelectionFont ?? defaultFont;
+                _chatBox.SelectionFont = new Font(currentFont.FontFamily, currentFont.Size, FontStyle.Bold);
+                _chatBox.AppendText(text.Substring(boldStart + 2, boldEnd - boldStart - 2));
+                _chatBox.SelectionFont = new Font(currentFont.FontFamily, currentFont.Size, FontStyle.Regular);
+                start = boldEnd + 2;
             }
+
+            // Reset position and process italic (*text* or _text_)
+            string currentText = _chatBox.Text.Substring(_chatBox.TextLength - text.Length);
+            start = 0;
+            int offset = _chatBox.TextLength - text.Length;
+
+            while (start < currentText.Length)
+            {
+                int italicStart = currentText.IndexOf("*", start);
+                if (italicStart == -1) italicStart = currentText.IndexOf("_", start);
+                if (italicStart == -1 || italicStart + 1 >= currentText.Length)
+                    break;
+
+                int italicEnd = currentText.IndexOf("*", italicStart + 1);
+                if (italicEnd == -1) italicEnd = currentText.IndexOf("_", italicStart + 1);
+                if (italicEnd == -1)
+                    break;
+
+                // Apply italic to the range
+                _chatBox.Select(offset + italicStart + 1, italicEnd - italicStart - 1);
+                Font currentFont = _chatBox.SelectionFont ?? defaultFont;
+                _chatBox.SelectionFont = new Font(currentFont.FontFamily, currentFont.Size, currentFont.Style | FontStyle.Italic);
+                start = italicEnd + 1;
+            }
+
+            // Reset selection
+            _chatBox.SelectionStart = _chatBox.TextLength;
+            _chatBox.SelectionFont = defaultFont;
         }
 
         private void UpdateHistoryCounter()
-            {
+        {
             int length = _geminiClient.GetConversationHistoryLength();
             _historyLabel.InvokeIfRequired(() => _historyLabel.Text = $"[{length}]");
         }
@@ -308,7 +429,7 @@ namespace Gemini
                 using (var g = Graphics.FromImage(screenshot))
                     g.CopyFromScreen(0, 0, 0, 0, screenshot.Size);
                 this.Visible = true;
-                
+
                 var message = "[Screenshot Taken]";
                 UpdateChat($"You: {message}\r\n", "user");
 
