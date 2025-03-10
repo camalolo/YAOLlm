@@ -228,7 +228,8 @@ namespace Gemini
 
         private void CaptureAndSend()
         {
-            string message = _inputField.Text.Trim();
+             string message = string.IsNullOrEmpty(_inputField.Text.Trim()) ? "[Screenshot Taken]" : _inputField.Text.Trim();
+             
             var (imageBase64, title) = CaptureScreen();
             if (!string.IsNullOrEmpty(imageBase64))
                 SendMessage(message, imageBase64, title);
@@ -456,9 +457,6 @@ namespace Gemini
                 using (var g = Graphics.FromImage(screenshot))
                     g.CopyFromScreen(0, 0, 0, 0, screenshot.Size);
                 this.Visible = true;
-
-                var message = "[Screenshot Taken]";
-                UpdateChat($"You: {message}\r\n", "user");
 
                 FocusInputField();
 
