@@ -291,14 +291,24 @@ namespace Gemini
                 // Split message into lines
                 var lines = message.Split(new[] { "\n", "\r\n" }, StringSplitOptions.None);
                 bool inList = false;
+                bool previousWasBullet = false;
+                bool previousWasEmpty = false; // Track consecutive empty lines
 
                 foreach (string line in lines)
                 {
                     string trimmedLine = line.Trim();
+                    bool currentIsBullet = trimmedLine.StartsWith("* ") || trimmedLine.StartsWith("- ");
+
                     if (string.IsNullOrEmpty(trimmedLine))
                     {
                         if (inList) inList = false;
-                        _chatBox.AppendText(Environment.NewLine);
+                        if (!previousWasEmpty) // Only add newline for the first empty line in a sequence
+                        {
+                            _chatBox.AppendText(Environment.NewLine);
+                            if (previousWasBullet) _chatBox.AppendText(Environment.NewLine); // Extra line after bullet group
+                        }
+                        previousWasEmpty = true;
+                        previousWasBullet = false;
                         continue;
                     }
 
@@ -308,40 +318,57 @@ namespace Gemini
                     // Handle headings
                     if (trimmedLine.StartsWith("# "))
                     {
-                        _chatBox.SelectionFont = new Font("Consolas", 24f, FontStyle.Bold); // Larger heading
+                        if (previousWasBullet && !previousWasEmpty) _chatBox.AppendText(Environment.NewLine);
+                        _chatBox.SelectionFont = new Font("Consolas", 24f, FontStyle.Bold);
                         FormatInlineText(trimmedLine.Substring(2));
-                        _chatBox.SelectionFont = defaultFont; // Reset
+                        _chatBox.SelectionFont = defaultFont;
                         _chatBox.AppendText(Environment.NewLine);
+                        previousWasBullet = false;
+                        previousWasEmpty = false;
                     }
                     else if (trimmedLine.StartsWith("## "))
                     {
-                        _chatBox.SelectionFont = new Font("Consolas", 20f, FontStyle.Bold); // Medium heading
+                        if (previousWasBullet && !previousWasEmpty) _chatBox.AppendText(Environment.NewLine);
+                        _chatBox.SelectionFont = new Font("Consolas", 20f, FontStyle.Bold);
                         FormatInlineText(trimmedLine.Substring(3));
-                        _chatBox.SelectionFont = defaultFont; // Reset
+                        _chatBox.SelectionFont = defaultFont;
                         _chatBox.AppendText(Environment.NewLine);
+                        previousWasBullet = false;
+                        previousWasEmpty = false;
                     }
                     // Handle bulleted lists with * or -
-                    else if (trimmedLine.StartsWith("* ") || trimmedLine.StartsWith("- "))
+                    else if (currentIsBullet)
                     {
                         if (!inList)
                         {
+                            if (previousWasBullet && !previousWasEmpty) _chatBox.AppendText(Environment.NewLine);
                             inList = true;
-                            _chatBox.AppendText(" • "); // Bullet character
+                            _chatBox.AppendText(" • ");
+                        }
+                        else if (previousWasBullet)
+                        {
+                            _chatBox.AppendText(" • "); // No extra newline between consecutive bullets
                         }
                         else
                         {
                             _chatBox.AppendText(Environment.NewLine + " • ");
                         }
-                        _chatBox.SelectionIndent = 20; // Indent list items
+                        _chatBox.SelectionIndent = 20;
                         FormatInlineText(trimmedLine.Substring(2));
-                        _chatBox.SelectionIndent = 0; // Reset indent
+                        _chatBox.SelectionIndent = 0;
+                        _chatBox.AppendText(Environment.NewLine);
+                        previousWasBullet = true;
+                        previousWasEmpty = false;
                     }
                     // Regular text
                     else
                     {
                         if (inList) inList = false;
+                        if (previousWasBullet && !previousWasEmpty) _chatBox.AppendText(Environment.NewLine);
                         FormatInlineText(trimmedLine);
                         _chatBox.AppendText(Environment.NewLine);
+                        previousWasBullet = false;
+                        previousWasEmpty = false;
                     }
                 }
 
