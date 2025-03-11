@@ -3,12 +3,9 @@
     public enum Status
     {
         Idle = 0,
-        Searching,
-        Scraping,
-        Processing,
-        SendingData,
-        ReceivingData,
-        AnalyzingImage
+        Sending,
+        Receiving,
+        Analyzing
     }
 
     public class StatusManager

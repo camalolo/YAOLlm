@@ -28,6 +28,13 @@ namespace Gemini
         [DllImport("user32.dll")]
         private static extern bool UnregisterHotKey(IntPtr hWnd, int id);
 
+        [DllImport("user32.dll")]
+        private static extern IntPtr GetForegroundWindow();
+
+        [DllImport("user32.dll")]
+        private static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int count);
+
+        // Constructor
         public MainForm(GeminiClient geminiClient, StatusManager statusManager, Logger logger)
         {
             _geminiClient = geminiClient ?? throw new ArgumentNullException(nameof(geminiClient));
@@ -36,18 +43,24 @@ namespace Gemini
 
             _chatBox = CreateChatBox();
             _inputField = CreateInputField();
-            _statusLabel = CreateLabel("Idle", DockStyle.None, new Point(0, 0));
-            _historyLabel = CreateLabel("[0]", DockStyle.Right);
+            _statusLabel = CreateControl<Label>("Idle", DockStyle.None, false, null, new Point(0, 0));
+            _historyLabel = CreateControl<Label>("[0]", DockStyle.Right);
 
             ConfigureForm();
             SetupTrayIcon();
             RegisterGlobalHotkey();
 
+            _statusManager.StatusChanged += status => 
+            {
+                _logger.Log($"StatusChanged event fired: {status}");
+                _statusLabel.InvokeIfRequired(() => _statusLabel.Text = status.ToString());
+            };
             _geminiClient.SetUICallbacks(UpdateChat, UpdateHistoryCounter, _statusManager.SetStatus);
-            _statusManager.StatusChanged += status => _statusLabel.InvokeIfRequired(() => _statusLabel.Text = status.ToString());
+
             this.FormClosing += MainForm_FormClosing;
         }
 
+        // UI Setup
         private void ConfigureForm()
         {
             this.FormBorderStyle = FormBorderStyle.None;
@@ -60,47 +73,60 @@ namespace Gemini
             this.Visible = false;
 
             var topPanel = CreateTopPanel();
-            var buttonPanel = CreateButtonPanel();
+            var bottomPanel = CreateBottomPanel();
             var spacerPanel = new Panel { Height = 10, Dock = DockStyle.Bottom, BackColor = Color.Black };
 
-            this.Controls.AddRange(new Control[] { _chatBox, spacerPanel, _inputField, buttonPanel, topPanel });
+            this.Controls.AddRange(new Control[] { _chatBox, spacerPanel, _inputField, bottomPanel, topPanel });
             _logger.Log($"Form configured: Visible = {this.Visible}");
         }
 
         private Panel CreateTopPanel()
         {
             var panel = new Panel { Dock = DockStyle.Top, BackColor = Color.Black, Height = 40 };
-            panel.Controls.Add(CreateButton("-", DockStyle.Right, HideOverlay, 0));
-            panel.Controls.Add(CreateButton("X", DockStyle.Right, Application.Exit, 0));
+            panel.Controls.Add(CreateControl<Button>("-", DockStyle.Right, false, HideOverlay));
+            panel.Controls.Add(CreateControl<Button>("X", DockStyle.Right, false, Application.Exit));
             return panel;
         }
 
-        private Panel CreateButtonPanel()
+        private Panel CreateBottomPanel()
         {
             var panel = new Panel { Dock = DockStyle.Bottom, BackColor = Color.Black, Height = 48 };
+            var flowPanel = new FlowLayoutPanel { FlowDirection = FlowDirection.LeftToRight, AutoSize = true, Location = new Point(0, 5) };
             var buttons = new Dictionary<string, (string text, Action action)>
             {
-                ["send"] = ("Send", SendMessage),
+                ["send"] = ("Send", () => SendMessage()),
                 ["playing"] = ("Playing", SendPlayingMessage),
                 ["capture_send"] = ("Capture && Send", CaptureAndSend),
-                ["proceed"] = ("Proceed", () => SendPresetMessage("Please proceed")),
+                ["proceed"] = ("Proceed", () => SendMessage("Please proceed")),
                 ["clear"] = ("Clear", ClearChat)
             };
 
-            int x = 0;
             foreach (var (id, (text, action)) in buttons)
             {
-                var btn = CreateButton(text, DockStyle.None, action, 1, new Point(x, 5));
+                var btn = CreateControl<Button>(text, DockStyle.None, true, action);
                 btn.Tag = id;
-                panel.Controls.Add(btn);
-                x += btn.Width + 10;
+                flowPanel.Controls.Add(btn);
             }
 
-            _statusLabel.Location = new Point(x, 10);
-            panel.Controls.Add(_statusLabel);
-            panel.Controls.Add(_historyLabel);
-
-            return panel;
+            // Create a TableLayoutPanel with 3 columns to hold the controls
+            TableLayoutPanel tablePanel = new TableLayoutPanel();
+            tablePanel.Dock = DockStyle.Bottom;
+            tablePanel.AutoSize = true;
+            tablePanel.ColumnCount = 3;
+            tablePanel.RowCount = 1;
+            tablePanel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            tablePanel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            tablePanel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            tablePanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            
+            // Add controls to the appropriate cells:
+            // Column 0: Button panel (flowPanel)
+            // Column 1: Status label (_statusLabel)
+            // Column 2: History label (_historyLabel)
+            tablePanel.Controls.Add(flowPanel, 0, 0);
+            tablePanel.Controls.Add(_statusLabel, 1, 0);
+            tablePanel.Controls.Add(_historyLabel, 2, 0);
+            return tablePanel;
         }
 
         private RichTextBox CreateChatBox()
@@ -135,39 +161,30 @@ namespace Gemini
             return input;
         }
 
-        private Button CreateButton(string text, DockStyle dock, Action click, int border, Point? location = null)
+        private T CreateControl<T>(string text, DockStyle dock, bool border = false, Action? click = null, Point? location = null) where T : Control, new()
         {
-            var btn = new Button
+            var control = new T
             {
                 Text = text,
-                Font = new Font("Consolas", 12),
+                Font = new Font("Consolas", typeof(T) == typeof(Button) ? 12 : 18),
                 BackColor = Color.Black,
                 ForeColor = Color.White,
-                FlatStyle = FlatStyle.Flat,
-                Dock = dock,
-                Width = dock == DockStyle.None ? TextRenderer.MeasureText(text, new Font("Consolas", 12)).Width + 20 : 20,
-                Height = 38,
-                FlatAppearance = { BorderSize = border }
-            };
-            if (location.HasValue) btn.Location = location.Value;
-            btn.Click += (s, e) => click();
-            return btn;
-        }
-
-        private Label CreateLabel(string text, DockStyle dock, Point? location = null)
-        {
-            var label = new Label
-            {
-                Text = text,
-                Font = new Font("Consolas", 12),
-                ForeColor = Color.White,
-                BackColor = Color.Black,
                 Dock = dock,
                 Height = 38
             };
-            if (location.HasValue) label.Location = location.Value;
-            if (dock == DockStyle.None) label.Width = TextRenderer.MeasureText(text, new Font("Consolas", 12)).Width * 2;
-            return label;
+            if (control is Button btn)
+            {
+                btn.FlatStyle = FlatStyle.Flat;
+                btn.Width = dock == DockStyle.None ? TextRenderer.MeasureText(text, btn.Font).Width + 20 : 20;
+                btn.FlatAppearance.BorderSize = border ? 1 : 0;
+                if (click != null) btn.Click += (s, e) => click();
+            }
+            else if (control is Label lbl && dock == DockStyle.None)
+            {
+                lbl.Width = TextRenderer.MeasureText(text, lbl.Font).Width * 2;
+            }
+            if (location.HasValue) control.Location = location.Value;
+            return control;
         }
 
         private void SetupTrayIcon()
@@ -191,12 +208,16 @@ namespace Gemini
             }
         }
 
+        // Event Handlers
         private void RegisterGlobalHotkey()
         {
             if (RegisterHotKey(this.Handle, HOTKEY_ID, MOD_CONTROL, VK_F12))
                 _logger.Log("Global hotkey Ctrl+F12 registered.");
             else
+            {
                 _logger.Log("Failed to register Ctrl+F12 hotkey.");
+                UpdateChat("Warning: Ctrl+F12 hotkey registration failed.\r\n", "system");
+            }
         }
 
         protected override void WndProc(ref Message m)
@@ -224,30 +245,35 @@ namespace Gemini
                 HideOverlay();
         }
 
-        private void SendMessage() => SendMessage(_inputField.Text);
-
-        private void CaptureAndSend()
+        // Core Functionality
+        private void SendMessage(string message = "")
         {
-             string message = string.IsNullOrEmpty(_inputField.Text.Trim()) ? "[Screenshot Taken]" : _inputField.Text.Trim();
-             
-            var (imageBase64, title) = CaptureScreen();
-            if (!string.IsNullOrEmpty(imageBase64))
-                SendMessage(message, imageBase64, title);
-            else
-                UpdateChat("Error: Screen capture failed.\r\n", "system");
+            message = (message.Length > 0 ? message : _inputField.Text).Trim();
+            if (string.IsNullOrEmpty(message)) return;
+
+            UpdateChat($"You: {message}\r\n", "user");
+            _inputField.Text = "";
+            Task.Run(() => _geminiClient.ProcessLLMRequest(message));
         }
 
-        private void SendPresetMessage(string message) => SendMessage(message);
-
-        private void SendMessage(string message, string? imageBase64 = null, string? title = null)
+        private void SendMessage(string message, string? imageBase64, string? title = null)
         {
             message = message.Trim();
             if (string.IsNullOrEmpty(message) && string.IsNullOrEmpty(imageBase64)) return;
 
             UpdateChat($"You: {message}\r\n", "user");
-            _geminiClient.OriginalUserQuery = message;
             _inputField.Text = "";
             Task.Run(() => _geminiClient.ProcessLLMRequest(message, imageBase64, title));
+        }
+
+        private void CaptureAndSend()
+        {
+            string message = string.IsNullOrEmpty(_inputField.Text.Trim()) ? "[Screenshot Taken]" : _inputField.Text.Trim();
+            var (imageBase64, title) = CaptureScreen();
+            if (!string.IsNullOrEmpty(imageBase64))
+                SendMessage(message, imageBase64, title);
+            else
+                UpdateChat("Error: Screen capture failed.\r\n", "system");
         }
 
         private void SendPlayingMessage()
@@ -260,7 +286,7 @@ namespace Gemini
             if (!string.IsNullOrEmpty(title) && title != "Gemini Overlay")
             {
                 string message = $"[I am now playing: {title}]";
-                SendPresetMessage(message);
+                SendMessage(message);
             }
             else
                 UpdateChat("Error: Could not detect active window.\r\n", "system");
@@ -471,6 +497,7 @@ namespace Gemini
             }
         }
 
+        // Utility Methods
         private void FocusInputField()
         {
             _inputField.InvokeIfRequired(() => { this.Activate(); _inputField.Focus(); });
@@ -484,16 +511,10 @@ namespace Gemini
 
         private void HideOverlay() => this.Visible = false;
 
-        [DllImport("user32.dll")]
-        private static extern IntPtr GetForegroundWindow();
-
-        [DllImport("user32.dll")]
-        private static extern int GetWindowText(IntPtr hWnd, System.Text.StringBuilder text, int count);
-
         private string GetActiveWindowTitle()
         {
             const int nChars = 256;
-            var buff = new System.Text.StringBuilder(nChars);
+            var buff = new StringBuilder(nChars);
             return GetWindowText(GetForegroundWindow(), buff, nChars) > 0 && buff.ToString() != "Gemini Overlay"
                 ? buff.ToString()
                 : string.Empty;

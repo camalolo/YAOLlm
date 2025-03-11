@@ -1,47 +1,43 @@
-﻿namespace Gemini
+﻿public class Logger
 {
-    public class Logger
+    private readonly string _logFilePath;
+    private readonly object _lock = new();
+    private const string LogDirectory = "log";
+
+    public Logger(string logFileName)
     {
-        private readonly string _logFilePath;
-        private readonly object _lock = new();
-        private const string LogDirectory = "log";
+        if (string.IsNullOrEmpty(logFileName))
+            throw new ArgumentNullException(nameof(logFileName));
 
-        public Logger(string logFileName)
+        _logFilePath = Path.Combine(LogDirectory, logFileName);
+        EnsureLogDirectoryExists();
+        Log($"Logger initialized. Log file: {_logFilePath}");
+    }
+
+    private void EnsureLogDirectoryExists()
+    {
+        var directory = Path.GetDirectoryName(_logFilePath);
+        if (directory != null && !Directory.Exists(directory))
         {
-            if (string.IsNullOrEmpty(logFileName))
-                throw new ArgumentNullException(nameof(logFileName));
-
-            _logFilePath = Path.Combine(LogDirectory, logFileName);
-            EnsureLogDirectoryExists();
-            Log($"Logger initialized. Log file: {_logFilePath}", isInternal: true);
+            Directory.CreateDirectory(directory);
+            Log($"Created log directory: {directory}");
         }
+    }
 
-        private void EnsureLogDirectoryExists()
+    public void Log(string message)
+    {
+        try
         {
-            var directory = Path.GetDirectoryName(_logFilePath);
-            if (directory != null && !Directory.Exists(directory)) // Simplified check
+            lock (_lock)
             {
-                Directory.CreateDirectory(directory);
-                Log($"Created log directory: {directory}", isInternal: true);
+                var timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+                var logEntry = $"{timestamp} - {message}";
+                File.AppendAllText(_logFilePath, logEntry + Environment.NewLine);
             }
         }
-
-        public void Log(string message, bool isInternal = false)
+        catch (Exception ex)
         {
-            try
-            {
-                lock (_lock)
-                {
-                    var timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
-                    var logEntry = $"{timestamp} - {message}";
-                    File.AppendAllText(_logFilePath, logEntry + Environment.NewLine);
-                }
-            }
-            catch (Exception ex)
-            {
-                var errorType = isInternal ? "Internal logging error" : "Logging error";
-                Console.WriteLine($"{errorType}: {ex.Message} - Message: {message}");
-            }
+            Console.WriteLine($"Logging error: {ex.Message} - Message: {message}");
         }
     }
 }
