@@ -11,10 +11,11 @@ namespace Gemini
         private readonly StatusManager _statusManager;
         private readonly Logger _logger;
         private readonly NotifyIcon _trayIcon = new NotifyIcon();
-        private readonly RichTextBox _chatBox;
+        private readonly WebBrowser _chatBox;
         private readonly TextBox _inputField;
         private readonly Label _statusLabel;
         private readonly Label _historyLabel;
+        private string _chatHtml = "<html><head><script>function scrollToBottom() { window.scrollTo(0, document.body.scrollHeight); }</script></head><body style='background-color:black;color:white;font-family:Consolas;font-size:18px;padding:10px;'></body></html>";
 
         // Global hotkey constants
         private const int WM_HOTKEY = 0x0312;
@@ -76,7 +77,9 @@ namespace Gemini
             var bottomPanel = CreateBottomPanel();
             var spacerPanel = new Panel { Height = 10, Dock = DockStyle.Bottom, BackColor = Color.Black };
 
+            _chatBox.DocumentText = _chatHtml; // Set initial HTML with script
             this.Controls.AddRange(new Control[] { _chatBox, spacerPanel, _inputField, bottomPanel, topPanel });
+
             _logger.Log($"Form configured: Visible = {this.Visible}");
         }
 
@@ -94,7 +97,8 @@ namespace Gemini
             var flowPanel = new FlowLayoutPanel { FlowDirection = FlowDirection.LeftToRight, AutoSize = true, Location = new Point(0, 5) };
             var buttons = new Dictionary<string, (string text, Action action)>
             {
-                ["send"] = ("Send", () => SendMessage()),
+                ["send_tools"] = ("Send (Tools)", () => SendMessage(useTools: true)),
+                ["send_mm"] = ("Send (MM)", () => SendMessage(useTools: false)),
                 ["playing"] = ("Playing", SendPlayingMessage),
                 ["capture_send"] = ("Capture && Send", CaptureAndSend),
                 ["load_image"] = ("Load Image", LoadAndSendImage),
@@ -130,18 +134,17 @@ namespace Gemini
             return tablePanel;
         }
 
-        private RichTextBox CreateChatBox()
+        private WebBrowser CreateChatBox()
         {
-            return new RichTextBox
+            var wb = new WebBrowser
             {
                 Dock = DockStyle.Fill,
-                ReadOnly = true,
                 BackColor = Color.Black,
-                ForeColor = Color.White,
-                Font = new Font("Consolas", 18),
-                BorderStyle = BorderStyle.FixedSingle,
-                Padding = new Padding(10)
+                ScriptErrorsSuppressed = true,
+                DocumentText = _chatHtml
             };
+            wb.DocumentCompleted += (s, e) => wb.Document?.InvokeScript("scrollToBottom"); // Use JS for scrolling
+            return wb;
         }
 
         private TextBox CreateInputField()
@@ -247,17 +250,17 @@ namespace Gemini
         }
 
         // Core Functionality
-        private void SendMessage(string message = "")
+        private void SendMessage(string message = "", bool useTools = true)
         {
             message = (message.Length > 0 ? message : _inputField.Text).Trim();
             if (string.IsNullOrEmpty(message)) return;
 
             UpdateChat($"You: {message}\r\n", "user");
             _inputField.Text = "";
-            Task.Run(() => _geminiClient.ProcessLLMRequest(message));
+            Task.Run(() => _geminiClient.ProcessLLMRequest(message, null, null, useTools));
         }
 
-        private void SendMessage(string message, string? imageBase64, string? title = null)
+        private void SendMessage(string message, string? imageBase64, string? title = null, bool useTools = true)
         {
             message = message.Trim();
             if (string.IsNullOrEmpty(message) && string.IsNullOrEmpty(imageBase64)) return;
@@ -295,7 +298,8 @@ namespace Gemini
 
         private void ClearChat()
         {
-            _chatBox.Clear();
+            _chatHtml = "<html><head><script>function scrollToBottom() { window.scrollTo(0, document.body.scrollHeight); }</script></head><body style='background-color:black;color:white;font-family:Consolas;font-size:18px;padding:10px;'></body></html>";
+            _chatBox.DocumentText = _chatHtml;
             _geminiClient.ClearConversationHistory();
             UpdateHistoryCounter();
         }
@@ -304,169 +308,75 @@ namespace Gemini
         {
             _chatBox.InvokeIfRequired(() =>
             {
-                // Set default font and color for the entire message
-                _chatBox.SelectionStart = _chatBox.TextLength;
-                Font defaultFont = new Font("Consolas", 18f); // Fallback font
-                Color roleColor = role switch
+                string color = role switch
                 {
-                    "model" => Color.Yellow,
-                    "system" => Color.LightGray,
-                    _ => Color.White
+                    "model" => "yellow",
+                    "system" => "lightgray",
+                    _ => "white"
                 };
-                _chatBox.SelectionFont = defaultFont;
-                _chatBox.SelectionColor = roleColor;
+                string htmlContent = "";
 
-                // Split message into lines
-                var lines = message.Split(new[] { "\n", "\r\n" }, StringSplitOptions.None);
-                bool inList = false;
-                bool previousWasBullet = false;
-                bool previousWasEmpty = false; // Track consecutive empty lines
-
-                foreach (string line in lines)
+                if (role == "model" && message.Contains("data:image"))
                 {
-                    string trimmedLine = line.Trim();
-                    bool currentIsBullet = trimmedLine.StartsWith("* ") || trimmedLine.StartsWith("- ");
-
-                    if (string.IsNullOrEmpty(trimmedLine))
+                    // Extract base64 image, resize it, and replace in message
+                    var base64Start = message.IndexOf("data:image") + "data:image/png;base64,".Length;
+                    var base64End = message.IndexOf("'", base64Start);
+                    if (base64End == -1) base64End = message.IndexOf("\"", base64Start);
+                    if (base64Start > 0 && base64End > base64Start)
                     {
-                        if (inList) inList = false;
-                        if (!previousWasEmpty) // Only add newline for the first empty line in a sequence
-                        {
-                            _chatBox.AppendText(Environment.NewLine);
-                            if (previousWasBullet) _chatBox.AppendText(Environment.NewLine); // Extra line after bullet group
-                        }
-                        previousWasEmpty = true;
-                        previousWasBullet = false;
-                        continue;
+                        var base64 = message.Substring(base64Start, base64End - base64Start);
+                        var resizedBase64 = ResizeImageBase64(base64);
+                        message = message.Substring(0, base64Start) + resizedBase64 + message.Substring(base64End);
                     }
-
-                    // Ensure color persists for each line
-                    _chatBox.SelectionColor = roleColor;
-
-                    // Handle headings
-                    if (trimmedLine.StartsWith("# "))
-                    {
-                        if (previousWasBullet && !previousWasEmpty) _chatBox.AppendText(Environment.NewLine);
-                        _chatBox.SelectionFont = new Font("Consolas", 24f, FontStyle.Bold);
-                        FormatInlineText(trimmedLine.Substring(2));
-                        _chatBox.SelectionFont = defaultFont;
-                        _chatBox.AppendText(Environment.NewLine);
-                        previousWasBullet = false;
-                        previousWasEmpty = false;
-                    }
-                    else if (trimmedLine.StartsWith("## "))
-                    {
-                        if (previousWasBullet && !previousWasEmpty) _chatBox.AppendText(Environment.NewLine);
-                        _chatBox.SelectionFont = new Font("Consolas", 20f, FontStyle.Bold);
-                        FormatInlineText(trimmedLine.Substring(3));
-                        _chatBox.SelectionFont = defaultFont;
-                        _chatBox.AppendText(Environment.NewLine);
-                        previousWasBullet = false;
-                        previousWasEmpty = false;
-                    }
-                    // Handle bulleted lists with * or -
-                    else if (currentIsBullet)
-                    {
-                        if (!inList)
-                        {
-                            if (previousWasBullet && !previousWasEmpty) _chatBox.AppendText(Environment.NewLine);
-                            inList = true;
-                            _chatBox.AppendText(" • ");
-                        }
-                        else if (previousWasBullet)
-                        {
-                            _chatBox.AppendText(" • "); // No extra newline between consecutive bullets
-                        }
-                        else
-                        {
-                            _chatBox.AppendText(Environment.NewLine + " • ");
-                        }
-                        _chatBox.SelectionIndent = 20;
-                        FormatInlineText(trimmedLine.Substring(2));
-                        _chatBox.SelectionIndent = 0;
-                        _chatBox.AppendText(Environment.NewLine);
-                        previousWasBullet = true;
-                        previousWasEmpty = false;
-                    }
-                    // Regular text
-                    else
-                    {
-                        if (inList) inList = false;
-                        if (previousWasBullet && !previousWasEmpty) _chatBox.AppendText(Environment.NewLine);
-                        FormatInlineText(trimmedLine);
-                        _chatBox.AppendText(Environment.NewLine);
-                        previousWasBullet = false;
-                        previousWasEmpty = false;
-                    }
+                    htmlContent = message;
+                }
+                else
+                {
+                    htmlContent = FormatMarkdownToHtml(message);
                 }
 
-                _chatBox.SelectionStart = _chatBox.TextLength;
-                _chatBox.ScrollToCaret();
+                _chatHtml = _chatHtml.Insert(_chatHtml.IndexOf("</body>"), $"<div style='color:{color};'>{htmlContent}</div><br>");
+                _chatBox.DocumentText = _chatHtml;
             });
         }
 
-        // Helper function to handle bold and italic inline formatting
-        private void FormatInlineText(string text)
+        private string FormatMarkdownToHtml(string text)
         {
-            int start = 0;
-            Font defaultFont = new Font("Consolas", 18f); // Fallback font
+            var lines = text.Split(new[] { "\n", "\r\n" }, StringSplitOptions.None);
+            var html = new StringBuilder();
+            bool inList = false;
 
-            while (start < text.Length)
+            foreach (var line in lines)
             {
-                // Look for bold (**text** or __text__)
-                int boldStart = text.IndexOf("**", start);
-                if (boldStart == -1) boldStart = text.IndexOf("__", start);
-                if (boldStart == -1)
+                string trimmed = line.Trim();
+                if (string.IsNullOrEmpty(trimmed))
                 {
-                    _chatBox.AppendText(text.Substring(start));
-                    break;
+                    if (inList) { html.Append("</ul>"); inList = false; }
+                    html.Append("<br>");
+                    continue;
                 }
-
-                _chatBox.AppendText(text.Substring(start, boldStart - start));
-                int boldEnd = text.IndexOf("**", boldStart + 2);
-                if (boldEnd == -1) boldEnd = text.IndexOf("__", boldStart + 2);
-                if (boldEnd == -1)
+                if (trimmed.StartsWith("# "))
                 {
-                    _chatBox.AppendText(text.Substring(boldStart));
-                    break;
+                    html.Append($"<h1>{trimmed.Substring(2)}</h1>");
                 }
-
-                Font currentFont = _chatBox.SelectionFont ?? defaultFont;
-                _chatBox.SelectionFont = new Font(currentFont.FontFamily, currentFont.Size, FontStyle.Bold);
-                _chatBox.AppendText(text.Substring(boldStart + 2, boldEnd - boldStart - 2));
-                _chatBox.SelectionFont = new Font(currentFont.FontFamily, currentFont.Size, FontStyle.Regular);
-                start = boldEnd + 2;
+                else if (trimmed.StartsWith("## "))
+                {
+                    html.Append($"<h2>{trimmed.Substring(3)}</h2>");
+                }
+                else if (trimmed.StartsWith("* ") || trimmed.StartsWith("- "))
+                {
+                    if (!inList) { html.Append("<ulımın style='margin-left:20px;'>"); inList = true; }
+                    html.Append($"<li>{trimmed.Substring(2)}</li>");
+                }
+                else
+                {
+                    if (inList) { html.Append("</ul>"); inList = false; }
+                    html.Append($"<p>{trimmed}</p>");
+                }
             }
-
-            // Reset position and process italic (*text* or _text_)
-            string currentText = _chatBox.Text.Substring(_chatBox.TextLength - text.Length);
-            start = 0;
-            int offset = _chatBox.TextLength - text.Length;
-
-            while (start < currentText.Length)
-            {
-                int italicStart = currentText.IndexOf("*", start);
-                if (italicStart == -1) italicStart = currentText.IndexOf("_", start);
-                if (italicStart == -1 || italicStart + 1 >= currentText.Length)
-                    break;
-
-                int italicEnd = currentText.IndexOf("*", italicStart + 1);
-                if (italicEnd == -1) italicEnd = currentText.IndexOf("_", italicStart + 1);
-                if (italicEnd == -1)
-                    break;
-
-                // Apply italic to the range
-                _chatBox.Select(offset + italicStart + 1, italicEnd - italicStart - 1);
-                Font currentFont = _chatBox.SelectionFont ?? defaultFont;
-                _chatBox.SelectionFont = new Font(currentFont.FontFamily, currentFont.Size, currentFont.Style | FontStyle.Italic);
-                start = italicEnd + 1;
-            }
-
-            // Reset selection
-            _chatBox.SelectionStart = _chatBox.TextLength;
-            _chatBox.SelectionFont = defaultFont;
+            if (inList) html.Append("</ul>");
+            return html.ToString().Replace("**", "<b>").Replace("__", "<b>").Replace("*", "<i>").Replace("_", "<i>");
         }
-
         private void UpdateHistoryCounter()
         {
             int length = _geminiClient.GetConversationHistoryLength();
@@ -488,8 +398,10 @@ namespace Gemini
                 FocusInputField();
 
                 using var ms = new MemoryStream();
-                screenshot.Resize(640, 360).Save(ms, ImageFormat.Png);
-                return (Convert.ToBase64String(ms.ToArray()), title);
+                screenshot.Save(ms, ImageFormat.Png);
+                string base64 = Convert.ToBase64String(ms.ToArray());
+                string resizedBase64 = ResizeImageBase64(base64);
+                return (resizedBase64, title);
             }
             catch (Exception ex)
             {
@@ -511,16 +423,36 @@ namespace Gemini
                 {
                     using var image = new Bitmap(openFileDialog.FileName);
                     using var ms = new MemoryStream();
-                    image.Save(ms, ImageFormat.Png); // Convert to PNG
-                    string imageBase64 = Convert.ToBase64String(ms.ToArray());
+                    image.Save(ms, ImageFormat.Png);
+                    string base64 = Convert.ToBase64String(ms.ToArray());
+                    string resizedBase64 = ResizeImageBase64(base64);
                     string message = string.IsNullOrEmpty(_inputField.Text.Trim()) ? "[Image Loaded]" : _inputField.Text.Trim();
-                    SendMessage(message, imageBase64, Path.GetFileName(openFileDialog.FileName));
+                    SendMessage(message, resizedBase64, Path.GetFileName(openFileDialog.FileName));
                 }
                 catch (Exception ex)
                 {
                     _logger.Log($"Error loading image: {ex.Message}");
                     UpdateChat($"Error: Failed to load image - {ex.Message}\r\n", "system");
                 }
+            }
+        }
+
+        private string ResizeImageBase64(string base64)
+        {
+            try
+            {
+                byte[] imageBytes = Convert.FromBase64String(base64);
+                using var ms = new MemoryStream(imageBytes);
+                using var image = new Bitmap(ms);
+                using var resizedImage = image.Resize(640, 360);
+                using var outputMs = new MemoryStream();
+                resizedImage.Save(outputMs, ImageFormat.Png);
+                return Convert.ToBase64String(outputMs.ToArray());
+            }
+            catch (Exception ex)
+            {
+                _logger.Log($"Error resizing image: {ex.Message}");
+                return base64; // Fallback to original if resizing fails
             }
         }
 

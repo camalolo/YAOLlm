@@ -10,10 +10,12 @@ namespace Gemini
         private const int GenerationRpmLimit = 15;
         private static readonly SemaphoreSlim GenerationRateLimiter = new(GenerationRpmLimit, GenerationRpmLimit);
 
-        public static async Task<string> SendToLLM(GeminiClient client, object payload, string? imageBase64 = null)
+        public static async Task<string> SendToLLM(GeminiClient client, object payload, string? imageBase64 = null, bool useTools = true)
         {
             var logger = client.Logger;
             var tools = new List<object> { new { google_search = new { } } };
+            var generationConfig = new { responseModalities = new[] { "TEXT", "IMAGE" } };
+
             object[] contents = payload switch
             {
                 List<Dictionary<string, string>> messages => messages.Select(m =>
@@ -27,7 +29,16 @@ namespace Gemini
                 _ => throw new ArgumentException("Invalid payload type")
             };
 
-            var enhancedPayload = new { contents, tools };
+            object enhancedPayload;
+            
+            if (useTools)
+            {
+                enhancedPayload = new { contents, tools };
+            }
+            else
+            {
+                enhancedPayload = new { contents, generationConfig };
+            }
             var jsonPayload = JsonSerializer.Serialize(enhancedPayload);
             logger.Log($"Preparing LLM request with payload: {jsonPayload.Substring(0, Math.Min(500, jsonPayload.Length))}...");
 
@@ -61,6 +72,9 @@ namespace Gemini
                 for (int retry = 0; retry <= maxRetries; retry++)
                 {
                     var response = await restClient.ExecuteAsync(request);
+
+                    client.Logger.Log(response.Content ?? "Empty response !");
+
                     if (response.StatusCode == System.Net.HttpStatusCode.TooManyRequests || response.StatusCode == System.Net.HttpStatusCode.ServiceUnavailable)
                     {
                         if (retry == maxRetries)
@@ -105,7 +119,16 @@ namespace Gemini
                 foreach (var part in candidate.GetProperty("content").GetProperty("parts").EnumerateArray())
                 {
                     if (part.TryGetProperty("text", out var text) && text.GetString() is string textValue)
+                    {
                         messageParts.Add(textValue);
+                    }
+                    else if (part.TryGetProperty("inlineData", out var inlineData) &&
+                             inlineData.TryGetProperty("mimeType", out var mimeType) &&
+                             inlineData.TryGetProperty("data", out var dataValue) &&
+                             mimeType.GetString() is string mime && dataValue.GetString() is string base64)
+                    {
+                        messageParts.Add($"<img src='data:{mime};base64,{base64}' style='max-width:100%;'>");
+                    }
                 }
             }
 

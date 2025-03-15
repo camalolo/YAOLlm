@@ -13,7 +13,7 @@ namespace Gemini
         private readonly object _historyLock = new object();
         private const int MaxHistoryEntries = 32;
         private const string ApiBaseUrl = "https://generativelanguage.googleapis.com/v1beta/models/";
-        private string _model = "gemini-2.0-flash";
+        private string _model = "gemini-2.0-flash-exp";
 
         public Action<string, string> UpdateChat { get; private set; } = (_, __) => { };
         public Action UpdateHistoryCounter { get; private set; } = () => { };
@@ -56,7 +56,8 @@ namespace Gemini
         private static string GetInitialPrompt()
         {
             return $"Current Date: {DateTime.Now:yyyy-MM-dd}\n" +
-                   "You are an AI assistant designed to provide accurate and helpful responses using the built-in Google Search tool when needed.";
+                   "You are an AI assistant designed to provide accurate and helpful responses using the built-in Google Search tool when needed. " +
+                   "Support multimodal input and output, including generating images when requested.";
         }
 
         public void SetUICallbacks(Action<string, string> updateChat, Action updateHistoryCounter, Action<Status> updateStatus)
@@ -87,7 +88,7 @@ namespace Gemini
             }
         }
 
-        public async Task ProcessLLMRequest(string prompt, string? imageBase64 = null, string? activeWindowTitle = null)
+        public async Task ProcessLLMRequest(string prompt, string? imageBase64 = null, string? activeWindowTitle = null, bool useTools = true)
         {
             try
             {
@@ -102,7 +103,7 @@ namespace Gemini
                     {
                         UpdateStatus(Status.Analyzing);
                         string describePrompt = $"Describe this screenshot from '{activeWindowTitle}' accurately, including all visible text and components.";
-                        string? description = await ApiFunctions.SendToLLM(this, describePrompt, imageBase64);
+                        string? description = await ApiFunctions.SendToLLM(this, describePrompt, imageBase64, useTools);
                         userMessage["content"] = $"{prompt}\nScreenshot Description: {description}";
                     }
                     else
@@ -114,7 +115,7 @@ namespace Gemini
 
                 messages.Add(userMessage);
                 TrimHistoryIfNeeded(messages);
-                string response = await ApiFunctions.SendToLLM(this, messages);
+                string response = await ApiFunctions.SendToLLM(this, messages, null, useTools);
 
                 lock (_historyLock)
                 {
