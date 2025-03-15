@@ -50,7 +50,7 @@ namespace Gemini
             SetupTrayIcon();
             RegisterGlobalHotkey();
 
-            _statusManager.StatusChanged += status => 
+            _statusManager.StatusChanged += status =>
             {
                 _logger.Log($"StatusChanged event fired: {status}");
                 _statusLabel.InvokeIfRequired(() => _statusLabel.Text = status.ToString());
@@ -97,6 +97,7 @@ namespace Gemini
                 ["send"] = ("Send", () => SendMessage()),
                 ["playing"] = ("Playing", SendPlayingMessage),
                 ["capture_send"] = ("Capture && Send", CaptureAndSend),
+                ["load_image"] = ("Load Image", LoadAndSendImage),
                 ["proceed"] = ("Proceed", () => SendMessage("Please proceed")),
                 ["clear"] = ("Clear", ClearChat)
             };
@@ -118,7 +119,7 @@ namespace Gemini
             tablePanel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
             tablePanel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
             tablePanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            
+
             // Add controls to the appropriate cells:
             // Column 0: Button panel (flowPanel)
             // Column 1: Status label (_statusLabel)
@@ -494,6 +495,32 @@ namespace Gemini
             {
                 _logger.Log($"Screen capture error: {ex.Message}");
                 return (string.Empty, string.Empty);
+            }
+        }
+
+        private void LoadAndSendImage()
+        {
+            using var openFileDialog = new OpenFileDialog
+            {
+                Filter = "Image Files (*.png;*.jpg;*.jpeg)|*.png;*.jpg;*.jpeg",
+                Title = "Select an Image"
+            };
+            if (openFileDialog.ShowDialog() == DialogResult.OK)
+            {
+                try
+                {
+                    using var image = new Bitmap(openFileDialog.FileName);
+                    using var ms = new MemoryStream();
+                    image.Save(ms, ImageFormat.Png); // Convert to PNG
+                    string imageBase64 = Convert.ToBase64String(ms.ToArray());
+                    string message = string.IsNullOrEmpty(_inputField.Text.Trim()) ? "[Image Loaded]" : _inputField.Text.Trim();
+                    SendMessage(message, imageBase64, Path.GetFileName(openFileDialog.FileName));
+                }
+                catch (Exception ex)
+                {
+                    _logger.Log($"Error loading image: {ex.Message}");
+                    UpdateChat($"Error: Failed to load image - {ex.Message}\r\n", "system");
+                }
             }
         }
 
