@@ -14,4 +14,6 @@ if %ERRORLEVEL% NEQ 0 (
     exit /b %ERRORLEVEL%
 )
 
+cp %PUBLISH_DIR%\Gemini.exe E:\Apps\
+
 pause
