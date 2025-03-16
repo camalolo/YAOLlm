@@ -134,7 +134,7 @@ namespace Gemini
                 }
             }
 
-            return string.Join("", messageParts);
+            return string.Join("<br><br>", messageParts);
         }
     }
 }

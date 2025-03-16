@@ -46,8 +46,8 @@ namespace Gemini
 
             _chatBox = CreateChatBox();
             _inputField = CreateInputField();
-            _statusLabel = CreateControl<Label>("Idle", DockStyle.None, false, null, new Point(0, 0));
-            _historyLabel = CreateControl<Label>("[0]", DockStyle.Right);
+            _statusLabel = CreateControl<Label>("            ", DockStyle.None, false, null, new Point(0, 0));
+            _historyLabel = CreateControl<Label>("            ", DockStyle.Right);
 
             ConfigureForm();
             SetupTrayIcon();

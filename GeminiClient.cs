@@ -60,7 +60,7 @@ namespace Gemini
             return $"Current Date: {DateTime.Now:yyyy-MM-dd}\n" +
                    $"Current Application : {_currentWindowTitle}\n" +
                    "You are an AI assistant designed to provide accurate and helpful responses using the built-in Google Search tool if available. " +
-                   "Support multimodal input and output if available, including generating images when requested.";                
+                   "Support multimodal input and output if available, including generating images when requested.";
         }
 
         public void SetUICallbacks(Action<string, string> updateChat, Action updateHistoryCounter, Action<Status> updateStatus)
@@ -105,7 +105,7 @@ namespace Gemini
             try
             {
                 Logger.Log($"Processing LLM request: {prompt}");
-                UpdateStatus(Status.Sending); // This should trigger the label update
+                UpdateStatus(Status.Sending);
 
                 var messages = new List<Dictionary<string, string>>(GetHistorySnapshot());
                 var userMessage = new Dictionary<string, string> { { "role", "user" } };
@@ -114,9 +114,14 @@ namespace Gemini
                     if (!string.IsNullOrEmpty(imageBase64) && !string.IsNullOrEmpty(activeWindowTitle))
                     {
                         UpdateStatus(Status.Analyzing);
-                        string describePrompt = $"Describe this screenshot from '{activeWindowTitle}' accurately, including all visible text and components.";
-                        string? description = await ApiFunctions.SendToLLM(this, describePrompt, imageBase64, useTools);
-                        userMessage["content"] = $"{prompt}\nScreenshot Description: {description}";
+                        var describeMessage = new Dictionary<string, string>
+                        {
+                            { "role", "user" },
+                            { "content", $"Describe this screenshot from '{activeWindowTitle}' with excruciating detail, including all visible text and components." },
+                            { "image", imageBase64 }
+                        };
+                        string? description = await ApiFunctions.SendToLLM(this, new List<Dictionary<string, string>> { describeMessage }, imageBase64, false);
+                        userMessage["content"] = $"{prompt}\nScreenshot Description: {description ?? "Image description unavailable"}";
                     }
                     else
                     {
@@ -127,12 +132,11 @@ namespace Gemini
 
                 messages.Add(userMessage);
                 TrimHistoryIfNeeded(messages);
-                string response = await ApiFunctions.SendToLLM(this, messages, null, useTools);
+                string response = await ApiFunctions.SendToLLM(this, messages, imageBase64, useTools);
 
                 lock (_historyLock)
                 {
-                    if (userMessage.ContainsKey("image")) userMessage.Remove("image"); //Save tokens
-
+                    if (userMessage.ContainsKey("image")) userMessage.Remove("image");
                     _conversationHistory.Add(userMessage);
                     _conversationHistory.Add(new Dictionary<string, string> { { "role", "model" }, { "content", response } });
                     UpdateHistoryCounter();
