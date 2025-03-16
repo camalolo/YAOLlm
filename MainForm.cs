@@ -2,6 +2,8 @@ using System.Runtime.InteropServices;
 using System.Reflection;
 using System.Drawing.Imaging;
 using System.Text;
+using Microsoft.Web.WebView2.WinForms;
+using Markdig;
 
 namespace Gemini
 {
@@ -11,11 +13,11 @@ namespace Gemini
         private readonly StatusManager _statusManager;
         private readonly Logger _logger;
         private readonly NotifyIcon _trayIcon = new NotifyIcon();
-        private readonly WebBrowser _chatBox;
+        private readonly WebView2 _chatBox;
         private readonly TextBox _inputField;
         private readonly Label _statusLabel;
         private readonly Label _historyLabel;
-        private string _chatHtml = "<html><head><script>function scrollToBottom() { window.scrollTo(0, document.body.scrollHeight); }</script></head><body style='background-color:black;color:white;font-family:Consolas;font-size:18px;padding:10px;'></body></html>";
+        private string _chatHtml = "<html><head><style>html, body { background-color: black; margin: 0; padding: 10px; } body { color: white; font-family: Consolas; font-size: 18px; overflow-y: scroll; scrollbar-width: thin; scrollbar-color: rgba(255, 255, 255, 0.3) transparent; }</style><script>function scrollToBottom() { window.scrollTo(0, document.body.scrollHeight); }</script></head><body></body></html>";
 
         // Global hotkey constants
         private const int WM_HOTKEY = 0x0312;
@@ -59,6 +61,7 @@ namespace Gemini
             _geminiClient.SetUICallbacks(UpdateChat, UpdateHistoryCounter, _statusManager.SetStatus);
 
             this.FormClosing += MainForm_FormClosing;
+            this.Load += async (s, e) => await _chatBox.EnsureCoreWebView2Async(null); // Initialize WebView2
         }
 
         // UI Setup
@@ -77,7 +80,8 @@ namespace Gemini
             var bottomPanel = CreateBottomPanel();
             var spacerPanel = new Panel { Height = 10, Dock = DockStyle.Bottom, BackColor = Color.Black };
 
-            _chatBox.DocumentText = _chatHtml; // Set initial HTML with script
+            _chatBox.BackColor = Color.Black;
+
             this.Controls.AddRange(new Control[] { _chatBox, spacerPanel, _inputField, bottomPanel, topPanel });
 
             _logger.Log($"Form configured: Visible = {this.Visible}");
@@ -134,17 +138,19 @@ namespace Gemini
             return tablePanel;
         }
 
-        private WebBrowser CreateChatBox()
+        private WebView2 CreateChatBox()
         {
-            var wb = new WebBrowser
+            var wv = new WebView2
             {
                 Dock = DockStyle.Fill,
-                BackColor = Color.Black,
-                ScriptErrorsSuppressed = true,
-                DocumentText = _chatHtml
+                BackColor = Color.Black
             };
-            wb.DocumentCompleted += (s, e) => wb.Document?.InvokeScript("scrollToBottom"); // Use JS for scrolling
-            return wb;
+            wv.CoreWebView2InitializationCompleted += (s, e) =>
+            {
+                if (e.IsSuccess)
+                    wv.CoreWebView2.NavigateToString(_chatHtml);
+            };
+            return wv;
         }
 
         private TextBox CreateInputField()
@@ -298,84 +304,41 @@ namespace Gemini
 
         private void ClearChat()
         {
-            _chatHtml = "<html><head><script>function scrollToBottom() { window.scrollTo(0, document.body.scrollHeight); }</script></head><body style='background-color:black;color:white;font-family:Consolas;font-size:18px;padding:10px;'></body></html>";
-            _chatBox.DocumentText = _chatHtml;
+            _chatHtml = "<html><head><style>html, body { background-color: black; margin: 0; padding: 10px; } body { color: white; font-family: Consolas; font-size: 18px; overflow-y: scroll; scrollbar-width: thin; scrollbar-color: rgba(255, 255, 255, 0.3) transparent; }</style><script>function scrollToBottom() { window.scrollTo(0, document.body.scrollHeight); }</script></head><body></body></html>";
+            _chatBox.InvokeIfRequired(() =>
+            {
+                if (_chatBox.CoreWebView2 != null)
+                    _chatBox.CoreWebView2.NavigateToString(_chatHtml);
+            });
             _geminiClient.ClearConversationHistory();
             UpdateHistoryCounter();
         }
 
-        private void UpdateChat(string message, string role)
+        private async void UpdateChat(string message, string role)
         {
-            _chatBox.InvokeIfRequired(() =>
+            await _chatBox.InvokeIfRequiredAsync(async () =>
             {
+                if (_chatBox.CoreWebView2 == null) return;
+
                 string color = role switch
                 {
                     "model" => "yellow",
                     "system" => "lightgray",
                     _ => "white"
                 };
-                string htmlContent = "";
-
-                if (role == "model" && message.Contains("data:image"))
-                {
-                    // Extract base64 image, resize it, and replace in message
-                    var base64Start = message.IndexOf("data:image") + "data:image/png;base64,".Length;
-                    var base64End = message.IndexOf("'", base64Start);
-                    if (base64End == -1) base64End = message.IndexOf("\"", base64Start);
-                    if (base64Start > 0 && base64End > base64Start)
-                    {
-                        var base64 = message.Substring(base64Start, base64End - base64Start);
-                        var resizedBase64 = ResizeImageBase64(base64);
-                        message = message.Substring(0, base64Start) + resizedBase64 + message.Substring(base64End);
-                    }
-                    htmlContent = message;
-                }
-                else
-                {
-                    htmlContent = FormatMarkdownToHtml(message);
-                }
-
+                string htmlContent = role == "model" && message.Contains("data:image") ? message : FormatMarkdownToHtml(message);
                 _chatHtml = _chatHtml.Insert(_chatHtml.IndexOf("</body>"), $"<div style='color:{color};'>{htmlContent}</div><br>");
-                _chatBox.DocumentText = _chatHtml;
+                _chatBox.CoreWebView2.NavigateToString(_chatHtml);
+                await _chatBox.CoreWebView2.ExecuteScriptAsync("scrollToBottom()");
             });
         }
 
         private string FormatMarkdownToHtml(string text)
         {
-            var lines = text.Split(new[] { "\n", "\r\n" }, StringSplitOptions.None);
-            var html = new StringBuilder();
-            bool inList = false;
-
-            foreach (var line in lines)
-            {
-                string trimmed = line.Trim();
-                if (string.IsNullOrEmpty(trimmed))
-                {
-                    if (inList) { html.Append("</ul>"); inList = false; }
-                    html.Append("<br>");
-                    continue;
-                }
-                if (trimmed.StartsWith("# "))
-                {
-                    html.Append($"<h1>{trimmed.Substring(2)}</h1>");
-                }
-                else if (trimmed.StartsWith("## "))
-                {
-                    html.Append($"<h2>{trimmed.Substring(3)}</h2>");
-                }
-                else if (trimmed.StartsWith("* ") || trimmed.StartsWith("- "))
-                {
-                    if (!inList) { html.Append("<ulımın style='margin-left:20px;'>"); inList = true; }
-                    html.Append($"<li>{trimmed.Substring(2)}</li>");
-                }
-                else
-                {
-                    if (inList) { html.Append("</ul>"); inList = false; }
-                    html.Append($"<p>{trimmed}</p>");
-                }
-            }
-            if (inList) html.Append("</ul>");
-            return html.ToString().Replace("**", "<b>").Replace("__", "<b>").Replace("*", "<i>").Replace("_", "<i>");
+            var pipeline = new Markdig.MarkdownPipelineBuilder()
+                .UseAdvancedExtensions()
+                .Build();
+            return Markdig.Markdown.ToHtml(text, pipeline);
         }
         private void UpdateHistoryCounter()
         {
@@ -498,5 +461,14 @@ namespace Gemini
                 g.DrawImage(image, new Rectangle(0, 0, width, height), 0, 0, image.Width, image.Height, GraphicsUnit.Pixel);
             return destImage;
         }
+
+        public static async Task InvokeIfRequiredAsync(this Control control, Func<Task> action)
+        {
+            if (control.InvokeRequired)
+                await Task.Run(() => control.Invoke(action));
+            else
+                await action();
+        }
+
     }
 }
