@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Threading.Tasks;
+using System.Drawing.Imaging;
 using dotenv.net;
 
 namespace Gemini
@@ -14,6 +15,7 @@ namespace Gemini
         private const int MaxHistoryEntries = 32;
         private const string ApiBaseUrl = "https://generativelanguage.googleapis.com/v1beta/models/";
         private string _model = "gemini-2.0-flash-exp";
+        private string _currentWindowTitle = "";
 
         public Action<string, string> UpdateChat { get; private set; } = (_, __) => { };
         public Action UpdateHistoryCounter { get; private set; } = () => { };
@@ -53,11 +55,12 @@ namespace Gemini
             };
         }
 
-        private static string GetInitialPrompt()
+        private string GetInitialPrompt()
         {
             return $"Current Date: {DateTime.Now:yyyy-MM-dd}\n" +
-                   "You are an AI assistant designed to provide accurate and helpful responses using the built-in Google Search tool when needed. " +
-                   "Support multimodal input and output, including generating images when requested.";
+                   $"Current Application : {_currentWindowTitle}\n" +
+                   "You are an AI assistant designed to provide accurate and helpful responses using the built-in Google Search tool if available. " +
+                   "Support multimodal input and output if available, including generating images when requested.";                
         }
 
         public void SetUICallbacks(Action<string, string> updateChat, Action updateHistoryCounter, Action<Status> updateStatus)
@@ -68,6 +71,15 @@ namespace Gemini
             Logger.Log("UI callbacks set in GeminiClient."); // Debug log
             UpdateHistoryCounter();
             UpdateStatus(Status.Idle); // Test initial status
+        }
+
+        public void UpdateCurrentWindow(string windowTitle)
+        {
+            _currentWindowTitle = windowTitle;
+            lock (_historyLock)
+            {
+                _conversationHistory[0]["content"] = GetInitialPrompt();
+            }
         }
 
         public int GetConversationHistoryLength()
@@ -119,6 +131,8 @@ namespace Gemini
 
                 lock (_historyLock)
                 {
+                    if (userMessage.ContainsKey("image")) userMessage.Remove("image"); //Save tokens
+
                     _conversationHistory.Add(userMessage);
                     _conversationHistory.Add(new Dictionary<string, string> { { "role", "model" }, { "content", response } });
                     UpdateHistoryCounter();
@@ -155,5 +169,25 @@ namespace Gemini
         }
 
         public string GetGenerateUrl() => $"{ApiBaseUrl}{_model}:generateContent?key={_apiKey}";
+
+        public string ResizeImageBase64(string base64)
+        {
+            try
+            {
+                byte[] imageBytes = Convert.FromBase64String(base64);
+                using var ms = new MemoryStream(imageBytes);
+                using var image = new Bitmap(ms);
+                using var resizedImage = image.Resize(640, (int)(image.Height * 640.0 / image.Width));
+                using var outputMs = new MemoryStream();
+                resizedImage.Save(outputMs, ImageFormat.Png);
+                return Convert.ToBase64String(outputMs.ToArray());
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"Error resizing image: {ex.Message}");
+                return base64; // Fallback to original if resizing fails
+            }
+        }
+
     }
 }

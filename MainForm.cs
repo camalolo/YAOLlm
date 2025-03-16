@@ -17,7 +17,7 @@ namespace Gemini
         private readonly TextBox _inputField;
         private readonly Label _statusLabel;
         private readonly Label _historyLabel;
-        private string _chatHtml = "<html><head><style>html, body { background-color: black; margin: 0; padding: 10px; } body { color: white; font-family: Consolas; font-size: 18px; overflow-y: scroll; scrollbar-width: thin; scrollbar-color: rgba(255, 255, 255, 0.3) transparent; }</style><script>function scrollToBottom() { window.scrollTo(0, document.body.scrollHeight); }</script></head><body></body></html>";
+        private string _chatHtml = "<html></html>";
 
         // Global hotkey constants
         private const int WM_HOTKEY = 0x0312;
@@ -84,6 +84,8 @@ namespace Gemini
 
             this.Controls.AddRange(new Control[] { _chatBox, spacerPanel, _inputField, bottomPanel, topPanel });
 
+            ClearChat(); // Initialize webview2 control contents
+
             _logger.Log($"Form configured: Visible = {this.Visible}");
         }
 
@@ -103,7 +105,6 @@ namespace Gemini
             {
                 ["send_tools"] = ("Send (Tools)", () => SendMessage(useTools: true)),
                 ["send_mm"] = ("Send (MM)", () => SendMessage(useTools: false)),
-                ["playing"] = ("Playing", SendPlayingMessage),
                 ["capture_send"] = ("Capture && Send", CaptureAndSend),
                 ["load_image"] = ("Load Image", LoadAndSendImage),
                 ["proceed"] = ("Proceed", () => SendMessage("Please proceed")),
@@ -281,30 +282,14 @@ namespace Gemini
             string message = string.IsNullOrEmpty(_inputField.Text.Trim()) ? "[Screenshot Taken]" : _inputField.Text.Trim();
             var (imageBase64, title) = CaptureScreen();
             if (!string.IsNullOrEmpty(imageBase64))
-                SendMessage(message, imageBase64, title);
+                SendMessage(message, imageBase64, title, false);
             else
                 UpdateChat("Error: Screen capture failed.\r\n", "system");
         }
 
-        private void SendPlayingMessage()
-        {
-            this.Visible = false;
-            Thread.Sleep(500);
-            string title = GetActiveWindowTitle();
-            this.Visible = true;
-            FocusInputField();
-            if (!string.IsNullOrEmpty(title) && title != "Gemini Overlay")
-            {
-                string message = $"[I am now playing: {title}]";
-                SendMessage(message);
-            }
-            else
-                UpdateChat("Error: Could not detect active window.\r\n", "system");
-        }
-
         private void ClearChat()
         {
-            _chatHtml = "<html><head><style>html, body { background-color: black; margin: 0; padding: 10px; } body { color: white; font-family: Consolas; font-size: 18px; overflow-y: scroll; scrollbar-width: thin; scrollbar-color: rgba(255, 255, 255, 0.3) transparent; }</style><script>function scrollToBottom() { window.scrollTo(0, document.body.scrollHeight); }</script></head><body></body></html>";
+            _chatHtml = "<html><head><style>html, body { background-color: black; margin: 0; padding: 10px; } body { color: white; font-family: Consolas; font-size: 18px; overflow-y: scroll; scrollbar-width: thin; scrollbar-color: rgba(255, 255, 255, 0.1) transparent; }</style><script>function scrollToBottom() { window.scrollTo(0, document.body.scrollHeight); }</script></head><body></body></html>";
             _chatBox.InvokeIfRequired(() =>
             {
                 if (_chatBox.CoreWebView2 != null)
@@ -327,7 +312,7 @@ namespace Gemini
                     _ => "white"
                 };
                 string htmlContent = role == "model" && message.Contains("data:image") ? message : FormatMarkdownToHtml(message);
-                _chatHtml = _chatHtml.Insert(_chatHtml.IndexOf("</body>"), $"<div style='color:{color};'>{htmlContent}</div><br>");
+                _chatHtml = _chatHtml.Insert(_chatHtml.IndexOf("</body>"), $"<div style='color:{color};'>{htmlContent}</div>");
                 _chatBox.CoreWebView2.NavigateToString(_chatHtml);
                 await _chatBox.CoreWebView2.ExecuteScriptAsync("scrollToBottom()");
             });
@@ -351,7 +336,7 @@ namespace Gemini
             try
             {
                 this.Visible = false;
-                Thread.Sleep(500);
+                Thread.Sleep(100);
                 string title = GetActiveWindowTitle();
                 using var screenshot = new Bitmap(Screen.PrimaryScreen?.Bounds.Width ?? 0, Screen.PrimaryScreen?.Bounds.Height ?? 0);
                 using (var g = Graphics.FromImage(screenshot))
@@ -363,7 +348,7 @@ namespace Gemini
                 using var ms = new MemoryStream();
                 screenshot.Save(ms, ImageFormat.Png);
                 string base64 = Convert.ToBase64String(ms.ToArray());
-                string resizedBase64 = ResizeImageBase64(base64);
+                string resizedBase64 = _geminiClient.ResizeImageBase64(base64);
                 return (resizedBase64, title);
             }
             catch (Exception ex)
@@ -388,34 +373,15 @@ namespace Gemini
                     using var ms = new MemoryStream();
                     image.Save(ms, ImageFormat.Png);
                     string base64 = Convert.ToBase64String(ms.ToArray());
-                    string resizedBase64 = ResizeImageBase64(base64);
+                    string resizedBase64 = _geminiClient.ResizeImageBase64(base64);
                     string message = string.IsNullOrEmpty(_inputField.Text.Trim()) ? "[Image Loaded]" : _inputField.Text.Trim();
-                    SendMessage(message, resizedBase64, Path.GetFileName(openFileDialog.FileName));
+                    SendMessage(message, resizedBase64, Path.GetFileName(openFileDialog.FileName), false);
                 }
                 catch (Exception ex)
                 {
                     _logger.Log($"Error loading image: {ex.Message}");
                     UpdateChat($"Error: Failed to load image - {ex.Message}\r\n", "system");
                 }
-            }
-        }
-
-        private string ResizeImageBase64(string base64)
-        {
-            try
-            {
-                byte[] imageBytes = Convert.FromBase64String(base64);
-                using var ms = new MemoryStream(imageBytes);
-                using var image = new Bitmap(ms);
-                using var resizedImage = image.Resize(640, 360);
-                using var outputMs = new MemoryStream();
-                resizedImage.Save(outputMs, ImageFormat.Png);
-                return Convert.ToBase64String(outputMs.ToArray());
-            }
-            catch (Exception ex)
-            {
-                _logger.Log($"Error resizing image: {ex.Message}");
-                return base64; // Fallback to original if resizing fails
             }
         }
 
@@ -427,11 +393,23 @@ namespace Gemini
 
         private void ToggleVisibility()
         {
+            if (!this.Visible) UpdateWindowTitle(); // Update only when showing
             this.Visible = !this.Visible;
             if (this.Visible) FocusInputField();
         }
 
         private void HideOverlay() => this.Visible = false;
+
+
+        private void UpdateWindowTitle()
+        {
+            string title = GetActiveWindowTitle();
+            if (!string.IsNullOrEmpty(title))
+            {
+                _geminiClient.UpdateCurrentWindow(title);
+                _logger.Log($"Window title updated to: {title}");
+            }
+        }
 
         private string GetActiveWindowTitle()
         {

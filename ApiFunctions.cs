@@ -30,7 +30,7 @@ namespace Gemini
             };
 
             object enhancedPayload;
-            
+
             if (useTools)
             {
                 enhancedPayload = new { contents, tools };
@@ -50,7 +50,7 @@ namespace Gemini
             }
 
             var data = JsonSerializer.Deserialize<JsonElement>(content);
-            string message = ExtractResponse(logger, data);
+            string message = ExtractResponse(logger, data, client);
             logger.Log($"Response extracted: '{message.Substring(0, Math.Min(100, message.Length))}...'");
             return message;
         }
@@ -105,7 +105,7 @@ namespace Gemini
             return (null, new RestResponse());
         }
 
-        private static string ExtractResponse(Logger logger, JsonElement data)
+        private static string ExtractResponse(Logger logger, JsonElement data, GeminiClient client)
         {
             if (!data.TryGetProperty("candidates", out var candidates) || !candidates.EnumerateArray().Any())
             {
@@ -127,6 +127,8 @@ namespace Gemini
                              inlineData.TryGetProperty("data", out var dataValue) &&
                              mimeType.GetString() is string mime && dataValue.GetString() is string base64)
                     {
+                        base64 = client.ResizeImageBase64(base64);
+
                         messageParts.Add($"<img src='data:{mime};base64,{base64}' style='max-width:100%;'>");
                     }
                 }
