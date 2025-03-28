@@ -68,7 +68,7 @@ namespace Gemini
         private void ConfigureForm()
         {
             this.FormBorderStyle = FormBorderStyle.None;
-            this.Opacity = 0.8;
+            this.Opacity = 0.9;
             this.TopMost = true;
             this.BackColor = Color.Black;
             this.Size = Screen.PrimaryScreen?.Bounds.Size ?? new Size(0, 0);
