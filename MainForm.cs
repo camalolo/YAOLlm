@@ -297,6 +297,7 @@ namespace Gemini
             });
             _geminiClient.ClearConversationHistory();
             UpdateHistoryCounter();
+            FocusInputField();
         }
 
         private async void UpdateChat(string message, string role)
@@ -315,6 +316,7 @@ namespace Gemini
                 _chatHtml = _chatHtml.Insert(_chatHtml.IndexOf("</body>"), $"<div style='color:{color};'>{htmlContent}</div>");
                 _chatBox.CoreWebView2.NavigateToString(_chatHtml);
                 await _chatBox.CoreWebView2.ExecuteScriptAsync("scrollToBottom()");
+                FocusInputField();
             });
         }
 
@@ -339,12 +341,8 @@ namespace Gemini
                 Thread.Sleep(100);
                 string title = GetActiveWindowTitle();
                 using var screenshot = new Bitmap(Screen.PrimaryScreen?.Bounds.Width ?? 0, Screen.PrimaryScreen?.Bounds.Height ?? 0);
-                using (var g = Graphics.FromImage(screenshot))
-                    g.CopyFromScreen(0, 0, 0, 0, screenshot.Size);
+                using (var g = Graphics.FromImage(screenshot)) g.CopyFromScreen(0, 0, 0, 0, screenshot.Size);
                 this.Visible = true;
-
-                FocusInputField();
-
                 using var ms = new MemoryStream();
                 screenshot.Save(ms, ImageFormat.Png);
                 string base64 = Convert.ToBase64String(ms.ToArray());
