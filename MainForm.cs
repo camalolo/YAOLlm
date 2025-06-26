@@ -23,6 +23,7 @@ namespace Gemini
         private const int WM_HOTKEY = 0x0312;
         private const int HOTKEY_ID = 1;
         private const int MOD_CONTROL = 0x0002;
+        private const int MOD_WIN = 0x0008;
         private const int VK_F12 = 0x7B;
 
         [DllImport("user32.dll")]
@@ -46,8 +47,8 @@ namespace Gemini
 
             _chatBox = CreateChatBox();
             _inputField = CreateInputField();
-            _statusLabel = CreateControl<Label>("            ", DockStyle.None, false, null, new Point(0, 0));
-            _historyLabel = CreateControl<Label>("            ", DockStyle.Right);
+            _statusLabel = CreateControl<Label>("                  ", DockStyle.None, false, null, new Point(0, 0));
+            _historyLabel = CreateControl<Label>("                  ", DockStyle.Right);
 
             ConfigureForm();
             SetupTrayIcon();
@@ -222,12 +223,12 @@ namespace Gemini
         // Event Handlers
         private void RegisterGlobalHotkey()
         {
-            if (RegisterHotKey(this.Handle, HOTKEY_ID, MOD_CONTROL, VK_F12))
-                _logger.Log("Global hotkey Ctrl+F12 registered.");
+            if (RegisterHotKey(this.Handle, HOTKEY_ID, MOD_WIN, VK_F12))
+                _logger.Log("Global hotkey registered.");
             else
             {
-                _logger.Log("Failed to register Ctrl+F12 hotkey.");
-                UpdateChat("Warning: Ctrl+F12 hotkey registration failed.\r\n", "system");
+                _logger.Log("Failed to register hotkey.");
+                UpdateChat("Warning: hotkey registration failed.\r\n", "system");
             }
         }
 
