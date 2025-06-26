@@ -117,7 +117,7 @@ namespace Gemini
                         var describeMessage = new Dictionary<string, string>
                         {
                             { "role", "user" },
-                            { "content", $"Describe this screenshot from '{activeWindowTitle}' with excruciating detail, including all visible text and components." },
+                            { "content", $"Describe this screenshot from '{activeWindowTitle}' with excruciating detail, including all components. In a first section, describe the graphic details, persons and any other element you can see. In a second section, please return any text that can be read in the image, in full and without modification, in separated numbered paragraphs, one for each block of text you can read." },
                             { "image", imageBase64 }
                         };
                         string? description = await ApiFunctions.SendToLLM(this, new List<Dictionary<string, string>> { describeMessage }, imageBase64, false);
