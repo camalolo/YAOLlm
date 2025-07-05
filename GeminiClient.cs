@@ -14,7 +14,7 @@ namespace Gemini
         private readonly object _historyLock = new object();
         private const int MaxHistoryEntries = 32;
         private const string ApiBaseUrl = "https://generativelanguage.googleapis.com/v1beta/models/";
-        private string _model = "gemini-2.5-flash-preview-05-20";
+        private string _model = "gemini-2.5-flash";
         private string _currentWindowTitle = "";
 
         public Action<string, string> UpdateChat { get; private set; } = (_, __) => { };
