@@ -30,9 +30,9 @@
         {
             lock (_lock)
             {
-                var timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
-                var logEntry = $"{timestamp} - {message}";
-                File.AppendAllText(_logFilePath, logEntry + Environment.NewLine);
+                // var timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+                // var logEntry = $"{timestamp} - {message}";
+                // File.AppendAllText(_logFilePath, logEntry + Environment.NewLine);
             }
         }
         catch (Exception ex)
