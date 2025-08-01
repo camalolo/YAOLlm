@@ -15,8 +15,8 @@ namespace Gemini
         private readonly NotifyIcon _trayIcon = new NotifyIcon();
         private readonly WebView2 _chatBox;
         private readonly TextBox _inputField;
-        private readonly Label _statusLabel;
-        private readonly Label _historyLabel;
+        private Button _statusButton;
+        private Button _historyButton;
         private string _chatHtml = "<html></html>";
 
         // Global hotkey constants
@@ -47,8 +47,8 @@ namespace Gemini
 
             _chatBox = CreateChatBox();
             _inputField = CreateInputField();
-            _statusLabel = CreateControl<Label>("                  ", DockStyle.None, false, null, new Point(0, 0));
-            _historyLabel = CreateControl<Label>("                  ", DockStyle.Right);
+            _statusButton = CreateControl<Button>("                  ", DockStyle.None, false, null, null);
+            _historyButton = CreateControl<Button>("         ", DockStyle.None, false, null, null);
 
             ConfigureForm();
             SetupTrayIcon();
@@ -57,7 +57,7 @@ namespace Gemini
             _statusManager.StatusChanged += status =>
             {
                 _logger.Log($"StatusChanged event fired: {status}");
-                _statusLabel.InvokeIfRequired(() => _statusLabel.Text = status.ToString());
+                _statusButton.InvokeIfRequired(() => _statusButton.Text = status.ToString());
             };
             _geminiClient.SetUICallbacks(UpdateChat, UpdateHistoryCounter, _statusManager.SetStatus);
 
@@ -102,6 +102,7 @@ namespace Gemini
         {
             var panel = new Panel { Dock = DockStyle.Bottom, BackColor = Color.Black, Height = 48 };
             var flowPanel = new FlowLayoutPanel { FlowDirection = FlowDirection.LeftToRight, AutoSize = true, Location = new Point(0, 5) };
+            var rightFlowPanel = new FlowLayoutPanel { FlowDirection = FlowDirection.LeftToRight, AutoSize = true, Location = new Point(0, 5) };
             var buttons = new Dictionary<string, (string text, Action action)>
             {
                 ["send_tools"] = ("Send (Tools)", () => SendMessage(useTools: true)),
@@ -119,24 +120,24 @@ namespace Gemini
                 flowPanel.Controls.Add(btn);
             }
 
-            // Create a TableLayoutPanel with 3 columns to hold the controls
+            rightFlowPanel.Controls.Add(_statusButton);
+            rightFlowPanel.Controls.Add(_historyButton);
+
             TableLayoutPanel tablePanel = new TableLayoutPanel();
+
             tablePanel.Dock = DockStyle.Bottom;
             tablePanel.AutoSize = true;
-            tablePanel.ColumnCount = 3;
+            tablePanel.ColumnCount = 2;
             tablePanel.RowCount = 1;
-            tablePanel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
             tablePanel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
             tablePanel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
             tablePanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
             // Add controls to the appropriate cells:
             // Column 0: Button panel (flowPanel)
-            // Column 1: Status label (_statusLabel)
-            // Column 2: History label (_historyLabel)
             tablePanel.Controls.Add(flowPanel, 0, 0);
-            tablePanel.Controls.Add(_statusLabel, 1, 0);
-            tablePanel.Controls.Add(_historyLabel, 2, 0);
+            tablePanel.Controls.Add(rightFlowPanel, 1, 0);
+
             return tablePanel;
         }
 
@@ -331,7 +332,7 @@ namespace Gemini
         private void UpdateHistoryCounter()
         {
             int length = _geminiClient.GetConversationHistoryLength();
-            _historyLabel.InvokeIfRequired(() => _historyLabel.Text = $"[{length}]");
+            _historyButton.InvokeIfRequired(() => _historyButton.Text = $"[{length}]");
         }
 
         private (string, string) CaptureScreen()
