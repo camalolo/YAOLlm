@@ -1,4 +1,4 @@
-﻿namespace Gemini
+﻿namespace GeminiDotnet
 {
     public enum Status
     {

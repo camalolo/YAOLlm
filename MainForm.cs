@@ -5,7 +5,7 @@ using System.Text;
 using Microsoft.Web.WebView2.WinForms;
 using Markdig;
 
-namespace Gemini
+namespace GeminiDotnet
 {
     public partial class MainForm : Form
     {
@@ -202,7 +202,7 @@ namespace Gemini
 
         private void SetupTrayIcon()
         {
-            _trayIcon.Text = "Gemini Overlay";
+            _trayIcon.Text = "Gemini Dotnet";
             _trayIcon.Visible = true;
             _trayIcon.ContextMenuStrip = new ContextMenuStrip();
             _trayIcon.ContextMenuStrip.Items.Add("Quit", null, (s, e) => Application.Exit());
@@ -210,7 +210,7 @@ namespace Gemini
 
             try
             {
-                using var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream("Gemini.icon.ico");
+                using var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream("GeminiDotnet.icon.ico");
                 _trayIcon.Icon = stream != null ? new Icon(stream) : SystemIcons.Application;
                 _logger.Log(stream != null ? "Tray icon loaded from embedded resource." : "Using default tray icon.");
             }
@@ -415,7 +415,7 @@ namespace Gemini
         {
             const int nChars = 256;
             var buff = new StringBuilder(nChars);
-            return GetWindowText(GetForegroundWindow(), buff, nChars) > 0 && buff.ToString() != "Gemini Overlay"
+            return GetWindowText(GetForegroundWindow(), buff, nChars) > 0 && buff.ToString() != "Gemini Dotnet"
                 ? buff.ToString()
                 : string.Empty;
         }

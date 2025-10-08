@@ -3,7 +3,7 @@ using System.Text.Json;
 using System.Threading.Tasks;
 using RestSharp;
 
-namespace Gemini
+namespace GeminiDotnet
 {
     public static class ApiFunctions
     {

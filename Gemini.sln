@@ -3,7 +3,7 @@ Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
 VisualStudioVersion = 17.13.35825.156 d17.13
 MinimumVisualStudioVersion = 10.0.40219.1
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Gemini", "Gemini.csproj", "{812115E9-8D3D-437C-A113-714C502AF4EE}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "GeminiDotnet", "Gemini.csproj", "{812115E9-8D3D-437C-A113-714C502AF4EE}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution

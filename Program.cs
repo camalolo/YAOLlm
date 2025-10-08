@@ -1,4 +1,4 @@
-namespace Gemini
+namespace GeminiDotnet
 {
     static class Program
     {

@@ -3,7 +3,10 @@
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net8.0-windows</TargetFramework>
-    <RootNamespace>Gemini</RootNamespace>
+    <RootNamespace>GeminiDotnet</RootNamespace>
+    <AssemblyName>gemini-dotnet</AssemblyName>
+    <Product>Gemini Dotnet</Product>
+    <AssemblyTitle>Gemini Dotnet</AssemblyTitle>
     <Nullable>enable</Nullable>
     <UseWindowsForms>true</UseWindowsForms>
     <ImplicitUsings>enable</ImplicitUsings>

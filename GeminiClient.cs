@@ -5,7 +5,7 @@ using System.Threading.Tasks;
 using System.Drawing.Imaging;
 using dotenv.net;
 
-namespace Gemini
+namespace GeminiDotnet
 {
     public class GeminiClient
     {
@@ -14,7 +14,7 @@ namespace Gemini
         private readonly object _historyLock = new object();
         private const int MaxHistoryEntries = 32;
         private const string ApiBaseUrl = "https://generativelanguage.googleapis.com/v1beta/models/";
-        private string _model = "gemini-2.5-flash";
+        private string _model = "gemini-2.5-flash-lite";
         private string _currentWindowTitle = "";
 
         public Action<string, string> UpdateChat { get; private set; } = (_, __) => { };
@@ -35,14 +35,14 @@ namespace Gemini
         private void LoadEnvironmentVariables()
         {
             var homeDir = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-            var geminiFile = Path.Combine(homeDir, ".gemini");
+            var geminiFile = Path.Combine(homeDir, ".gemini.conf");
             try
             {
                 DotEnv.Load(new DotEnvOptions(envFilePaths: new[] { geminiFile }));
             }
             catch (Exception ex)
             {
-                Logger.Log($"Error loading .gemini file: {ex.Message}");
+                Logger.Log($"Error loading .gemini.conf file: {ex.Message}");
                 throw new ArgumentException("Failed to load environment variables", ex);
             }
         }
