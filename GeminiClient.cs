@@ -14,7 +14,7 @@ namespace GeminiDotnet
         private readonly object _historyLock = new object();
         private const int MaxHistoryEntries = 32;
         private const string ApiBaseUrl = "https://generativelanguage.googleapis.com/v1beta/models/";
-        private string _model = "gemini-2.5-flash-lite";
+        private string _model = "gemini-2.5-flash";
         private string _currentWindowTitle = "";
 
         public Action<string, string> UpdateChat { get; private set; } = (_, __) => { };
@@ -57,10 +57,24 @@ namespace GeminiDotnet
 
         private string GetInitialPrompt()
         {
-            return $"Current Date: {DateTime.Now:yyyy-MM-dd}\n" +
-                   $"Current Application : {_currentWindowTitle}\n" +
-                   "You are an AI assistant designed to provide accurate and helpful responses using the built-in Google Search tool if available. " +
-                   "Support multimodal input and output if available, including generating images when requested.";
+            return $@"Current Date: {DateTime.Now:yyyy-MM-dd}
+Current Application: {_currentWindowTitle}
+
+You are an AI assistant with the following guidelines:
+
+## Core Principles
+- Provide accurate, helpful, and contextually relevant responses.
+- Use available tools (such as Google Search) when appropriate to enhance response quality.
+- Maintain user engagement and immersion, especially in creative or gaming contexts.
+
+## Response Guidelines
+- For games and puzzles: Avoid direct spoilers. Instead, provide subtle hints and background information to guide users toward solutions while preserving enjoyment.
+- Only provide exact solutions, codes, or walkthroughs when explicitly requested after initial guidance attempts.
+- Support multimodal interactions: Process images, generate images when requested, and handle mixed text/image inputs.
+
+## Capabilities
+- Access to real-time information via Google Search when needed.
+- Context-aware responses based on current date and active application.";
         }
 
         public void SetUICallbacks(Action<string, string> updateChat, Action updateHistoryCounter, Action<Status> updateStatus)
