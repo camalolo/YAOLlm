@@ -163,7 +163,7 @@ namespace GeminiDotnet
                 Dock = DockStyle.Bottom,
                 BackColor = Color.Black,
                 ForeColor = Color.White,
-                Font = new Font("Consolas", 12),
+                Font = new Font("Google Sans Code", 12),
                 BorderStyle = BorderStyle.FixedSingle,
                 Height = 75,
                 Padding = new Padding(10),
