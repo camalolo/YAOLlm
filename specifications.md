@@ -1,7 +1,7 @@
 # Gemini Project Specifications
 
 ## Overview
-This project ("Gemini") is a Windows Forms application that acts as a UI overlay integrated with a language model (LLM) service for processing natural language queries and images. The application runs in the system tray and uses global hotkeys to toggle visibility. It supports sending text input to an LLM, processing images (by capturing screen or sending image data), and integrating with external web APIs.
+This project ("Gemini") is a Windows Forms application that acts as a UI overlay integrated with a language model (LLM) service for processing natural language queries and image inputs. The application runs in the system tray and uses global hotkeys to toggle visibility. It supports sending text input to an LLM, processing images (by capturing screen or sending image data), and integrating with external web APIs.
 
 ## Entry Point
 The `Program.cs` file serves as the entry point. It initializes the Logger, StatusManager, and GeminiClient, creates the main overlay form (`MainForm`), and runs the application via a custom TrayApplicationContext to ensure the form remains hidden by default.
@@ -73,4 +73,4 @@ Additional files (such as `Search.cs`, `Embeddings.cs`, `MemoryManager.cs`, `SQL
    - The UI is updated with status messages (e.g., sending data, idle).
 
 ## Summary
-The Gemini project combines a rich Windows Forms UI overlay with an LLM backend to enable interactive text and image processing. It integrates comprehensive logging, memory management, and tool-based search functionalities to provide a seamless user experience.
+The Gemini project combines a rich Windows Forms UI overlay with an LLM backend to enable interactive text and image input processing. It integrates comprehensive logging, memory management, and tool-based search functionalities to provide a seamless user experience.

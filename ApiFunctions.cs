@@ -10,11 +10,10 @@ namespace GeminiDotnet
         private const int GenerationRpmLimit = 15;
         private static readonly SemaphoreSlim GenerationRateLimiter = new(GenerationRpmLimit, GenerationRpmLimit);
 
-        public static async Task<string> SendToLLM(GeminiClient client, object payload, string? imageBase64 = null, bool useTools = true)
+        public static async Task<string> SendToLLM(GeminiClient client, object payload, string? imageBase64 = null)
         {
             var logger = client.Logger;
             var tools = new List<object> { new { google_search = new { } } };
-            var generationConfig = new { responseModalities = new[] { "TEXT", "IMAGE" } };
 
             object[] contents = payload switch
             {
@@ -29,20 +28,11 @@ namespace GeminiDotnet
                 _ => throw new ArgumentException("Invalid payload type")
             };
 
-            object enhancedPayload;
-
-            if (useTools)
-            {
-                enhancedPayload = new { contents, tools };
-            }
-            else
-            {
-                enhancedPayload = new { contents, generationConfig };
-            }
+            var enhancedPayload = new { contents, tools };
             var jsonPayload = JsonSerializer.Serialize(enhancedPayload);
             logger.Log($"Preparing LLM request with payload: {jsonPayload.Substring(0, Math.Min(500, jsonPayload.Length))}...");
 
-            var (content, response) = await SendRequest(client, enhancedPayload, imageBase64 != null);
+            var (content, response) = await SendRequest(client, enhancedPayload);
             if (content == null)
             {
                 logger.Log($"LLM request failed: StatusCode={response.StatusCode}, Error={response.ErrorMessage}");
@@ -55,7 +45,7 @@ namespace GeminiDotnet
             return message;
         }
 
-        private static async Task<(string?, RestResponse)> SendRequest(GeminiClient client, object payload, bool isImageRequest)
+        private static async Task<(string?, RestResponse)> SendRequest(GeminiClient client, object payload)
         {
             var url = client.GetGenerateUrl();
             var restClient = new RestClient(url);
@@ -121,15 +111,6 @@ namespace GeminiDotnet
                     if (part.TryGetProperty("text", out var text) && text.GetString() is string textValue)
                     {
                         messageParts.Add(textValue);
-                    }
-                    else if (part.TryGetProperty("inlineData", out var inlineData) &&
-                             inlineData.TryGetProperty("mimeType", out var mimeType) &&
-                             inlineData.TryGetProperty("data", out var dataValue) &&
-                             mimeType.GetString() is string mime && dataValue.GetString() is string base64)
-                    {
-                        base64 = client.ResizeImageBase64(base64);
-
-                        messageParts.Add($"<img src='data:{mime};base64,{base64}' style='max-width:100%;'>");
                     }
                 }
             }

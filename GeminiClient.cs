@@ -70,7 +70,7 @@ You are an AI assistant with the following guidelines:
 ## Response Guidelines
 - For games and puzzles: Avoid direct spoilers. Instead, provide subtle hints and background information to guide users toward solutions while preserving enjoyment.
 - Only provide exact solutions, codes, or walkthroughs when explicitly requested after initial guidance attempts.
-- Support multimodal interactions: Process images, generate images when requested, and handle mixed text/image inputs.
+- Support multimodal interactions: Process images and handle mixed text/image inputs.
 
 ## Capabilities
 - Access to real-time information via Google Search as often as needed, do not hesitate getting more data sources.
@@ -114,7 +114,7 @@ You are an AI assistant with the following guidelines:
             }
         }
 
-        public async Task ProcessLLMRequest(string prompt, string? imageBase64 = null, string? activeWindowTitle = null, bool useTools = true)
+        public async Task ProcessLLMRequest(string prompt, string? imageBase64 = null, string? activeWindowTitle = null)
         {
             try
             {
@@ -134,7 +134,7 @@ You are an AI assistant with the following guidelines:
                             { "content", $"Describe this screenshot from '{activeWindowTitle}' with excruciating detail, including all components. In a first section, describe the graphic details, persons and any other element you can see. In a second section, please return any text that can be read in the image, in full and without modification, in separated numbered paragraphs, one for each block of text you can read." },
                             { "image", imageBase64 }
                         };
-                        string? description = await ApiFunctions.SendToLLM(this, new List<Dictionary<string, string>> { describeMessage }, imageBase64, false);
+                        string? description = await ApiFunctions.SendToLLM(this, new List<Dictionary<string, string>> { describeMessage }, imageBase64);
                         userMessage["content"] = $"{prompt}\nScreenshot Description: {description ?? "Image description unavailable"}";
                     }
                     else
@@ -146,7 +146,7 @@ You are an AI assistant with the following guidelines:
 
                 messages.Add(userMessage);
                 TrimHistoryIfNeeded(messages);
-                string response = await ApiFunctions.SendToLLM(this, messages, imageBase64, useTools);
+                string response = await ApiFunctions.SendToLLM(this, messages, imageBase64);
 
                 lock (_historyLock)
                 {

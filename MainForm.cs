@@ -105,8 +105,7 @@ namespace GeminiDotnet
             var rightFlowPanel = new FlowLayoutPanel { FlowDirection = FlowDirection.LeftToRight, AutoSize = true, Location = new Point(0, 5) };
             var buttons = new Dictionary<string, (string text, Action action)>
             {
-                ["send_tools"] = ("Send (Tools)", () => SendMessage(useTools: true)),
-                ["send_mm"] = ("Send (MM)", () => SendMessage(useTools: false)),
+                ["send"] = ("Send", () => SendMessage()),
                 ["capture_send"] = ("Capture && Send", CaptureAndSend),
                 ["load_image"] = ("Load Image", LoadAndSendImage),
                 ["proceed"] = ("Proceed", () => SendMessage("Please proceed")),
@@ -259,17 +258,17 @@ namespace GeminiDotnet
         }
 
         // Core Functionality
-        private void SendMessage(string message = "", bool useTools = true)
+        private void SendMessage(string message = "")
         {
             message = (message.Length > 0 ? message : _inputField.Text).Trim();
             if (string.IsNullOrEmpty(message)) return;
 
             UpdateChat($"You: {message}\r\n", "user");
             _inputField.Text = "";
-            Task.Run(() => _geminiClient.ProcessLLMRequest(message, null, null, useTools));
+            Task.Run(() => _geminiClient.ProcessLLMRequest(message, null, null));
         }
 
-        private void SendMessage(string message, string? imageBase64, string? title = null, bool useTools = true)
+        private void SendMessage(string message, string? imageBase64, string? title = null)
         {
             message = message.Trim();
             if (string.IsNullOrEmpty(message) && string.IsNullOrEmpty(imageBase64)) return;
@@ -284,7 +283,7 @@ namespace GeminiDotnet
             string message = string.IsNullOrEmpty(_inputField.Text.Trim()) ? "[Screenshot Taken]" : _inputField.Text.Trim();
             var (imageBase64, title) = CaptureScreen();
             if (!string.IsNullOrEmpty(imageBase64))
-                SendMessage(message, imageBase64, title, false);
+                SendMessage(message, imageBase64, title);
             else
                 UpdateChat("Error: Screen capture failed.\r\n", "system");
         }
@@ -314,7 +313,7 @@ namespace GeminiDotnet
                     "system" => "lightgray",
                     _ => "white"
                 };
-                string htmlContent = role == "model" && message.Contains("data:image") ? message : FormatMarkdownToHtml(message);
+                string htmlContent = FormatMarkdownToHtml(message);
                 _chatHtml = _chatHtml.Insert(_chatHtml.IndexOf("</body>"), $"<div style='color:{color};'>{htmlContent}</div>");
                 _chatBox.CoreWebView2.NavigateToString(_chatHtml);
                 await _chatBox.CoreWebView2.ExecuteScriptAsync("scrollToBottom()");
@@ -375,7 +374,7 @@ namespace GeminiDotnet
                     string base64 = Convert.ToBase64String(ms.ToArray());
                     string resizedBase64 = _geminiClient.ResizeImageBase64(base64);
                     string message = string.IsNullOrEmpty(_inputField.Text.Trim()) ? "[Image Loaded]" : _inputField.Text.Trim();
-                    SendMessage(message, resizedBase64, Path.GetFileName(openFileDialog.FileName), false);
+                    SendMessage(message, resizedBase64, Path.GetFileName(openFileDialog.FileName));
                 }
                 catch (Exception ex)
                 {
