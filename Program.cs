@@ -8,7 +8,7 @@ namespace GeminiDotnet
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
 
-            var logger = new Logger($"llm_log_{DateTime.Now:yyyyMMdd_HHmmss}.log");
+            var logger = new Logger();
             var statusManager = new StatusManager();
             var geminiClient = new GeminiClient(logger);
             var mainForm = new MainForm(geminiClient, statusManager, logger);
