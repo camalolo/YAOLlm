@@ -7,7 +7,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using RestSharp;
 
-namespace GeminiDotnet;
+namespace YAOLlm;
 
 public class OpenAICompatibleProvider : ILLMProvider
 {

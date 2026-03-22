@@ -5,7 +5,7 @@ using System.Linq;
 using dotenv.net;
 using dotenv.net.Utilities;
 
-namespace GeminiDotnet;
+namespace YAOLlm;
 
 public class PresetManager
 {
@@ -36,7 +36,7 @@ public class PresetManager
         _activeIndex = 0;
 
         var homeDir = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        _configPath = Path.Combine(homeDir, ".gemini.conf");
+        _configPath = Path.Combine(homeDir, ".yaollm.conf");
     }
 
     public void LoadConfig()

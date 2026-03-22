@@ -4,9 +4,10 @@ using System.Drawing.Imaging;
 using System.Text;
 using System.Linq;
 using Microsoft.Web.WebView2.WinForms;
+using Microsoft.Web.WebView2.Core;
 using Markdig;
 
-namespace GeminiDotnet
+namespace YAOLlm
 {
     public partial class MainForm : Form
     {
@@ -79,7 +80,13 @@ namespace GeminiDotnet
             InitializeConversationHistory();
 
             this.FormClosing += MainForm_FormClosing;
-            this.Load += async (s, e) => await _chatBox.EnsureCoreWebView2Async(null);
+            this.Load += async (s, e) =>
+            {
+                var userDataFolder = Path.Combine(Path.GetTempPath(), "YAOLlm", "WebView2");
+                Directory.CreateDirectory(userDataFolder);
+                var env = await CoreWebView2Environment.CreateAsync(null, userDataFolder);
+                await _chatBox.EnsureCoreWebView2Async(env);
+            };
         }
 
         // UI Setup
@@ -312,7 +319,7 @@ You are an AI assistant with the following guidelines:
 
         private void SetupTrayIcon()
         {
-            _trayIcon.Text = "Gemini Dotnet";
+            _trayIcon.Text = "YAOLlm";
             _trayIcon.Visible = true;
             _trayIcon.ContextMenuStrip = new ContextMenuStrip();
             _trayIcon.ContextMenuStrip.Items.Add("Quit", null, (s, e) => Application.Exit());
@@ -320,7 +327,7 @@ You are an AI assistant with the following guidelines:
 
             try
             {
-                using var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream("GeminiDotnet.icon.ico");
+                using var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream("YAOLlm.icon.ico");
                 _trayIcon.Icon = stream != null ? new Icon(stream) : SystemIcons.Application;
                 _logger.Log(stream != null ? "Tray icon loaded from embedded resource." : "Using default tray icon.");
             }
@@ -592,7 +599,7 @@ You are an AI assistant with the following guidelines:
         {
             const int nChars = 256;
             var buff = new StringBuilder(nChars);
-            return GetWindowText(GetForegroundWindow(), buff, nChars) > 0 && buff.ToString() != "Gemini Dotnet"
+            return GetWindowText(GetForegroundWindow(), buff, nChars) > 0 && buff.ToString() != "YAOLlm"
                 ? buff.ToString()
                 : string.Empty;
         }

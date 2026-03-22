@@ -1,10 +1,10 @@
-# Gemini Project Specifications
+# YAOLlm Project Specifications
 
 ## Overview
-This project ("Gemini") is a Windows Forms application that acts as a UI overlay integrated with a language model (LLM) service for processing natural language queries and image inputs. The application runs in the system tray and uses global hotkeys to toggle visibility. It supports sending text input to an LLM, processing images (by capturing screen or sending image data), and integrating with external web APIs.
+This project ("YAOLlm") is a Windows Forms application that acts as a UI overlay integrated with a language model (LLM) service for processing natural language queries and image inputs. The application runs in the system tray and uses global hotkeys to toggle visibility. It supports sending text input to an LLM, processing images (by capturing screen or sending image data), and integrating with external web APIs.
 
 ## Entry Point
-The `Program.cs` file serves as the entry point. It initializes the Logger, StatusManager, and GeminiClient, creates the main overlay form (`MainForm`), and runs the application via a custom TrayApplicationContext to ensure the form remains hidden by default.
+The `Program.cs` file serves as the entry point. It initializes the Logger, StatusManager, and PresetManager, creates the main overlay form (`MainForm`), and runs the application via a custom TrayApplicationContext to ensure the form remains hidden by default.
 
 ## Components
 
@@ -28,44 +28,45 @@ The `Program.cs` file serves as the entry point. It initializes the Logger, Stat
 - Supports capturing the screen and sending images to the LLM.  
 - Uses asynchronous tasks to manage LLM processing and update conversation history.
 
-### GeminiClient (Communication with LLM)
-**File:** GeminiClient.cs  
+### PresetManager (Provider Configuration)
+**File:** PresetManager.cs  
 **Functionality:**  
-- Loads environment variables from a `.gemini` file in the user's home directory to retrieve API keys (GEMINI_API_KEY, GOOGLE_SEARCH_API_KEY, GOOGLE_SEARCH_ENGINE_ID).  
-- Maintains conversation history with an initial prompt.  
-- Interfaces with an external LLM API (Google's generative language API) to process text and image inputs.  
-- Uses callbacks to update the UI (chat updates, history counter, and status).  
-- Provides methods to clear conversation history and update the LLM model.
+- Manages multiple LLM provider presets (Gemini, OpenRouter, Ollama, OpenAI-compatible).  
+- Loads/saves configuration from `.gemini.conf` in the user's home directory.  
+- Creates appropriate provider instances based on preset configuration.  
+- Handles preset switching at runtime via hotkeys.
+
+### ILLMProvider Interface
+**File:** ILLMProvider.cs  
+**Functionality:**  
+- Defines the common interface for all LLM providers.  
+- Providers include: GeminiProvider, OpenRouterProvider, OllamaProvider, OpenAICompatibleProvider.  
+- Each provider implements its own API communication and response parsing.
 
 ### Tools and Prompts
-**File:** ToolsAndPrompts.cs  
+**File:** ToolDefinitions.cs  
 **Functionality:**  
 - Defines available tool functions for memory searches and online queries.  
 - Provides initial prompt text and templates for processing LLM responses.  
-- Specifies tools such as:
-  - `search_memory_summaries`
-  - `search_memory_content`
-  - `search_google`
 
 ### Other Components
-Additional files (such as `Search.cs`, `Embeddings.cs`, `MemoryManager.cs`, `SQLiteMemoryStore.cs`, and `StatusManager.cs`) likely support:
-- Memory management to maintain context and conversation history.
-- Local memory storage and search functionalities.
+Additional files (`TavilySearchService.cs`, `StatusManager.cs`, `ProviderLogger.cs`) support:
+- Web search integration via Tavily API.
 - Status tracking and UI updates throughout the application.
 
 ## Application Workflow
 
 1. **Startup:**  
-   - Initializes Logger, StatusManager, and loads API keys via GeminiClient.  
+   - Initializes Logger, StatusManager, and loads config via PresetManager.  
    - Creates the MainForm and the system tray icon.  
    - Registers the global hotkey (Ctrl+F12) to toggle overlay visibility.
 
 2. **User Interaction:**  
    - Users input text queries or invoke screen capture to process images.  
-   - MainForm sends user inputs to GeminiClient for processing.
+   - MainForm sends user inputs to the current provider for processing.
 
 3. **LLM Processing:**  
-   - LLM requests are handled asynchronously through external API calls.  
+   - LLM requests are handled asynchronously through provider-specific API calls.  
    - Responses are displayed in the chat box while conversation history is maintained.
 
 4. **Logging and Status Updates:**  
@@ -73,4 +74,4 @@ Additional files (such as `Search.cs`, `Embeddings.cs`, `MemoryManager.cs`, `SQL
    - The UI is updated with status messages (e.g., sending data, idle).
 
 ## Summary
-The Gemini project combines a rich Windows Forms UI overlay with an LLM backend to enable interactive text and image input processing. It integrates comprehensive logging, memory management, and tool-based search functionalities to provide a seamless user experience.
+The YAOLlm project combines a rich Windows Forms UI overlay with multiple LLM backends to enable interactive text and image input processing. It integrates comprehensive logging, web search, and tool-based functionalities to provide a seamless user experience.

@@ -1,7 +1,7 @@
 using System.IO;
 using dotenv.net;
 
-namespace GeminiDotnet
+namespace YAOLlm
 {
     static class Program
     {
@@ -13,7 +13,7 @@ namespace GeminiDotnet
 
             var configPath = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-                ".gemini.conf"
+                ".yaollm.conf"
             );
             DotEnv.Load(options: new DotEnvOptions(
                 envFilePaths: new[] { configPath },

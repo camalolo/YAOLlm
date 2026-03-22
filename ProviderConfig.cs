@@ -1,4 +1,4 @@
-namespace GeminiDotnet;
+namespace YAOLlm;
 
 public class ProviderConfig
 {

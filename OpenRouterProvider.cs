@@ -7,13 +7,13 @@ using System.Threading;
 using System.Threading.Tasks;
 using RestSharp;
 
-namespace GeminiDotnet;
+namespace YAOLlm;
 
 public class OpenRouterProvider : ILLMProvider
 {
     private const string ApiUrl = "https://openrouter.ai/api/v1/chat/completions";
-    private const string DefaultReferer = "https://github.com/geminidotnet";
-    private const string DefaultTitle = "GeminiDotnet";
+    private const string DefaultReferer = "https://github.com/camalolo/YAOLlm";
+    private const string DefaultTitle = "YAOLlm";
     private const int MaxRetries = 3;
     private const int RetryDelayMs = 1000;
 

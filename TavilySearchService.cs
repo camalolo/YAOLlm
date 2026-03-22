@@ -3,7 +3,7 @@ using System.Text.Json;
 using System.Threading.Tasks;
 using RestSharp;
 
-namespace GeminiDotnet
+namespace YAOLlm
 {
     public class TavilySearchService
     {

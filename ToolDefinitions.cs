@@ -1,4 +1,4 @@
-namespace GeminiDotnet;
+namespace YAOLlm;
 
 /// <summary>
 /// Shared tool definitions for function calling

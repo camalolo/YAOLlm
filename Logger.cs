@@ -1,3 +1,5 @@
+namespace YAOLlm;
+
 public class Logger
 {
     public Logger()

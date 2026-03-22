@@ -1,6 +1,6 @@
 using System.Text.Json;
 
-namespace GeminiDotnet;
+namespace YAOLlm;
 
 public static class ProviderLogger
 {
