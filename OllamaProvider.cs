@@ -13,19 +13,22 @@ public class OllamaProvider : ILLMProvider
 {
     private readonly string _baseUrl;
     private readonly RestClient _client;
+    private readonly Logger _logger;
 
     public string Name => "ollama";
     public string Model { get; }
+    public bool SupportsWebSearch => false;
 
     public event Func<ToolCall, Task<ToolResult>>? OnToolCall;
 
-    public OllamaProvider(string model, string? baseUrl = null)
+    public OllamaProvider(string model, string? baseUrl = null, Logger? logger = null)
     {
         Model = model ?? throw new ArgumentNullException(nameof(model));
         _baseUrl = baseUrl 
             ?? Environment.GetEnvironmentVariable("OLLAMA_BASE_URL") 
             ?? "http://localhost:11434";
         _client = new RestClient(_baseUrl);
+        _logger = logger ?? new Logger();
     }
 
     public async Task<string> SendAsync(
@@ -36,6 +39,8 @@ public class OllamaProvider : ILLMProvider
     {
         var messages = BuildMessages(history, image);
         var payload = BuildPayload(messages, tools);
+
+        ProviderLogger.LogRequest(_logger, Name, Model, history.Count, tools != null);
 
         var response = await SendRequestAsync(payload, cancellationToken);
         
@@ -109,31 +114,32 @@ public class OllamaProvider : ILLMProvider
             {
                 if (response.ErrorException != null)
                 {
-                    Console.Error.WriteLine($"Ollama request failed: {response.ErrorException.Message}");
+                    ProviderLogger.LogError(_logger, Name, "SendRequest", response.ErrorException.Message);
                 }
                 else
                 {
-                    Console.Error.WriteLine($"Ollama request failed with status: {response.StatusCode}");
+                    ProviderLogger.LogError(_logger, Name, "SendRequest", $"Status: {response.StatusCode}");
                 }
                 return null;
             }
 
             if (string.IsNullOrEmpty(response.Content))
             {
-                Console.Error.WriteLine("Ollama returned empty response");
+                ProviderLogger.LogError(_logger, Name, "SendRequest", "Empty response");
                 return null;
             }
 
+            ProviderLogger.LogResponse(_logger, Name, response.Content);
             return JsonSerializer.Deserialize<JsonElement>(response.Content);
         }
         catch (TaskCanceledException)
         {
-            Console.Error.WriteLine("Ollama request was cancelled");
+            ProviderLogger.LogCancelled(_logger, Name);
             return null;
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"Ollama request error: {ex.Message}");
+            ProviderLogger.LogError(_logger, Name, "SendRequest", ex.Message);
             return null;
         }
     }
@@ -146,7 +152,7 @@ public class OllamaProvider : ILLMProvider
     {
         if (!response.TryGetProperty("message", out var message))
         {
-            Console.Error.WriteLine("No message in Ollama response");
+            ProviderLogger.LogError(_logger, Name, "ProcessResponse", "No message in response");
             return string.Empty;
         }
 
@@ -183,13 +189,13 @@ public class OllamaProvider : ILLMProvider
     {
         if (OnToolCall == null)
         {
-            Console.Error.WriteLine("Tool call received but no handler attached");
+            ProviderLogger.LogError(_logger, Name, "HandleToolCall", "No handler attached");
             return null;
         }
 
         if (!toolCall.TryGetProperty("function", out var function))
         {
-            Console.Error.WriteLine("Tool call missing function property");
+            ProviderLogger.LogError(_logger, Name, "HandleToolCall", "Missing function property");
             return null;
         }
 
@@ -218,6 +224,7 @@ public class OllamaProvider : ILLMProvider
             }
         }
 
+        ProviderLogger.LogToolCallReceived(_logger, Name, name, arguments);
         var call = new ToolCall
         {
             Id = callId,
@@ -227,11 +234,14 @@ public class OllamaProvider : ILLMProvider
 
         try
         {
-            return await OnToolCall(call);
+            ProviderLogger.LogToolExecution(_logger, Name, name);
+            var result = await OnToolCall(call);
+            ProviderLogger.LogToolResult(_logger, Name, name, result.Content);
+            return result;
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"Tool call handler error: {ex.Message}");
+            ProviderLogger.LogError(_logger, Name, "HandleToolCall", $"Handler error: {ex.Message}");
             return new ToolResult(callId, ex.Message, isError: true);
         }
     }

@@ -21,6 +21,12 @@ public interface ILLMProvider
     string Model { get; }
 
     /// <summary>
+    /// Whether this provider supports custom web search tool
+    /// (Some providers like Gemini have built-in grounding and don't need our tool)
+    /// </summary>
+    bool SupportsWebSearch { get; }
+
+    /// <summary>
     /// Send a conversation to the LLM and get a response
     /// </summary>
     /// <param name="history">Conversation history with role and content keys</param>

@@ -198,11 +198,14 @@ namespace GeminiDotnet
         {
             var label = new Label
             {
-                AutoSize = true,
+                AutoSize = false,
+                Width = 200,
+                Height = 48,
                 BackColor = Color.Transparent,
                 ForeColor = Color.Gray,
                 Font = new Font("Segoe UI", 8f),
-                Text = $"[{_presetManager.ActivePreset}]"
+                Text = $"[{_presetManager.ActivePreset}]",
+                TextAlign = ContentAlignment.MiddleLeft
             };
             return label;
         }
@@ -409,7 +412,8 @@ You are an AI assistant with the following guidelines:
 
                 messages.Add(userMessage);
 
-                string response = await _currentProvider.SendAsync(messages, imageBytes);
+                var tools = _currentProvider.SupportsWebSearch ? ToolDefinitions.GetAll() : null;
+                string response = await _currentProvider.SendAsync(messages, imageBytes, tools);
 
                 lock (_historyLock)
                 {

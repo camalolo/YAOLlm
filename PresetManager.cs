@@ -190,7 +190,7 @@ public class PresetManager
         {
             throw new InvalidOperationException("GEMINI_API_KEY not set");
         }
-        return new GeminiProvider(model, apiKey, _searchService);
+        return new GeminiProvider(model, apiKey, _searchService, _logger);
     }
 
     private ILLMProvider CreateOpenRouterProvider(string model)
@@ -200,18 +200,18 @@ public class PresetManager
         {
             throw new InvalidOperationException("OPENROUTER_API_KEY not set");
         }
-        return new OpenRouterProvider(model, apiKey);
+        return new OpenRouterProvider(model, apiKey, _searchService, _logger);
     }
 
     private ILLMProvider CreateOllamaProvider(string model)
     {
         var baseUrl = Environment.GetEnvironmentVariable("OLLAMA_BASE_URL") ?? "http://localhost:11434";
-        return new OllamaProvider(model, baseUrl);
+        return new OllamaProvider(model, baseUrl, _logger);
     }
 
     private ILLMProvider CreateOpenAICompatibleProvider(string model)
     {
         var baseUrl = Environment.GetEnvironmentVariable("OPENAI_COMPATIBLE_BASE_URL") ?? "http://localhost:11434";
-        return new OpenAICompatibleProvider(model, baseUrl);
+        return new OpenAICompatibleProvider(model, baseUrl, _searchService, _logger);
     }
 }

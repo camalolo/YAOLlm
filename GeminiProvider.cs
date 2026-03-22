@@ -23,15 +23,16 @@ public class GeminiProvider : ILLMProvider
 
     public string Name => "gemini";
     public string Model => _model;
+    public bool SupportsWebSearch => false; // Gemini has built-in grounding
 
     public event Func<ToolCall, Task<ToolResult>>? OnToolCall;
 
-    public GeminiProvider(string model, string apiKey, TavilySearchService searchService)
+    public GeminiProvider(string model, string apiKey, TavilySearchService searchService, Logger logger)
     {
         _model = model ?? throw new ArgumentNullException(nameof(model));
         _apiKey = apiKey ?? throw new ArgumentNullException(nameof(apiKey));
         _searchService = searchService ?? throw new ArgumentNullException(nameof(searchService));
-        _logger = new Logger();
+        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
 
     public async Task<string> SendAsync(
@@ -49,6 +50,7 @@ public class GeminiProvider : ILLMProvider
         if (toolsPayload != null)
             payload["tools"] = toolsPayload;
 
+        ProviderLogger.LogRequest(_logger, Name, _model, history.Count, tools != null && tools.Count > 0);
         return await SendWithRetryAsync(payload, contents, cancellationToken);
     }
 
@@ -189,19 +191,19 @@ public class GeminiProvider : ILLMProvider
                 {
                     if (retry == MaxRetries)
                     {
-                        _logger.Log("Max retries reached for rate limit error");
+                        ProviderLogger.LogError(_logger, Name, "rate limit", "Max retries reached");
                         throw new Exception("Max retries reached for rate limit error");
                     }
 
                     int delay = (int)Math.Pow(2, retry) * 1000;
-                    _logger.Log($"Rate limited, retrying in {delay}ms (attempt {retry + 1}/{MaxRetries})");
+                    ProviderLogger.LogRetry(_logger, Name, retry + 1, MaxRetries, delay);
                     await Task.Delay(delay, cancellationToken);
                     continue;
                 }
 
                 if (content == null)
                 {
-                    _logger.Log($"Request failed: StatusCode={response.StatusCode}, Error={response.ErrorMessage}");
+                    ProviderLogger.LogError(_logger, Name, "request", $"StatusCode={response.StatusCode}, Error={response.ErrorMessage}");
                     throw new Exception($"Request failed: {response.StatusCode}");
                 }
 
@@ -210,12 +212,12 @@ public class GeminiProvider : ILLMProvider
         }
         catch (OperationCanceledException)
         {
-            _logger.Log("Request was cancelled");
+            ProviderLogger.LogCancelled(_logger, Name);
             throw;
         }
         catch (Exception ex)
         {
-            _logger.Log($"SendWithRetryAsync error: {ex.Message}");
+            ProviderLogger.LogError(_logger, Name, "SendWithRetryAsync", ex.Message);
             throw;
         }
         finally
@@ -242,7 +244,7 @@ public class GeminiProvider : ILLMProvider
 
             if (response.IsSuccessful && !string.IsNullOrEmpty(response.Content))
             {
-                _logger.Log($"Response received: {response.Content.Substring(0, Math.Min(500, response.Content.Length))}...");
+                ProviderLogger.LogResponse(_logger, Name, response.Content);
                 return (response.Content, response);
             }
 
@@ -250,7 +252,7 @@ public class GeminiProvider : ILLMProvider
         }
         catch (Exception ex)
         {
-            _logger.Log($"ExecuteRequestAsync error: {ex.Message}");
+            ProviderLogger.LogError(_logger, Name, "ExecuteRequestAsync", ex.Message);
             return (null, new RestResponse());
         }
     }
@@ -266,7 +268,7 @@ public class GeminiProvider : ILLMProvider
 
             if (!data.TryGetProperty("candidates", out var candidates) || !candidates.EnumerateArray().Any())
             {
-                _logger.Log("No candidates in LLM response");
+                ProviderLogger.LogError(_logger, Name, "ExtractResponseAsync", "No candidates in LLM response");
                 return string.Empty;
             }
 
@@ -307,7 +309,7 @@ public class GeminiProvider : ILLMProvider
         }
         catch (Exception ex)
         {
-            _logger.Log($"ExtractResponseAsync error: {ex.Message}");
+            ProviderLogger.LogError(_logger, Name, "ExtractResponseAsync", ex.Message);
             throw;
         }
     }
@@ -324,7 +326,7 @@ public class GeminiProvider : ILLMProvider
 
         if (string.IsNullOrEmpty(functionName))
         {
-            _logger.Log("Function call missing name");
+            ProviderLogger.LogError(_logger, Name, "HandleFunctionCall", "Function call missing name");
             return string.Empty;
         }
 
@@ -344,6 +346,8 @@ public class GeminiProvider : ILLMProvider
             }
         }
 
+        ProviderLogger.LogToolCallReceived(_logger, Name, functionName, args);
+
         var toolCall = new ToolCall
         {
             Id = Guid.NewGuid().ToString(),
@@ -355,8 +359,10 @@ public class GeminiProvider : ILLMProvider
 
         if (OnToolCall != null)
         {
+            ProviderLogger.LogToolExecution(_logger, Name, functionName);
             var result = await OnToolCall.Invoke(toolCall);
             functionResult = result?.Content ?? string.Empty;
+            ProviderLogger.LogToolResult(_logger, Name, functionName, functionResult);
         }
         else if (functionName == "web_search" && _searchService != null)
         {
@@ -364,7 +370,7 @@ public class GeminiProvider : ILLMProvider
         }
         else
         {
-            _logger.Log($"No handler for function: {functionName}");
+            ProviderLogger.LogError(_logger, Name, "HandleFunctionCall", $"No handler for function: {functionName}");
             functionResult = $"Error: No handler available for function '{functionName}'";
         }
 
@@ -387,16 +393,18 @@ public class GeminiProvider : ILLMProvider
 
             if (string.IsNullOrEmpty(query))
             {
-                _logger.Log("web_search called without query");
+                ProviderLogger.LogError(_logger, Name, "web_search", "Missing query parameter");
                 return "Error: Missing query parameter";
             }
 
-            _logger.Log($"Executing web_search with query: '{query}', maxResults: {maxResults}");
-            return await _searchService.SearchAsync(query, maxResults);
+            ProviderLogger.LogToolExecution(_logger, Name, "web_search");
+            var result = await _searchService.SearchAsync(query, maxResults);
+            ProviderLogger.LogToolResult(_logger, Name, "web_search", result);
+            return result;
         }
         catch (Exception ex)
         {
-            _logger.Log($"Error executing web_search: {ex.Message}");
+            ProviderLogger.LogError(_logger, Name, "web_search", ex.Message);
             return $"Error executing web search: {ex.Message}";
         }
     }
@@ -451,7 +459,7 @@ public class GeminiProvider : ILLMProvider
 
             if (content == null)
             {
-                _logger.Log("Failed to get response after function call");
+                ProviderLogger.LogError(_logger, Name, "ContinueWithFunctionResult", "Failed to get response after function call");
                 return string.Empty;
             }
 
@@ -459,7 +467,7 @@ public class GeminiProvider : ILLMProvider
         }
         catch (Exception ex)
         {
-            _logger.Log($"Error continuing with function result: {ex.Message}");
+            ProviderLogger.LogError(_logger, Name, "ContinueWithFunctionResult", ex.Message);
             return $"Error: {ex.Message}";
         }
     }
@@ -496,7 +504,7 @@ public class GeminiProvider : ILLMProvider
         }
         catch (Exception ex)
         {
-            _logger.Log($"ExtractSimpleResponse error: {ex.Message}");
+            ProviderLogger.LogError(_logger, Name, "ExtractSimpleResponse", ex.Message);
             return string.Empty;
         }
     }

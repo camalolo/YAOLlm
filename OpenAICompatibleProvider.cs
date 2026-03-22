@@ -14,17 +14,22 @@ public class OpenAICompatibleProvider : ILLMProvider
     private readonly RestClient _client;
     private readonly string _model;
     private readonly string _apiUrl;
+    private readonly Logger _logger;
+    private readonly TavilySearchService? _searchService;
 
     public string Name => "openai-compatible";
     public string Model => _model;
+    public bool SupportsWebSearch => true;
 
     public event Func<ToolCall, Task<ToolResult>>? OnToolCall;
 
-    public OpenAICompatibleProvider(string model, string baseUrl = "http://localhost:11434")
+    public OpenAICompatibleProvider(string model, string baseUrl = "http://localhost:11434", TavilySearchService? searchService = null, Logger? logger = null)
     {
         _model = model ?? throw new ArgumentNullException(nameof(model));
         _apiUrl = $"{baseUrl.TrimEnd('/')}/v1/chat/completions";
         _client = new RestClient();
+        _logger = logger ?? new Logger();
+        _searchService = searchService;
     }
 
     public async Task<string> SendAsync(
@@ -35,6 +40,8 @@ public class OpenAICompatibleProvider : ILLMProvider
     {
         if (history == null || history.Count == 0)
             throw new ArgumentException("History cannot be null or empty", nameof(history));
+
+        ProviderLogger.LogRequest(_logger, Name, _model, history.Count, tools != null && tools.Count > 0);
 
         var messages = BuildMessages(history, image);
         var requestBody = BuildRequestBody(messages, tools);
@@ -109,20 +116,33 @@ public class OpenAICompatibleProvider : ILLMProvider
     private async Task<string> SendAsync(object requestBody, CancellationToken cancellationToken)
     {
         var request = CreateRequest(requestBody);
-        var response = await _client.ExecuteAsync(request, cancellationToken);
 
-        if (!response.IsSuccessful)
+        try
         {
-            var errorMessage = string.IsNullOrEmpty(response.Content)
-                ? $"OpenAI-compatible API error: {response.StatusCode}"
-                : $"OpenAI-compatible API error: {response.StatusCode} - {response.Content}";
-            throw new Exception(errorMessage);
+            var response = await _client.ExecuteAsync(request, cancellationToken);
+
+            if (!response.IsSuccessful)
+            {
+                var errorMessage = string.IsNullOrEmpty(response.Content)
+                    ? $"OpenAI-compatible API error: {response.StatusCode}"
+                    : $"OpenAI-compatible API error: {response.StatusCode} - {response.Content}";
+                ProviderLogger.LogError(_logger, Name, "SendAsync", errorMessage);
+                throw new Exception(errorMessage);
+            }
+
+            if (string.IsNullOrEmpty(response.Content))
+            {
+                ProviderLogger.LogError(_logger, Name, "SendAsync", "Empty response");
+                throw new Exception("OpenAI-compatible API returned empty response");
+            }
+
+            return await ProcessResponseAsync(response.Content, requestBody, cancellationToken);
         }
-
-        if (string.IsNullOrEmpty(response.Content))
-            throw new Exception("OpenAI-compatible API returned empty response");
-
-        return await ProcessResponseAsync(response.Content, requestBody, cancellationToken);
+        catch (OperationCanceledException)
+        {
+            ProviderLogger.LogCancelled(_logger, Name);
+            throw;
+        }
     }
 
     private RestRequest CreateRequest(object requestBody)
@@ -135,6 +155,8 @@ public class OpenAICompatibleProvider : ILLMProvider
 
     private async Task<string> ProcessResponseAsync(string responseContent, object requestBody, CancellationToken cancellationToken)
     {
+        ProviderLogger.LogResponse(_logger, Name, responseContent);
+
         var json = JsonNode.Parse(responseContent);
         var choices = json?["choices"] as JsonArray;
 
@@ -177,6 +199,8 @@ public class OpenAICompatibleProvider : ILLMProvider
                 Arguments = DeserializeArguments(argsJson)
             };
 
+            ProviderLogger.LogToolCallReceived(_logger, Name, toolCallRequest.Name, toolCallRequest.Arguments);
+
             var result = await ExecuteToolCallAsync(toolCallRequest);
 
             messages.Add(new
@@ -194,16 +218,55 @@ public class OpenAICompatibleProvider : ILLMProvider
 
     private async Task<ToolResult> ExecuteToolCallAsync(ToolCall toolCall)
     {
-        if (OnToolCall == null)
-            return new ToolResult(toolCall.Id, "No tool handler registered", isError: true);
+        if (OnToolCall != null)
+        {
+            try
+            {
+                ProviderLogger.LogToolExecution(_logger, Name, toolCall.Name);
+                var result = await OnToolCall.Invoke(toolCall);
+                ProviderLogger.LogToolResult(_logger, Name, toolCall.Name, result.Content);
+                return result;
+            }
+            catch (Exception ex)
+            {
+                ProviderLogger.LogError(_logger, Name, $"ToolExecution({toolCall.Name})", ex.Message);
+                return new ToolResult(toolCall.Id, $"Tool execution error: {ex.Message}", isError: true);
+            }
+        }
 
+        if (toolCall.Name == "web_search" && _searchService != null)
+        {
+            return await ExecuteWebSearchAsync(toolCall);
+        }
+
+        ProviderLogger.LogError(_logger, Name, "ExecuteToolCallAsync", $"No handler for tool: {toolCall.Name}");
+        return new ToolResult(toolCall.Id, $"No handler for tool: {toolCall.Name}", isError: true);
+    }
+
+    private async Task<ToolResult> ExecuteWebSearchAsync(ToolCall toolCall)
+    {
         try
         {
-            return await OnToolCall.Invoke(toolCall);
+            var query = toolCall.Arguments.TryGetValue("query", out var queryObj) ? queryObj?.ToString() : null;
+            var maxResults = toolCall.Arguments.TryGetValue("max_results", out var maxResultsObj) && maxResultsObj is int max
+                ? max
+                : 5;
+
+            if (string.IsNullOrEmpty(query))
+            {
+                ProviderLogger.LogError(_logger, Name, "web_search", "Missing query parameter");
+                return new ToolResult(toolCall.Id, "Error: Missing query parameter", isError: true);
+            }
+
+            ProviderLogger.LogToolExecution(_logger, Name, "web_search");
+            var result = await _searchService!.SearchAsync(query, maxResults);
+            ProviderLogger.LogToolResult(_logger, Name, "web_search", result);
+            return new ToolResult(toolCall.Id, result);
         }
         catch (Exception ex)
         {
-            return new ToolResult(toolCall.Id, $"Tool execution error: {ex.Message}", isError: true);
+            ProviderLogger.LogError(_logger, Name, "web_search", ex.Message);
+            return new ToolResult(toolCall.Id, $"Error executing web search: {ex.Message}", isError: true);
         }
     }
 
