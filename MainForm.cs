@@ -2,6 +2,7 @@ using System.Runtime.InteropServices;
 using System.Reflection;
 using System.Drawing.Imaging;
 using System.Text;
+using System.Linq;
 using Microsoft.Web.WebView2.WinForms;
 using Markdig;
 
@@ -9,7 +10,7 @@ namespace GeminiDotnet
 {
     public partial class MainForm : Form
     {
-        private readonly GeminiClient _geminiClient;
+        private readonly PresetManager _presetManager;
         private readonly StatusManager _statusManager;
         private readonly Logger _logger;
         private readonly NotifyIcon _trayIcon = new NotifyIcon();
@@ -17,6 +18,12 @@ namespace GeminiDotnet
         private readonly TextBox _inputField;
         private Button _statusButton;
         private Button _historyButton;
+        private Label _providerLabel;
+        private ILLMProvider _currentProvider;
+        private readonly List<Dictionary<string, object>> _conversationHistory = new();
+        private readonly object _historyLock = new();
+        private const int MaxHistoryEntries = 32;
+        private string _currentWindowTitle = "";
         private string _chatHtml = "<html></html>";
 
         // Global hotkey constants
@@ -39,16 +46,20 @@ namespace GeminiDotnet
         private static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int count);
 
         // Constructor
-        public MainForm(GeminiClient geminiClient, StatusManager statusManager, Logger logger)
+        public MainForm(PresetManager presetManager, StatusManager statusManager, Logger logger)
         {
-            _geminiClient = geminiClient ?? throw new ArgumentNullException(nameof(geminiClient));
+            _presetManager = presetManager ?? throw new ArgumentNullException(nameof(presetManager));
             _statusManager = statusManager ?? throw new ArgumentNullException(nameof(statusManager));
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+
+            _presetManager.LoadConfig();
+            _currentProvider = _presetManager.CreateProvider();
 
             _chatBox = CreateChatBox();
             _inputField = CreateInputField();
             _statusButton = CreateControl<Button>("                  ", DockStyle.None, false, null, null);
             _historyButton = CreateControl<Button>("         ", DockStyle.None, false, null, null);
+            _providerLabel = CreateProviderLabel();
 
             ConfigureForm();
             SetupTrayIcon();
@@ -59,10 +70,16 @@ namespace GeminiDotnet
                 _logger.Log($"StatusChanged event fired: {status}");
                 _statusButton.InvokeIfRequired(() => _statusButton.Text = status.ToString());
             };
-            _geminiClient.SetUICallbacks(UpdateChat, UpdateHistoryCounter, _statusManager.SetStatus);
+
+            _presetManager.PresetChanged += preset =>
+            {
+                _providerLabel.InvokeIfRequired(() => _providerLabel.Text = $"[{preset}]");
+            };
+
+            InitializeConversationHistory();
 
             this.FormClosing += MainForm_FormClosing;
-            this.Load += async (s, e) => await _chatBox.EnsureCoreWebView2Async(null); // Initialize WebView2
+            this.Load += async (s, e) => await _chatBox.EnsureCoreWebView2Async(null);
         }
 
         // UI Setup
@@ -85,7 +102,7 @@ namespace GeminiDotnet
 
             this.Controls.AddRange(new Control[] { _chatBox, spacerPanel, _inputField, bottomPanel, topPanel });
 
-            ClearChat(); // Initialize webview2 control contents
+            ClearChat();
 
             _logger.Log($"Form configured: Visible = {this.Visible}");
         }
@@ -101,8 +118,23 @@ namespace GeminiDotnet
         private Panel CreateBottomPanel()
         {
             var panel = new Panel { Dock = DockStyle.Bottom, BackColor = Color.Black, Height = 48 };
-            var flowPanel = new FlowLayoutPanel { FlowDirection = FlowDirection.LeftToRight, AutoSize = true, Location = new Point(0, 5) };
-            var rightFlowPanel = new FlowLayoutPanel { FlowDirection = FlowDirection.LeftToRight, AutoSize = true, Location = new Point(0, 5) };
+            
+            var flowPanel = new FlowLayoutPanel 
+            { 
+                FlowDirection = FlowDirection.LeftToRight, 
+                WrapContents = false,
+                AutoSize = true,
+                Dock = DockStyle.Left
+            };
+            
+            var rightFlowPanel = new FlowLayoutPanel 
+            { 
+                FlowDirection = FlowDirection.LeftToRight, 
+                WrapContents = false,
+                AutoSize = true,
+                Dock = DockStyle.Right
+            };
+            
             var buttons = new Dictionary<string, (string text, Action action)>
             {
                 ["send"] = ("Send", () => SendMessage()),
@@ -121,23 +153,12 @@ namespace GeminiDotnet
 
             rightFlowPanel.Controls.Add(_statusButton);
             rightFlowPanel.Controls.Add(_historyButton);
+            rightFlowPanel.Controls.Add(_providerLabel);
 
-            TableLayoutPanel tablePanel = new TableLayoutPanel();
+            panel.Controls.Add(rightFlowPanel);
+            panel.Controls.Add(flowPanel);
 
-            tablePanel.Dock = DockStyle.Bottom;
-            tablePanel.AutoSize = true;
-            tablePanel.ColumnCount = 2;
-            tablePanel.RowCount = 1;
-            tablePanel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-            tablePanel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-            tablePanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-
-            // Add controls to the appropriate cells:
-            // Column 0: Button panel (flowPanel)
-            tablePanel.Controls.Add(flowPanel, 0, 0);
-            tablePanel.Controls.Add(rightFlowPanel, 1, 0);
-
-            return tablePanel;
+            return panel;
         }
 
         private WebView2 CreateChatBox()
@@ -171,6 +192,93 @@ namespace GeminiDotnet
             };
             input.KeyDown += InputField_KeyDown;
             return input;
+        }
+
+        private Label CreateProviderLabel()
+        {
+            var label = new Label
+            {
+                AutoSize = true,
+                BackColor = Color.Transparent,
+                ForeColor = Color.Gray,
+                Font = new Font("Segoe UI", 8f),
+                Text = $"[{_presetManager.ActivePreset}]"
+            };
+            return label;
+        }
+
+        protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+        {
+            if (keyData == Keys.Tab && _inputField.Focused)
+            {
+                _presetManager.CycleNext();
+                _currentProvider = _presetManager.CreateProvider();
+                _providerLabel.Text = $"[{_presetManager.ActivePreset}]";
+                _presetManager.SaveConfig();
+                return true;
+            }
+            return base.ProcessCmdKey(ref msg, keyData);
+        }
+
+        private void InitializeConversationHistory()
+        {
+            lock (_historyLock)
+            {
+                _conversationHistory.Clear();
+                _conversationHistory.Add(new Dictionary<string, object>
+                {
+                    { "role", "system" },
+                    { "content", GetInitialPrompt() }
+                });
+            }
+        }
+
+        private string GetInitialPrompt()
+        {
+            return $@"
+You are an AI assistant with the following guidelines:
+
+## Core Principles
+- Provide accurate, helpful, and contextually relevant responses. The current application the user is running has this title : {_currentWindowTitle}
+- Use available tools (such as Web Search) when appropriate to enhance response quality.
+- Confirm online any information that might have changed since your training cutoff date. Today is {DateTime.Now:yyyy-MM-dd}.
+- Maintain user engagement and immersion, especially in creative or gaming contexts.
+
+## Response Guidelines
+- For games and puzzles: Avoid direct spoilers. Instead, provide subtle hints and background information to guide users toward solutions while preserving enjoyment.
+- Only provide exact solutions, codes, or walkthroughs when explicitly requested after initial guidance attempts.
+- Support multimodal interactions: Process images and handle mixed text/image inputs.
+
+## Capabilities
+- Access to real-time information via Web Search as often as needed, do not hesitate getting more data sources.
+- Context-aware responses based on current date and active application.";
+        }
+
+        private List<Dictionary<string, object>> GetHistorySnapshot()
+        {
+            lock (_historyLock)
+            {
+                return new List<Dictionary<string, object>>(_conversationHistory);
+            }
+        }
+
+        private string ResizeImageBase64(string base64)
+        {
+            try
+            {
+                byte[] imageBytes = Convert.FromBase64String(base64);
+                using var ms = new MemoryStream(imageBytes);
+                using var image = new Bitmap(ms);
+                using var resizedImage = image.Resize(640, (int)(image.Height * 640.0 / image.Width));
+                using var outputMs = new MemoryStream();
+                resizedImage.Save(outputMs, ImageFormat.Png);
+                return Convert.ToBase64String(outputMs.ToArray());
+            }
+            catch (Exception ex)
+            {
+                _logger.Log($"Error resizing image: {ex.Message}");
+                return base64;
+            }
         }
 
         private T CreateControl<T>(string text, DockStyle dock, bool border = false, Action? click = null, Point? location = null) where T : Control, new()
@@ -265,7 +373,7 @@ namespace GeminiDotnet
 
             UpdateChat($"You: {message}\r\n", "user");
             _inputField.Text = "";
-            Task.Run(() => _geminiClient.ProcessLLMRequest(message, null, null));
+            Task.Run(() => ProcessLLMRequestAsync(message, null, null));
         }
 
         private void SendMessage(string message, string? imageBase64, string? title = null)
@@ -275,7 +383,62 @@ namespace GeminiDotnet
 
             UpdateChat($"You: {message}\r\n", "user");
             _inputField.Text = "";
-            Task.Run(() => _geminiClient.ProcessLLMRequest(message, imageBase64, title));
+            Task.Run(() => ProcessLLMRequestAsync(message, imageBase64, title));
+        }
+
+        private async Task ProcessLLMRequestAsync(string prompt, string? imageBase64 = null, string? activeWindowTitle = null)
+        {
+            try
+            {
+                _logger.Log($"Processing LLM request: {prompt}");
+                _statusManager.SetStatus(Status.Sending);
+
+                var messages = GetHistorySnapshot();
+                var userMessage = new Dictionary<string, object> { { "role", "user" } };
+
+                byte[]? imageBytes = null;
+                if (!string.IsNullOrEmpty(imageBase64))
+                {
+                    imageBytes = Convert.FromBase64String(imageBase64);
+                }
+
+                if (!string.IsNullOrEmpty(prompt))
+                {
+                    userMessage["content"] = prompt;
+                }
+
+                messages.Add(userMessage);
+
+                string response = await _currentProvider.SendAsync(messages, imageBytes);
+
+                lock (_historyLock)
+                {
+                    _conversationHistory.Add(userMessage);
+                    _conversationHistory.Add(new Dictionary<string, object> { { "role", "model" }, { "content", response } });
+                    TrimHistoryIfNeeded();
+                }
+
+                UpdateHistoryCounter();
+                if (!string.IsNullOrEmpty(response)) UpdateChat(response + "\n", "model");
+            }
+            catch (Exception ex)
+            {
+                _logger.Log($"Error in ProcessLLMRequestAsync: {ex.Message}");
+                UpdateChat($"Error: {ex.Message}\n", "system");
+            }
+            finally
+            {
+                _statusManager.SetStatus(Status.Idle);
+            }
+        }
+
+        private void TrimHistoryIfNeeded()
+        {
+            if (_conversationHistory.Count > MaxHistoryEntries)
+            {
+                _logger.Log($"Trimming history from {_conversationHistory.Count} to {MaxHistoryEntries}");
+                _conversationHistory.RemoveRange(0, _conversationHistory.Count - MaxHistoryEntries);
+            }
         }
 
         private void CaptureAndSend()
@@ -296,7 +459,7 @@ namespace GeminiDotnet
                 if (_chatBox.CoreWebView2 != null)
                     _chatBox.CoreWebView2.NavigateToString(_chatHtml);
             });
-            _geminiClient.ClearConversationHistory();
+            InitializeConversationHistory();
             UpdateHistoryCounter();
             FocusInputField();
         }
@@ -330,7 +493,11 @@ namespace GeminiDotnet
         }
         private void UpdateHistoryCounter()
         {
-            int length = _geminiClient.GetConversationHistoryLength();
+            int length;
+            lock (_historyLock)
+            {
+                length = _conversationHistory.Sum(turn => turn.GetValueOrDefault("content", "")?.ToString()?.Length ?? 0);
+            }
             _historyButton.InvokeIfRequired(() => _historyButton.Text = $"[{length}]");
         }
 
@@ -347,7 +514,7 @@ namespace GeminiDotnet
                 using var ms = new MemoryStream();
                 screenshot.Save(ms, ImageFormat.Png);
                 string base64 = Convert.ToBase64String(ms.ToArray());
-                string resizedBase64 = _geminiClient.ResizeImageBase64(base64);
+                string resizedBase64 = ResizeImageBase64(base64);
                 return (resizedBase64, title);
             }
             catch (Exception ex)
@@ -372,7 +539,7 @@ namespace GeminiDotnet
                     using var ms = new MemoryStream();
                     image.Save(ms, ImageFormat.Png);
                     string base64 = Convert.ToBase64String(ms.ToArray());
-                    string resizedBase64 = _geminiClient.ResizeImageBase64(base64);
+                    string resizedBase64 = ResizeImageBase64(base64);
                     string message = string.IsNullOrEmpty(_inputField.Text.Trim()) ? "[Image Loaded]" : _inputField.Text.Trim();
                     SendMessage(message, resizedBase64, Path.GetFileName(openFileDialog.FileName));
                 }
@@ -405,7 +572,14 @@ namespace GeminiDotnet
             string title = GetActiveWindowTitle();
             if (!string.IsNullOrEmpty(title))
             {
-                _geminiClient.UpdateCurrentWindow(title);
+                _currentWindowTitle = title;
+                lock (_historyLock)
+                {
+                    if (_conversationHistory.Count > 0)
+                    {
+                        _conversationHistory[0]["content"] = GetInitialPrompt();
+                    }
+                }
                 _logger.Log($"Window title updated to: {title}");
             }
         }

@@ -1,3 +1,6 @@
+using System.IO;
+using dotenv.net;
+
 namespace GeminiDotnet
 {
     static class Program
@@ -8,11 +11,28 @@ namespace GeminiDotnet
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
 
+            var configPath = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                ".gemini.conf"
+            );
+            DotEnv.Load(options: new DotEnvOptions(
+                envFilePaths: new[] { configPath },
+                ignoreExceptions: true
+            ));
+
             var logger = new Logger();
             var statusManager = new StatusManager();
-            var geminiClient = new GeminiClient(logger);
-            var mainForm = new MainForm(geminiClient, statusManager, logger);
-            
+
+            var tavilyService = new TavilySearchService(
+                Environment.GetEnvironmentVariable("TAVILY_API_KEY") ?? "",
+                logger
+            );
+
+            var presetManager = new PresetManager(tavilyService, logger);
+            presetManager.LoadConfig();
+
+            var mainForm = new MainForm(presetManager, statusManager, logger);
+
             var context = new TrayApplicationContext(mainForm);
             Application.Run(context);
         }
@@ -25,8 +45,8 @@ namespace GeminiDotnet
         public TrayApplicationContext(MainForm form)
         {
             _mainForm = form ?? throw new ArgumentNullException(nameof(form));
-            _mainForm.Visible = false; // Ensure it starts hidden
-            _mainForm.FormClosed += (s, e) => Application.Exit(); // Exit when form closes
+            _mainForm.Visible = false;
+            _mainForm.FormClosed += (s, e) => Application.Exit();
         }
     }
 }
