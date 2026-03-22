@@ -13,7 +13,40 @@ namespace GeminiDotnet
         public static async Task<string> SendToLLM(GeminiClient client, object payload, string? imageBase64 = null)
         {
             var logger = client.Logger;
-            var tools = new List<object> { new { google_search = new { } } };
+            
+            // Define the web_search tool with proper function declaration
+            var tools = new List<object>
+            {
+                new
+                {
+                    functionDeclarations = new[]
+                    {
+                        new
+                        {
+                            name = "web_search",
+                            description = "Search the web for up-to-date information using Tavily",
+                            parameters = new
+                            {
+                                type = "object",
+                                properties = new
+                                {
+                                    query = new
+                                    {
+                                        type = "string",
+                                        description = "The search query"
+                                    },
+                                    max_results = new
+                                    {
+                                        type = "integer",
+                                        description = "Maximum number of results (default: 5)"
+                                    }
+                                },
+                                required = new[] { "query" }
+                            }
+                        }
+                    }
+                }
+            };
 
             object[] contents = payload switch
             {
@@ -40,7 +73,7 @@ namespace GeminiDotnet
             }
 
             var data = JsonSerializer.Deserialize<JsonElement>(content);
-            string message = ExtractResponse(logger, data, client);
+            string message = await ExtractResponseAsync(logger, data, client, contents);
             logger.Log($"Response extracted: '{message.Substring(0, Math.Min(100, message.Length))}...'");
             return message;
         }
@@ -95,7 +128,7 @@ namespace GeminiDotnet
             return (null, new RestResponse());
         }
 
-        private static string ExtractResponse(Logger logger, JsonElement data, GeminiClient client)
+        private static async Task<string> ExtractResponseAsync(Logger logger, JsonElement data, GeminiClient client, object[] originalContents)
         {
             if (!data.TryGetProperty("candidates", out var candidates) || !candidates.EnumerateArray().Any())
             {
@@ -104,13 +137,149 @@ namespace GeminiDotnet
             }
 
             var messageParts = new List<string>();
+            var tavilyService = new TavilySearchService(client.TavilyApiKey, client.Logger);
+            JsonElement? modelContentElement = null;
+
             foreach (var candidate in candidates.EnumerateArray())
             {
-                foreach (var part in candidate.GetProperty("content").GetProperty("parts").EnumerateArray())
+                // Check if this candidate has function calls
+                if (candidate.TryGetProperty("content", out var contentElement))
                 {
-                    if (part.TryGetProperty("text", out var text) && text.GetString() is string textValue)
+                    // Save the complete model content for conversation history
+                    modelContentElement = contentElement;
+
+                    foreach (var part in contentElement.GetProperty("parts").EnumerateArray())
                     {
-                        messageParts.Add(textValue);
+                        // Check for text content
+                        if (part.TryGetProperty("text", out var text) && text.GetString() is string textValue)
+                        {
+                            messageParts.Add(textValue);
+                        }
+                        // Check for function call
+                        else if (part.TryGetProperty("functionCall", out var functionCall))
+                        {
+                            var functionName = functionCall.TryGetProperty("name", out var nameElement) 
+                                ? nameElement.GetString() 
+                                : null;
+                            
+                            if (functionName == "web_search")
+                            {
+                                // Extract function arguments
+                                var argsJson = functionCall.TryGetProperty("args", out var argsElement)
+                                    ? argsElement.GetRawText()
+                                    : "{}";
+                                
+                                try
+                                {
+                                    var args = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(argsJson);
+                                    var query = args?.TryGetValue("query", out var queryElement) == true 
+                                        ? queryElement.GetString() 
+                                        : null;
+                                    
+                                    var maxResults = args?.TryGetValue("max_results", out var maxResultsElement) == true
+                                        ? maxResultsElement.GetInt32()
+                                        : 5;
+
+                                    if (!string.IsNullOrEmpty(query))
+                                    {
+                                        logger.Log($"Executing web_search with query: '{query}', maxResults: {maxResults}");
+                                        
+                                        // Execute the search
+                                        var searchResults = await tavilyService.SearchAsync(query, maxResults);
+                                        
+                                        // Build complete conversation history: original contents + model's content + function response
+                                        var conversationHistory = new List<object>(originalContents);
+                                        
+                                        // Add the model's complete content (preserving thought_signature and other fields)
+                                        if (modelContentElement.HasValue)
+                                        {
+                                            // Deserialize the content element to preserve all fields including thought_signature
+                                            var contentObj = JsonSerializer.Deserialize<JsonElement>(modelContentElement.Value.GetRawText());
+                                            var parts = new List<object>();
+                                            
+                                            foreach (var contentPart in contentObj.GetProperty("parts").EnumerateArray())
+                                            {
+                                                parts.Add(JsonSerializer.Deserialize<object>(contentPart.GetRawText())!);
+                                            }
+                                            
+                                            var modelContent = new
+                                            {
+                                                role = "model",
+                                                parts = parts.ToArray()
+                                            };
+                                            conversationHistory.Add(modelContent);
+                                        }
+                                        
+                                        // Add the function response
+                                        conversationHistory.Add(new
+                                        {
+                                            role = "function",
+                                            parts = new[]
+                                            {
+                                                new
+                                                {
+                                                    functionResponse = new
+                                                    {
+                                                        name = "web_search",
+                                                        response = new
+                                                        {
+                                                            result = searchResults
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        });
+
+                                        // Send complete conversation back to Gemini
+                                        var functionResponsePayload = new
+                                        {
+                                            contents = conversationHistory.ToArray()
+                                        };
+
+                                        var (functionContent, functionResponse) = await SendRequest(client, functionResponsePayload);
+                                        if (functionContent != null)
+                                        {
+                                            var functionData = JsonSerializer.Deserialize<JsonElement>(functionContent);
+                                            var functionMessage = ExtractSimpleResponse(logger, functionData);
+                                            if (!string.IsNullOrEmpty(functionMessage))
+                                            {
+                                                messageParts.Add(functionMessage);
+                                            }
+                                        }
+                                    }
+                                }
+                                catch (Exception ex)
+                                {
+                                    logger.Log($"Error executing function call: {ex.Message}");
+                                    messageParts.Add($"Error executing web search: {ex.Message}");
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            return string.Join("<br><br>", messageParts);
+        }
+
+        private static string ExtractSimpleResponse(Logger logger, JsonElement data)
+        {
+            if (!data.TryGetProperty("candidates", out var candidates) || !candidates.EnumerateArray().Any())
+            {
+                return string.Empty;
+            }
+
+            var messageParts = new List<string>();
+            foreach (var candidate in candidates.EnumerateArray())
+            {
+                if (candidate.TryGetProperty("content", out var contentElement))
+                {
+                    foreach (var part in contentElement.GetProperty("parts").EnumerateArray())
+                    {
+                        if (part.TryGetProperty("text", out var text) && text.GetString() is string textValue)
+                        {
+                            messageParts.Add(textValue);
+                        }
                     }
                 }
             }

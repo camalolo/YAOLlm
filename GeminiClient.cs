@@ -10,25 +10,28 @@ namespace GeminiDotnet
     public class GeminiClient
     {
         private readonly string _apiKey;
+        private readonly string _tavilyApiKey;
         private readonly List<Dictionary<string, string>> _conversationHistory;
         private readonly object _historyLock = new object();
         private const int MaxHistoryEntries = 32;
         private const string ApiBaseUrl = "https://generativelanguage.googleapis.com/v1beta/models/";
-        private string _model = "gemini-2.5-flash";
+        private string _model = "gemini-3.1-flash-lite-preview";
         private string _currentWindowTitle = "";
 
         public Action<string, string> UpdateChat { get; private set; } = (_, __) => { };
         public Action UpdateHistoryCounter { get; private set; } = () => { };
         public Action<Status> UpdateStatus { get; private set; } = (_) => { }; // Ensure this is called
         public Logger Logger { get; private set; }
+        public string TavilyApiKey => _tavilyApiKey;
 
         public GeminiClient(Logger logger)
         {
             Logger = logger ?? throw new ArgumentNullException(nameof(logger));
             LoadEnvironmentVariables();
             _apiKey = Environment.GetEnvironmentVariable("GEMINI_API_KEY") ?? throw new ArgumentException("GEMINI_API_KEY not set");
+            _tavilyApiKey = Environment.GetEnvironmentVariable("TAVILY_API_KEY") ?? throw new ArgumentException("TAVILY_API_KEY not set");
             _conversationHistory = InitializeConversationHistory();
-            Logger.Log("GeminiClient initialized.");
+            Logger.Log("GeminiClient initialized with Tavily support.");
             UpdateHistoryCounter();
         }
 
@@ -63,7 +66,7 @@ You are an AI assistant with the following guidelines:
 
 ## Core Principles
 - Provide accurate, helpful, and contextually relevant responses. The current application the user is running has this title : {_currentWindowTitle}
-- Use available tools (such as Google Search) when appropriate to enhance response quality.
+- Use available tools (such as Web Search) when appropriate to enhance response quality.
 - Confirm online any information that might have changed since your training cutoff date. Today is {DateTime.Now:yyyy-MM-dd}.
 - Maintain user engagement and immersion, especially in creative or gaming contexts.
 
@@ -73,7 +76,7 @@ You are an AI assistant with the following guidelines:
 - Support multimodal interactions: Process images and handle mixed text/image inputs.
 
 ## Capabilities
-- Access to real-time information via Google Search as often as needed, do not hesitate getting more data sources.
+- Access to real-time information via Web Search as often as needed, do not hesitate getting more data sources.
 - Context-aware responses based on current date and active application.";
         }
 
