@@ -112,35 +112,36 @@ public class OllamaProvider : ILLMProvider
 
             if (!response.IsSuccessful)
             {
-                if (response.ErrorException != null)
-                {
-                    ProviderLogger.LogError(_logger, Name, "SendRequest", response.ErrorException.Message);
-                }
-                else
-                {
-                    ProviderLogger.LogError(_logger, Name, "SendRequest", $"Status: {response.StatusCode}");
-                }
-                return null;
+                ProviderLogger.LogError(_logger, Name, "SendRequestAsync", $"Status: {response.StatusCode}");
+                throw LLMException.CreateWithStatusCode((int)response.StatusCode, response.Content, Name);
             }
 
             if (string.IsNullOrEmpty(response.Content))
             {
-                ProviderLogger.LogError(_logger, Name, "SendRequest", "Empty response");
-                return null;
+                ProviderLogger.LogError(_logger, Name, "SendRequestAsync", "Empty response");
+                throw LLMException.CreateWithMessage("Empty response from server", Name);
             }
 
             ProviderLogger.LogResponse(_logger, Name, response.Content);
-            return JsonSerializer.Deserialize<JsonElement>(response.Content);
+            var responseJson = JsonSerializer.Deserialize<JsonElement>(response.Content);
+            
+            if (responseJson.TryGetProperty("error", out var errorProp))
+            {
+                var errorMsg = errorProp.GetString() ?? "Unknown error";
+                throw LLMException.CreateWithMessage(errorMsg, Name);
+            }
+            
+            return responseJson;
         }
         catch (TaskCanceledException)
         {
             ProviderLogger.LogCancelled(_logger, Name);
-            return null;
+            throw;
         }
         catch (Exception ex)
         {
-            ProviderLogger.LogError(_logger, Name, "SendRequest", ex.Message);
-            return null;
+            ProviderLogger.LogError(_logger, Name, "SendRequestAsync", ex.Message);
+            throw LLMException.CreateWithMessage(ex.Message, Name);
         }
     }
 
@@ -150,6 +151,12 @@ public class OllamaProvider : ILLMProvider
         List<ToolDefinition>? tools,
         CancellationToken cancellationToken)
     {
+        if (response.TryGetProperty("error", out var errorProp))
+        {
+            var errorMsg = errorProp.GetString() ?? "Unknown error";
+            throw LLMException.CreateWithMessage(errorMsg, Name);
+        }
+
         if (!response.TryGetProperty("message", out var message))
         {
             ProviderLogger.LogError(_logger, Name, "ProcessResponse", "No message in response");

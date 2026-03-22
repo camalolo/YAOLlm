@@ -192,7 +192,7 @@ public class GeminiProvider : ILLMProvider
                     if (retry == MaxRetries)
                     {
                         ProviderLogger.LogError(_logger, Name, "rate limit", "Max retries reached");
-                        throw new Exception("Max retries reached for rate limit error");
+                        throw LLMException.CreateWithStatusCode(429, "Max retries reached", Name);
                     }
 
                     int delay = (int)Math.Pow(2, retry) * 1000;
@@ -204,7 +204,7 @@ public class GeminiProvider : ILLMProvider
                 if (content == null)
                 {
                     ProviderLogger.LogError(_logger, Name, "request", $"StatusCode={response.StatusCode}, Error={response.ErrorMessage}");
-                    throw new Exception($"Request failed: {response.StatusCode}");
+                    throw LLMException.CreateWithStatusCode((int)response.StatusCode, response.ErrorMessage ?? $"Status: {response.StatusCode}", Name);
                 }
 
                 return await ExtractResponseAsync(content, originalContents, cancellationToken);
@@ -266,6 +266,14 @@ public class GeminiProvider : ILLMProvider
         {
             var data = JsonSerializer.Deserialize<JsonElement>(content);
 
+            if (data.TryGetProperty("error", out var errorObj))
+            {
+                var errorMsg = errorObj.TryGetProperty("message", out var msg)
+                    ? msg.GetString() ?? "Unknown API error"
+                    : errorObj.GetString() ?? "Unknown API error";
+                throw LLMException.CreateWithMessage(errorMsg, Name);
+            }
+
             if (!data.TryGetProperty("candidates", out var candidates) || !candidates.EnumerateArray().Any())
             {
                 ProviderLogger.LogError(_logger, Name, "ExtractResponseAsync", "No candidates in LLM response");
@@ -277,6 +285,26 @@ public class GeminiProvider : ILLMProvider
 
             foreach (var candidate in candidates.EnumerateArray())
             {
+                var finishReason = candidate.TryGetProperty("finishReason", out var fr)
+                    ? fr.GetString()
+                    : null;
+
+                if (!string.IsNullOrEmpty(finishReason) && finishReason != "STOP" && finishReason != "END_TURN")
+                {
+                    var userMessage = finishReason switch
+                    {
+                        "SAFETY" => "Content blocked by safety filter",
+                        "RECITATION" => "Content blocked (copyright)",
+                        "PROHIBITED" => "Content prohibited",
+                        "BLOCKLIST" => "Content blocked",
+                        "MAX_TOKENS" => "Response truncated (max tokens)",
+                        "MALFORMED_FUNCTION_CALL" => "Tool call error",
+                        "IMAGE_SAFETY" => "Image blocked by safety filter",
+                        _ => $"API error: {finishReason}"
+                    };
+                    throw LLMException.CreateWithMessage(userMessage, Name);
+                }
+
                 if (!candidate.TryGetProperty("content", out var contentElement))
                     continue;
 
@@ -478,6 +506,14 @@ public class GeminiProvider : ILLMProvider
         {
             var data = JsonSerializer.Deserialize<JsonElement>(content);
 
+            if (data.TryGetProperty("error", out var errorObj))
+            {
+                var errorMsg = errorObj.TryGetProperty("message", out var msg)
+                    ? msg.GetString() ?? "Unknown API error"
+                    : errorObj.GetString() ?? "Unknown API error";
+                throw LLMException.CreateWithMessage(errorMsg, Name);
+            }
+
             if (!data.TryGetProperty("candidates", out var candidates))
                 return string.Empty;
 
@@ -485,6 +521,26 @@ public class GeminiProvider : ILLMProvider
 
             foreach (var candidate in candidates.EnumerateArray())
             {
+                var finishReason = candidate.TryGetProperty("finishReason", out var fr)
+                    ? fr.GetString()
+                    : null;
+
+                if (!string.IsNullOrEmpty(finishReason) && finishReason != "STOP" && finishReason != "END_TURN")
+                {
+                    var userMessage = finishReason switch
+                    {
+                        "SAFETY" => "Content blocked by safety filter",
+                        "RECITATION" => "Content blocked (copyright)",
+                        "PROHIBITED" => "Content prohibited",
+                        "BLOCKLIST" => "Content blocked",
+                        "MAX_TOKENS" => "Response truncated (max tokens)",
+                        "MALFORMED_FUNCTION_CALL" => "Tool call error",
+                        "IMAGE_SAFETY" => "Image blocked by safety filter",
+                        _ => $"API error: {finishReason}"
+                    };
+                    throw LLMException.CreateWithMessage(userMessage, Name);
+                }
+
                 if (!candidate.TryGetProperty("content", out var contentElement))
                     continue;
 

@@ -432,10 +432,15 @@ You are an AI assistant with the following guidelines:
                 UpdateHistoryCounter();
                 if (!string.IsNullOrEmpty(response)) UpdateChat(response + "\n", "model");
             }
+            catch (LLMException ex)
+            {
+                _logger.Log($"LLM Error: {ex.Message}");
+                UpdateChat($"❌ {ex.UserMessage}\n", "error");
+            }
             catch (Exception ex)
             {
                 _logger.Log($"Error in ProcessLLMRequestAsync: {ex.Message}");
-                UpdateChat($"Error: {ex.Message}\n", "system");
+                UpdateChat($"❌ {ex.Message}\n", "error");
             }
             finally
             {
@@ -485,6 +490,7 @@ You are an AI assistant with the following guidelines:
                 {
                     "model" => "yellow",
                     "system" => "lightgray",
+                    "error" => "#ff6b6b",
                     _ => "white"
                 };
                 string htmlContent = FormatMarkdownToHtml(message);

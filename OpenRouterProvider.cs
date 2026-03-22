@@ -159,14 +159,14 @@ public class OpenRouterProvider : ILLMProvider
             if (!response.IsSuccessful)
             {
                 var errorMessage = string.IsNullOrEmpty(response.Content)
-                    ? $"OpenRouter API error: {response.StatusCode}"
-                    : $"OpenRouter API error: {response.StatusCode} - {response.Content}";
+                    ? $"Status: {response.StatusCode}"
+                    : response.Content;
                 ProviderLogger.LogError(_logger, Name, "SendWithRetryAsync", errorMessage);
-                throw new Exception(errorMessage);
+                throw LLMException.CreateWithStatusCode((int)response.StatusCode, errorMessage, Name);
             }
 
-            ProviderLogger.LogError(_logger, Name, "SendWithRetryAsync", "OpenRouter API returned empty response");
-            throw new Exception("OpenRouter API returned empty response");
+            ProviderLogger.LogError(_logger, Name, "SendWithRetryAsync", "Empty response from API");
+            throw LLMException.CreateWithMessage("Empty response from API", Name);
         }
     }
 
@@ -184,14 +184,33 @@ public class OpenRouterProvider : ILLMProvider
     private async Task<string> ProcessResponseAsync(string responseContent, object requestBody, CancellationToken cancellationToken)
     {
         var json = JsonNode.Parse(responseContent);
+
+        if (json?["error"] is JsonNode errorNode)
+        {
+            var errorMsg = errorNode["message"]?.ToString()
+                ?? errorNode.ToString();
+            throw LLMException.CreateWithMessage(errorMsg, Name);
+        }
+
         var choices = json?["choices"] as JsonArray;
 
         if (choices == null || choices.Count == 0)
-            throw new Exception("OpenRouter API returned no choices");
+            throw LLMException.CreateWithMessage("Invalid API response: no choices", Name);
 
-        var message = choices[0]?["message"];
+        var choice = choices[0];
+        var finishReason = choice?["finish_reason"]?.ToString();
+        if (finishReason == "content_filter")
+        {
+            throw LLMException.CreateWithMessage("Content blocked by filter", Name);
+        }
+        if (finishReason == "length")
+        {
+            throw LLMException.CreateWithMessage("Response truncated (max tokens)", Name);
+        }
+
+        var message = choice?["message"];
         if (message == null)
-            throw new Exception("OpenRouter API returned no message");
+            throw LLMException.CreateWithMessage("Invalid API response: no message", Name);
 
         var toolCalls = message["tool_calls"] as JsonArray;
 
@@ -209,7 +228,7 @@ public class OpenRouterProvider : ILLMProvider
         var messages = requestBodyDict?["messages"] as List<object>;
 
         if (messages == null)
-            throw new Exception("Failed to reconstruct messages for tool call continuation");
+            throw LLMException.CreateWithMessage("Tool call processing failed", Name);
 
         foreach (var toolCall in toolCalls)
         {

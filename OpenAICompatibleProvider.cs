@@ -124,16 +124,16 @@ public class OpenAICompatibleProvider : ILLMProvider
             if (!response.IsSuccessful)
             {
                 var errorMessage = string.IsNullOrEmpty(response.Content)
-                    ? $"OpenAI-compatible API error: {response.StatusCode}"
-                    : $"OpenAI-compatible API error: {response.StatusCode} - {response.Content}";
+                    ? $"Status: {response.StatusCode}"
+                    : response.Content;
                 ProviderLogger.LogError(_logger, Name, "SendAsync", errorMessage);
-                throw new Exception(errorMessage);
+                throw LLMException.CreateWithStatusCode((int)response.StatusCode, errorMessage, Name);
             }
 
             if (string.IsNullOrEmpty(response.Content))
             {
                 ProviderLogger.LogError(_logger, Name, "SendAsync", "Empty response");
-                throw new Exception("OpenAI-compatible API returned empty response");
+                throw LLMException.CreateWithMessage("Empty response from API", Name);
             }
 
             return await ProcessResponseAsync(response.Content, requestBody, cancellationToken);
@@ -158,14 +158,33 @@ public class OpenAICompatibleProvider : ILLMProvider
         ProviderLogger.LogResponse(_logger, Name, responseContent);
 
         var json = JsonNode.Parse(responseContent);
+
+        if (json?["error"] is JsonNode errorNode)
+        {
+            var errorMsg = errorNode["message"]?.ToString() 
+                ?? errorNode.ToString();
+            throw LLMException.CreateWithMessage(errorMsg, Name);
+        }
+
         var choices = json?["choices"] as JsonArray;
 
         if (choices == null || choices.Count == 0)
-            throw new Exception("OpenAI-compatible API returned no choices");
+            throw LLMException.CreateWithMessage("Invalid API response: no choices", Name);
 
-        var message = choices[0]?["message"];
+        var choice = choices[0];
+        var finishReason = choice?["finish_reason"]?.ToString();
+        if (finishReason == "content_filter")
+        {
+            throw LLMException.CreateWithMessage("Content blocked by filter", Name);
+        }
+        if (finishReason == "length")
+        {
+            throw LLMException.CreateWithMessage("Response truncated (max tokens)", Name);
+        }
+
+        var message = choice?["message"];
         if (message == null)
-            throw new Exception("OpenAI-compatible API returned no message");
+            throw LLMException.CreateWithMessage("Invalid API response: no message", Name);
 
         var toolCalls = message["tool_calls"] as JsonArray;
 
@@ -183,7 +202,7 @@ public class OpenAICompatibleProvider : ILLMProvider
         var messages = requestBodyDict?["messages"] as List<object>;
 
         if (messages == null)
-            throw new Exception("Failed to reconstruct messages for tool call continuation");
+            throw LLMException.CreateWithMessage("Tool call processing failed", Name);
 
         foreach (var toolCall in toolCalls)
         {
