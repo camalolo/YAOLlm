@@ -1,13 +1,20 @@
 using System.IO;
+using System.Runtime.InteropServices;
 using dotenv.net;
 
 namespace YAOLlm
 {
     static class Program
     {
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern bool AllocConsole();
+
         [STAThread]
-        static void Main()
+        static void Main(string[] args)
         {
+            if (args.Contains("--console"))
+                AllocConsole();
+
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
 
