@@ -72,6 +72,8 @@ namespace YAOLlm
                 _statusButton.InvokeIfRequired(() => _statusButton.Text = status.ToString());
             };
 
+            SubscribeToProviderStatus();
+
             _presetManager.PresetChanged += preset =>
             {
                 _providerLabel.InvokeIfRequired(() => _providerLabel.Text = $"[{preset}]");
@@ -223,6 +225,7 @@ namespace YAOLlm
             {
                 _presetManager.CycleNext();
                 _currentProvider = _presetManager.CreateProvider();
+                SubscribeToProviderStatus();
                 _providerLabel.Text = $"[{_presetManager.ActivePreset}]";
                 _presetManager.SaveConfig();
                 return true;
@@ -241,6 +244,15 @@ namespace YAOLlm
                     { "content", GetInitialPrompt() }
                 });
             }
+        }
+
+        private void SubscribeToProviderStatus()
+        {
+            _currentProvider.OnStatusChange += status =>
+            {
+                if (status == "searching")
+                    _statusManager.SetStatus(Status.Searching);
+            };
         }
 
         private string GetInitialPrompt()
@@ -420,7 +432,32 @@ You are an AI assistant with the following guidelines:
                 messages.Add(userMessage);
 
                 var tools = _currentProvider.SupportsWebSearch ? ToolDefinitions.GetAll() : null;
-                string response = await _currentProvider.SendAsync(messages, imageBytes, tools);
+
+                var fullResponse = new StringBuilder();
+                var lastStreamUpdate = DateTime.MinValue;
+                var streamThrottleMs = 50;
+
+                await foreach (var chunk in _currentProvider.StreamAsync(messages, imageBytes, tools))
+                {
+                    if (!string.IsNullOrEmpty(chunk))
+                    {
+                        fullResponse.Append(chunk);
+
+                        if (fullResponse.Length == chunk.Length)
+                        {
+                            _statusManager.SetStatus(Status.Receiving);
+                        }
+
+                        var now = DateTime.UtcNow;
+                        if ((now - lastStreamUpdate).TotalMilliseconds >= streamThrottleMs)
+                        {
+                            UpdateChatStreaming(fullResponse.ToString());
+                            lastStreamUpdate = now;
+                        }
+                    }
+                }
+
+                var response = fullResponse.ToString();
 
                 lock (_historyLock)
                 {
@@ -430,7 +467,11 @@ You are an AI assistant with the following guidelines:
                 }
 
                 UpdateHistoryCounter();
-                if (!string.IsNullOrEmpty(response)) UpdateChat(response + "\n", "model");
+
+                if (!string.IsNullOrEmpty(response))
+                {
+                    UpdateChat(response, "model");
+                }
             }
             catch (LLMException ex)
             {
@@ -498,6 +539,56 @@ You are an AI assistant with the following guidelines:
                 _chatBox.CoreWebView2.NavigateToString(_chatHtml);
                 await _chatBox.CoreWebView2.ExecuteScriptAsync("scrollToBottom()");
                 FocusInputField();
+            });
+        }
+
+        private async void UpdateChatStreaming(string content)
+        {
+            await _chatBox.InvokeIfRequiredAsync(async () =>
+            {
+                if (_chatBox.CoreWebView2 == null) return;
+
+                var escapedContent = content
+                    .Replace("\\", "\\\\")
+                    .Replace("\"", "\\\"")
+                    .Replace("\n", "\\n")
+                    .Replace("\r", "")
+                    .Replace("\t", "\\t");
+
+                var htmlContent = FormatMarkdownToHtml(content);
+                var escapedHtml = htmlContent
+                    .Replace("\\", "\\\\")
+                    .Replace("\"", "\\\"")
+                    .Replace("\n", "\\n")
+                    .Replace("\r", "")
+                    .Replace("\t", "\\t");
+
+                var script = $@"
+                    (function() {{
+                        var body = document.body;
+                        var lastDiv = body.lastElementChild;
+                        if (lastDiv && lastDiv.classList.contains('model')) {{
+                            lastDiv.innerHTML = ""{escapedHtml}"";
+                        }} else {{
+                            var div = document.createElement('div');
+                            div.className = 'model';
+                            div.style.color = 'yellow';
+                            div.style.margin = '10px 0';
+                            div.innerHTML = ""{escapedHtml}"";
+                            body.appendChild(div);
+                        }}
+                        scrollToBottom();
+                    }})();
+";
+
+                try
+                {
+                    await _chatBox.CoreWebView2.ExecuteScriptAsync(script);
+                }
+                catch (Exception ex)
+                {
+                    _logger.Log($"Error updating streaming chat: {ex.Message}");
+                }
             });
         }
 

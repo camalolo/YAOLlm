@@ -5,6 +5,7 @@
         Idle = 0,
         Sending,
         Receiving,
+        Searching,
         Analyzing
     }
 

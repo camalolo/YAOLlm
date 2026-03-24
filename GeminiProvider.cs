@@ -2,6 +2,9 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net;
+using System.Net.Http;
+using System.Runtime.CompilerServices;
+using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -26,6 +29,7 @@ public class GeminiProvider : ILLMProvider
     public bool SupportsWebSearch => false; // Gemini has built-in grounding
 
     public event Func<ToolCall, Task<ToolResult>>? OnToolCall;
+    public event Action<string?>? OnStatusChange;
 
     public GeminiProvider(string model, string apiKey, TavilySearchService searchService, Logger logger)
     {
@@ -52,6 +56,278 @@ public class GeminiProvider : ILLMProvider
 
         ProviderLogger.LogRequest(_logger, Name, _model, history.Count, tools != null && tools.Count > 0);
         return await SendWithRetryAsync(payload, contents, cancellationToken);
+    }
+
+    public async IAsyncEnumerable<string> StreamAsync(
+        List<Dictionary<string, object>> history,
+        byte[]? image = null,
+        List<ToolDefinition>? tools = null,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        if (history == null || history.Count == 0)
+            throw new ArgumentException("History cannot be null or empty", nameof(history));
+
+        var contents = BuildContents(history, image);
+        var toolsPayload = BuildToolsPayload(tools);
+        var payload = new Dictionary<string, object>
+        {
+            ["contents"] = contents,
+            ["generationConfig"] = new { }
+        };
+        if (toolsPayload != null)
+            payload["tools"] = toolsPayload;
+
+        ProviderLogger.LogRequest(_logger, Name, _model, history.Count, tools != null && tools.Count > 0);
+
+        var url = $"{ApiBaseUrl}{_model}:streamGenerateContent?alt=sse&key={_apiKey}";
+
+        using var httpClient = new HttpClient();
+        var jsonPayload = JsonSerializer.Serialize(payload);
+        using var request = new HttpRequestMessage(HttpMethod.Post, url);
+        request.Content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
+
+        using var response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+        response.EnsureSuccessStatusCode();
+
+        using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        using var reader = new StreamReader(stream);
+
+        var fullContent = new StringBuilder();
+        string? line;
+        var pendingToolCalls = new List<ToolCall>();
+
+        while ((line = await reader.ReadLineAsync(cancellationToken)) != null)
+        {
+            if (string.IsNullOrWhiteSpace(line) || !line.StartsWith("data: "))
+                continue;
+
+            var jsonPart = line.Substring(6);
+            if (jsonPart == "[DONE]")
+                break;
+
+            var (textChunks, toolCalls) = ParseStreamChunk(jsonPart);
+            foreach (var chunk in textChunks)
+            {
+                fullContent.Append(chunk);
+                yield return chunk;
+            }
+            pendingToolCalls.AddRange(toolCalls);
+        }
+
+        if (pendingToolCalls.Count > 0)
+        {
+            foreach (var toolCall in pendingToolCalls)
+            {
+                if (toolCall.Name == "web_search")
+                {
+                    OnStatusChange?.Invoke("searching");
+                }
+
+                ToolResult? result = null;
+                if (OnToolCall != null)
+                {
+                    result = await OnToolCall.Invoke(toolCall);
+                }
+                else if (toolCall.Name == "web_search" && _searchService != null)
+                {
+                    var searchResult = await ExecuteWebSearchAsync(toolCall.Arguments ?? new Dictionary<string, object?>());
+                    result = new ToolResult(toolCall.Id, searchResult);
+                }
+
+                OnStatusChange?.Invoke(null);
+
+                if (result != null)
+                {
+                    var toolHistory = new List<Dictionary<string, object>>(history)
+                    {
+                        new() { ["role"] = "user", ["content"] = fullContent.ToString() }
+                    };
+
+                    await foreach (var chunk in StreamWithToolResultAsync(toolHistory, result, tools, cancellationToken))
+                    {
+                        yield return chunk;
+                    }
+                    yield break;
+                }
+            }
+        }
+    }
+
+    private (List<string> textChunks, List<ToolCall> toolCalls) ParseStreamChunk(string jsonPart)
+    {
+        var textChunks = new List<string>();
+        var toolCalls = new List<ToolCall>();
+
+        try
+        {
+            using var doc = JsonDocument.Parse(jsonPart);
+            var root = doc.RootElement;
+
+            if (root.TryGetProperty("candidates", out var candidates) && candidates.GetArrayLength() > 0)
+            {
+                var candidate = candidates[0];
+
+                if (candidate.TryGetProperty("content", out var content) &&
+                    content.TryGetProperty("parts", out var parts))
+                {
+                    foreach (var part in parts.EnumerateArray())
+                    {
+                        if (part.TryGetProperty("text", out var text))
+                        {
+                            var chunk = text.GetString() ?? "";
+                            if (!string.IsNullOrEmpty(chunk))
+                            {
+                                textChunks.Add(chunk);
+                            }
+                        }
+                        else if (part.TryGetProperty("functionCall", out var funcCall))
+                        {
+                            var toolCall = new ToolCall
+                            {
+                                Name = funcCall.GetProperty("name").GetString() ?? "",
+                                Id = Guid.NewGuid().ToString()
+                            };
+                            if (funcCall.TryGetProperty("args", out var args))
+                            {
+                                toolCall.Arguments = new Dictionary<string, object?>();
+                                foreach (var prop in args.EnumerateObject())
+                                {
+                                    toolCall.Arguments[prop.Name] = prop.Value.ValueKind switch
+                                    {
+                                        JsonValueKind.String => prop.Value.GetString(),
+                                        JsonValueKind.Number => prop.Value.GetDouble(),
+                                        JsonValueKind.True => true,
+                                        JsonValueKind.False => false,
+                                        _ => prop.Value.ToString()
+                                    };
+                                }
+                            }
+                            toolCalls.Add(toolCall);
+                        }
+                    }
+                }
+            }
+        }
+        catch (JsonException)
+        {
+        }
+
+        return (textChunks, toolCalls);
+    }
+
+    private async IAsyncEnumerable<string> StreamWithToolResultAsync(
+        List<Dictionary<string, object>> history,
+        ToolResult toolResult,
+        List<ToolDefinition>? tools,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        var toolContents = BuildContents(history, null);
+        var toolContentsList = toolContents.ToList();
+
+        toolContentsList.Add(new
+        {
+            role = "model",
+            parts = new object[]
+            {
+                new
+                {
+                    functionCall = new
+                    {
+                        name = "web_search",
+                        args = new Dictionary<string, object?>()
+                    }
+                }
+            }
+        });
+
+        toolContentsList.Add(new
+        {
+            role = "function",
+            parts = new object[]
+            {
+                new
+                {
+                    functionResponse = new
+                    {
+                        name = "web_search",
+                        response = new { result = toolResult.Content }
+                    }
+                }
+            }
+        });
+
+        var payload = new Dictionary<string, object>
+        {
+            ["contents"] = toolContentsList.ToArray()
+        };
+
+        var toolsPayload = BuildToolsPayload(tools);
+        if (toolsPayload != null)
+            payload["tools"] = toolsPayload;
+
+        var url = $"{ApiBaseUrl}{_model}:streamGenerateContent?alt=sse&key={_apiKey}";
+
+        using var httpClient = new HttpClient();
+        var jsonPayload = JsonSerializer.Serialize(payload);
+        using var request = new HttpRequestMessage(HttpMethod.Post, url);
+        request.Content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
+
+        using var response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+        response.EnsureSuccessStatusCode();
+
+        using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        using var reader = new StreamReader(stream);
+
+        string? line;
+        while ((line = await reader.ReadLineAsync(cancellationToken)) != null)
+        {
+            if (string.IsNullOrWhiteSpace(line) || !line.StartsWith("data: "))
+                continue;
+
+            var jsonPart = line.Substring(6);
+            if (jsonPart == "[DONE]")
+                break;
+
+            var chunks = ParseStreamTextChunk(jsonPart);
+            foreach (var chunk in chunks)
+            {
+                yield return chunk;
+            }
+        }
+    }
+
+    private List<string> ParseStreamTextChunk(string jsonPart)
+    {
+        var chunks = new List<string>();
+        try
+        {
+            using var doc = JsonDocument.Parse(jsonPart);
+            var root = doc.RootElement;
+
+            if (root.TryGetProperty("candidates", out var candidates) && candidates.GetArrayLength() > 0)
+            {
+                var candidate = candidates[0];
+                if (candidate.TryGetProperty("content", out var content) &&
+                    content.TryGetProperty("parts", out var parts))
+                {
+                    foreach (var part in parts.EnumerateArray())
+                    {
+                        if (part.TryGetProperty("text", out var text))
+                        {
+                            var chunk = text.GetString() ?? "";
+                            if (!string.IsNullOrEmpty(chunk))
+                            {
+                                chunks.Add(chunk);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        catch (JsonException)
+        {
+        }
+        return chunks;
     }
 
     private object[] BuildContents(List<Dictionary<string, object>> history, byte[]? image)
@@ -425,8 +701,10 @@ public class GeminiProvider : ILLMProvider
                 return "Error: Missing query parameter";
             }
 
+            OnStatusChange?.Invoke("searching");
             ProviderLogger.LogToolExecution(_logger, Name, "web_search");
             var result = await _searchService.SearchAsync(query, maxResults);
+            OnStatusChange?.Invoke(null);
             ProviderLogger.LogToolResult(_logger, Name, "web_search", result);
             return result;
         }
