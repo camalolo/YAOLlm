@@ -91,330 +91,6 @@ public class OpenRouterProvider : BaseLLMProvider
         return await base.ExecuteToolCallAsync(toolCall, toolHandlers, searchService);
     }
 
-    private Dictionary<string, object> BuildStreamingRequestBody(List<object> messages, List<ToolDefinition>? tools)
-    {
-        var body = new Dictionary<string, object>
-        {
-            ["model"] = Model,
-            ["messages"] = messages,
-            ["stream"] = true
-        };
-
-        if (tools != null && tools.Count > 0)
-        {
-            body["tools"] = tools.Select(t => new
-            {
-                type = "function",
-                function = new
-                {
-                    name = t.Name,
-                    description = t.Description,
-                    parameters = t.Parameters
-                }
-            }).ToList();
-        }
-
-        return body;
-    }
-
-    private async IAsyncEnumerable<string> StreamWithRetryAsync(
-        Dictionary<string, object> requestBody,
-        [EnumeratorCancellation] CancellationToken cancellationToken)
-    {
-        int retryCount = 0;
-
-        while (true)
-        {
-            StreamResult? result = null;
-            try
-            {
-                result = await ExecuteStreamRequestAsync(requestBody, cancellationToken);
-            }
-            catch (OperationCanceledException)
-            {
-                LogCancelled();
-                throw;
-            }
-            catch (HttpRequestException) when (retryCount < MaxRetries)
-            {
-                retryCount++;
-                LogRetry(retryCount, MaxRetries, RetryDelayMs);
-                await Task.Delay(RetryDelayMs * retryCount, cancellationToken);
-                continue;
-            }
-
-            if (result == null)
-            {
-                yield break;
-            }
-
-            if (result.Retry)
-            {
-                retryCount++;
-                LogRetry(retryCount, MaxRetries, RetryDelayMs);
-                await Task.Delay(RetryDelayMs * retryCount, cancellationToken);
-                continue;
-            }
-
-            foreach (var chunk in result.Chunks)
-            {
-                yield return chunk;
-            }
-
-            if (result.FollowUpRequest != null)
-            {
-                await foreach (var chunk in StreamWithRetryAsync(result.FollowUpRequest, cancellationToken))
-                {
-                    yield return chunk;
-                }
-            }
-
-            yield break;
-        }
-    }
-
-    private async Task<StreamResult?> ExecuteStreamRequestAsync(
-        Dictionary<string, object> requestBody,
-        CancellationToken cancellationToken)
-    {
-        var chunks = new List<string>();
-        var fullContent = new StringBuilder();
-        var toolCalls = new Dictionary<int, ToolCallBuilder>();
-        bool hasToolCalls = false;
-        int chunkIndex = 0;
-
-        using var httpClient = new HttpClient();
-        httpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {_apiKey}");
-        httpClient.DefaultRequestHeaders.Add("HTTP-Referer", DefaultReferer);
-        httpClient.DefaultRequestHeaders.Add("X-Title", DefaultTitle);
-
-        var jsonPayload = JsonSerializer.Serialize(requestBody);
-        using var request = new HttpRequestMessage(HttpMethod.Post, ApiUrl);
-        request.Content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
-
-        using var response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-
-        if (!response.IsSuccessStatusCode)
-        {
-            var errorContent = await response.Content.ReadAsStringAsync(cancellationToken);
-
-            if ((int)response.StatusCode == 429)
-            {
-                return new StreamResult { Retry = true };
-            }
-
-            throw LLMException.CreateWithStatusCode((int)response.StatusCode, errorContent, Name);
-        }
-
-        using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
-        using var reader = new StreamReader(stream);
-
-        string? line;
-        while ((line = await reader.ReadLineAsync(cancellationToken)) != null)
-        {
-            if (string.IsNullOrWhiteSpace(line))
-            {
-                LogSseLineSkipped("empty line");
-                continue;
-            }
-            if (!line.StartsWith("data: "))
-            {
-                LogSseLineSkipped($"no data prefix: {line.Substring(0, Math.Min(20, line.Length))}");
-                continue;
-            }
-
-            var jsonPart = line.Substring(6);
-            LogSseLineReceived(jsonPart);
-            if (jsonPart == "[DONE]")
-                break;
-
-            try
-            {
-                using var doc = JsonDocument.Parse(jsonPart);
-                var root = doc.RootElement;
-
-                if (root.TryGetProperty("choices", out var choices) && choices.GetArrayLength() > 0)
-                {
-                    var choice = choices[0];
-
-                    if (choice.TryGetProperty("finish_reason", out var finishReason) &&
-                        finishReason.GetString() == "tool_calls")
-                    {
-                        hasToolCalls = true;
-                    }
-
-                    if (choice.TryGetProperty("delta", out var delta))
-                    {
-                        if (delta.TryGetProperty("content", out var content) &&
-                            content.ValueKind != JsonValueKind.Null)
-                        {
-                            var chunk = content.GetString() ?? "";
-                            if (!string.IsNullOrEmpty(chunk))
-                            {
-                                fullContent.Append(chunk);
-                                chunks.Add(chunk);
-                                chunkIndex++;
-                                LogStreamChunk(chunkIndex, chunk);
-                            }
-                        }
-
-                        if (delta.TryGetProperty("tool_calls", out var toolCallsDelta))
-                        {
-                            foreach (var tc in toolCallsDelta.EnumerateArray())
-                            {
-                                var index = tc.TryGetProperty("index", out var idx) ? idx.GetInt32() : 0;
-
-                                if (!toolCalls.TryGetValue(index, out var builder))
-                                {
-                                    builder = new ToolCallBuilder();
-                                    toolCalls[index] = builder;
-                                }
-
-                                if (tc.TryGetProperty("id", out var id) && id.ValueKind != JsonValueKind.Null)
-                                    builder.Id = id.GetString() ?? "";
-
-                                if (tc.TryGetProperty("function", out var func))
-                                {
-                                    if (func.TryGetProperty("name", out var name) && name.ValueKind != JsonValueKind.Null)
-                                        builder.Name = name.GetString() ?? "";
-
-                                    if (func.TryGetProperty("arguments", out var args) && args.ValueKind != JsonValueKind.Null)
-                                        builder.Arguments += args.GetString() ?? "";
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            catch (JsonException ex)
-            {
-                LogJsonParseError(jsonPart, ex.Message);
-            }
-        }
-
-        LogStreamComplete(chunks.Count, toolCalls.Count);
-
-        if (hasToolCalls && toolCalls.Count > 0)
-        {
-            var completedToolCalls = toolCalls.OrderBy(kv => kv.Key)
-                .Select(kv => new ToolCall
-                {
-                    Id = kv.Value.Id,
-                    Name = kv.Value.Name,
-                    Arguments = string.IsNullOrEmpty(kv.Value.Arguments)
-                        ? new Dictionary<string, object?>()
-                        : JsonSerializer.Deserialize<Dictionary<string, object?>>(kv.Value.Arguments)
-                          ?? new Dictionary<string, object?>()
-                })
-                .ToList();
-
-            foreach (var toolCall in completedToolCalls)
-            {
-                if (toolCall.Name == "web_search")
-                {
-                    RaiseOnStatusChange("searching");
-                }
-
-                ToolResult? result = await RaiseOnToolCallAsync(toolCall);
-
-                if (result == null && toolCall.Name == "web_search" && _searchService != null)
-                {
-                    result = await ExecuteToolCallForStreamAsync(toolCall);
-                }
-
-                RaiseOnStatusChange(null);
-
-                if (result != null)
-                {
-                    var messages = (List<object>)requestBody["messages"];
-                    var newMessages = new List<object>(messages);
-
-                    newMessages.Add(new
-                    {
-                        role = "assistant",
-                        content = fullContent.ToString() ?? "",
-                        tool_calls = completedToolCalls.Select(tc => new
-                        {
-                            id = tc.Id,
-                            type = "function",
-                            function = new
-                            {
-                                name = tc.Name,
-                                arguments = tc.Arguments.Count > 0
-                                    ? JsonSerializer.Serialize(tc.Arguments)
-                                    : "{}"
-                            }
-                        }).ToArray()
-                    });
-
-                    newMessages.Add(new
-                    {
-                        role = "tool",
-                        tool_call_id = toolCall.Id,
-                        content = result.Content
-                    });
-
-                    requestBody["messages"] = newMessages;
-
-                    return new StreamResult
-                    {
-                        Chunks = chunks,
-                        FollowUpRequest = requestBody
-                    };
-                }
-            }
-        }
-
-        return new StreamResult { Chunks = chunks };
-    }
-
-    private async Task<ToolResult> ExecuteToolCallForStreamAsync(ToolCall toolCall)
-    {
-        if (toolCall.Name == "web_search" && _searchService != null)
-        {
-            var query = toolCall.Arguments.TryGetValue("query", out var queryObj) ? queryObj?.ToString() : null;
-            var maxResults = toolCall.Arguments.TryGetValue("max_results", out var maxResultsObj) && maxResultsObj is int max
-                ? max
-                : 5;
-
-            if (string.IsNullOrEmpty(query))
-            {
-                LogError("web_search", "Missing query parameter");
-                return new ToolResult(toolCall.Id, "Error: Missing query parameter", isError: true);
-            }
-
-            try
-            {
-                LogToolExecution("web_search");
-                var result = await _searchService.SearchAsync(query, maxResults);
-                LogToolResult("web_search", result);
-                return new ToolResult(toolCall.Id, result);
-            }
-            catch (Exception ex)
-            {
-                LogError("web_search", ex.Message);
-                return new ToolResult(toolCall.Id, $"Error executing web search: {ex.Message}", isError: true);
-            }
-        }
-
-        LogError("ExecuteToolCallForStreamAsync", $"No handler for tool: {toolCall.Name}");
-        return new ToolResult(toolCall.Id, $"No handler for tool: {toolCall.Name}", isError: true);
-    }
-
-    private class StreamResult
-    {
-        public List<string> Chunks { get; set; } = new();
-        public bool Retry { get; set; }
-        public Dictionary<string, object>? FollowUpRequest { get; set; }
-    }
-
-    private class ToolCallBuilder
-    {
-        public string Id { get; set; } = "";
-        public string Name { get; set; } = "";
-        public string Arguments { get; set; } = "";
-    }
-
     private List<object> BuildMessages(List<Dictionary<string, object>> history, byte[]? image)
     {
         var messages = new List<object>();
@@ -454,7 +130,380 @@ public class OpenRouterProvider : BaseLLMProvider
         return messages;
     }
 
-    private object BuildRequestBody(List<object> messages, List<ToolDefinition>? tools)
+    private Dictionary<string, object> BuildStreamingRequestBody(List<object> messages, List<ToolDefinition>? tools)
+    {
+        var body = new Dictionary<string, object>
+        {
+            ["model"] = Model,
+            ["messages"] = messages,
+            ["stream"] = true
+        };
+
+        if (tools != null && tools.Count > 0)
+        {
+            body["tools"] = tools.Select(t => new
+            {
+                type = "function",
+                function = new
+                {
+                    name = t.Name,
+                    description = t.Description,
+                    parameters = t.Parameters
+                }
+            }).ToList();
+        }
+
+        return body;
+    }
+
+    private async IAsyncEnumerable<string> StreamWithRetryAsync(
+        Dictionary<string, object> requestBody,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        int retryCount = 0;
+
+        while (true)
+        {
+            var (response, shouldRetry, error) = await TrySendStreamRequestAsync(requestBody, retryCount, cancellationToken);
+
+            if (shouldRetry)
+            {
+                retryCount++;
+                LogRetry(retryCount, MaxRetries, RetryDelayMs);
+                await Task.Delay(RetryDelayMs * retryCount, cancellationToken);
+                continue;
+            }
+
+            if (error != null)
+            {
+                throw error;
+            }
+
+            var state = new StreamingState();
+            await foreach (var chunk in StreamFromResponseAsync(response!, requestBody, state, cancellationToken))
+            {
+                yield return chunk;
+            }
+
+            if (state.FollowUpRequest != null)
+            {
+                requestBody = state.FollowUpRequest;
+                retryCount = 0;
+                continue;
+            }
+
+            yield break;
+        }
+    }
+
+    private async Task<(HttpResponseMessage? Response, bool ShouldRetry, Exception? Error)> TrySendStreamRequestAsync(
+        Dictionary<string, object> requestBody,
+        int currentRetryCount,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var httpClient = new HttpClient();
+            httpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {_apiKey}");
+            httpClient.DefaultRequestHeaders.Add("HTTP-Referer", DefaultReferer);
+            httpClient.DefaultRequestHeaders.Add("X-Title", DefaultTitle);
+
+            var jsonPayload = JsonSerializer.Serialize(requestBody);
+            var request = new HttpRequestMessage(HttpMethod.Post, ApiUrl);
+            request.Content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
+
+            var response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                var errorContent = await response.Content.ReadAsStringAsync(cancellationToken);
+
+                if ((int)response.StatusCode == 429 && currentRetryCount < MaxRetries)
+                {
+                    response.Dispose();
+                    return (null, true, null);
+                }
+
+                var exception = LLMException.CreateWithStatusCode((int)response.StatusCode, errorContent, Name);
+                response.Dispose();
+                return (null, false, exception);
+            }
+
+            return (response, false, null);
+        }
+        catch (OperationCanceledException)
+        {
+            LogCancelled();
+            throw;
+        }
+        catch (HttpRequestException) when (currentRetryCount < MaxRetries)
+        {
+            return (null, true, null);
+        }
+    }
+
+    private async IAsyncEnumerable<string> StreamFromResponseAsync(
+        HttpResponseMessage response,
+        Dictionary<string, object> requestBody,
+        StreamingState state,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        using (response)
+        {
+            var toolCalls = new Dictionary<int, ToolCallBuilder>();
+            bool hasToolCalls = false;
+            int chunkIndex = 0;
+
+            using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+            using var reader = new StreamReader(stream);
+
+            string? line;
+            while ((line = await reader.ReadLineAsync(cancellationToken)) != null)
+            {
+                if (string.IsNullOrWhiteSpace(line))
+                {
+                    LogSseLineSkipped("empty line");
+                    continue;
+                }
+                if (!line.StartsWith("data: "))
+                {
+                    LogSseLineSkipped($"no data prefix: {line.Substring(0, Math.Min(20, line.Length))}");
+                    continue;
+                }
+
+                var jsonPart = line.Substring(6);
+                LogSseLineReceived(jsonPart);
+                if (jsonPart == "[DONE]")
+                    break;
+
+                var parseResult = TryParseStreamChunk(jsonPart);
+                if (parseResult.Error != null)
+                {
+                    LogJsonParseError(jsonPart, parseResult.Error);
+                    continue;
+                }
+
+                if (parseResult.HasToolCallsFinish)
+                {
+                    hasToolCalls = true;
+                }
+
+                if (!string.IsNullOrEmpty(parseResult.Chunk))
+                {
+                    state.FullContent.Append(parseResult.Chunk);
+                    chunkIndex++;
+                    LogStreamChunk(chunkIndex, parseResult.Chunk);
+                    yield return parseResult.Chunk;
+                }
+
+                foreach (var tc in parseResult.ToolCallDeltas)
+                {
+                    if (!toolCalls.TryGetValue(tc.Index, out var builder))
+                    {
+                        builder = new ToolCallBuilder();
+                        toolCalls[tc.Index] = builder;
+                    }
+
+                    if (!string.IsNullOrEmpty(tc.Id))
+                        builder.Id = tc.Id;
+
+                    if (!string.IsNullOrEmpty(tc.Name))
+                        builder.Name = tc.Name;
+
+                    if (!string.IsNullOrEmpty(tc.Arguments))
+                        builder.Arguments += tc.Arguments;
+                }
+            }
+
+            LogStreamComplete(chunkIndex, toolCalls.Count);
+
+            if (hasToolCalls && toolCalls.Count > 0)
+            {
+                var completedToolCalls = toolCalls.OrderBy(kv => kv.Key)
+                    .Select(kv => new ToolCall
+                    {
+                        Id = kv.Value.Id,
+                        Name = kv.Value.Name,
+                        Arguments = string.IsNullOrEmpty(kv.Value.Arguments)
+                            ? new Dictionary<string, object?>()
+                            : JsonSerializer.Deserialize<Dictionary<string, object?>>(kv.Value.Arguments)
+                              ?? new Dictionary<string, object?>()
+                    })
+                    .ToList();
+
+                foreach (var toolCall in completedToolCalls)
+                {
+                    if (toolCall.Name == "web_search")
+                    {
+                        RaiseOnStatusChange("searching");
+                    }
+
+                    ToolResult? result = await RaiseOnToolCallAsync(toolCall);
+
+                    if (result == null && toolCall.Name == "web_search" && _searchService != null)
+                    {
+                        var query = toolCall.Arguments.TryGetValue("query", out var queryObj) ? queryObj?.ToString() : null;
+                        var maxResults = toolCall.Arguments.TryGetValue("max_results", out var maxResultsObj) && maxResultsObj is int max
+                            ? max
+                            : 5;
+
+                        if (string.IsNullOrEmpty(query))
+                        {
+                            LogError("web_search", "Missing query parameter");
+                            result = new ToolResult(toolCall.Id, "Error: Missing query parameter", isError: true);
+                        }
+                        else
+                        {
+                            try
+                            {
+                                LogToolExecution("web_search");
+                                var searchResult = await _searchService.SearchAsync(query, maxResults);
+                                LogToolResult("web_search", searchResult);
+                                result = new ToolResult(toolCall.Id, searchResult);
+                            }
+                            catch (Exception ex)
+                            {
+                                LogError("web_search", ex.Message);
+                                result = new ToolResult(toolCall.Id, $"Error executing web search: {ex.Message}", isError: true);
+                            }
+                        }
+                    }
+
+                    RaiseOnStatusChange(null);
+
+                    if (result != null)
+                    {
+                        var messages = (List<object>)requestBody["messages"];
+                        var newMessages = new List<object>(messages);
+
+                        newMessages.Add(new
+                        {
+                            role = "assistant",
+                            content = state.FullContent.ToString() ?? "",
+                            tool_calls = completedToolCalls.Select(tc => new
+                            {
+                                id = tc.Id,
+                                type = "function",
+                                function = new
+                                {
+                                    name = tc.Name,
+                                    arguments = tc.Arguments.Count > 0
+                                        ? JsonSerializer.Serialize(tc.Arguments)
+                                        : "{}"
+                                }
+                            }).ToArray()
+                        });
+
+                        newMessages.Add(new
+                        {
+                            role = "tool",
+                            tool_call_id = toolCall.Id,
+                            content = result.Content
+                        });
+
+                        state.FollowUpRequest = new Dictionary<string, object>(requestBody)
+                        {
+                            ["messages"] = newMessages
+                        };
+                        yield break;
+                    }
+                }
+            }
+        }
+    }
+
+    private class StreamingState
+    {
+        public StringBuilder FullContent { get; } = new();
+        public Dictionary<string, object>? FollowUpRequest { get; set; }
+    }
+
+    private class ToolCallBuilder
+    {
+        public string Id { get; set; } = "";
+        public string Name { get; set; } = "";
+        public string Arguments { get; set; } = "";
+    }
+
+    private class ToolCallDelta
+    {
+        public int Index { get; set; }
+        public string? Id { get; set; }
+        public string? Name { get; set; }
+        public string? Arguments { get; set; }
+    }
+
+    private class StreamChunkParseResult
+    {
+        public string? Error { get; set; }
+        public string? Chunk { get; set; }
+        public bool HasToolCallsFinish { get; set; }
+        public List<ToolCallDelta> ToolCallDeltas { get; } = new();
+    }
+
+    private StreamChunkParseResult TryParseStreamChunk(string jsonPart)
+    {
+        var result = new StreamChunkParseResult();
+
+        try
+        {
+            using var doc = JsonDocument.Parse(jsonPart);
+            var root = doc.RootElement;
+
+            if (root.TryGetProperty("choices", out var choices) && choices.GetArrayLength() > 0)
+            {
+                var choice = choices[0];
+
+                if (choice.TryGetProperty("finish_reason", out var finishReason) &&
+                    finishReason.GetString() == "tool_calls")
+                {
+                    result.HasToolCallsFinish = true;
+                }
+
+                if (choice.TryGetProperty("delta", out var delta))
+                {
+                    if (delta.TryGetProperty("content", out var content) &&
+                        content.ValueKind != JsonValueKind.Null)
+                    {
+                        result.Chunk = content.GetString() ?? "";
+                    }
+
+                    if (delta.TryGetProperty("tool_calls", out var toolCallsDelta))
+                    {
+                        foreach (var tc in toolCallsDelta.EnumerateArray())
+                        {
+                            var deltaInfo = new ToolCallDelta
+                            {
+                                Index = tc.TryGetProperty("index", out var idx) ? idx.GetInt32() : 0
+                            };
+
+                            if (tc.TryGetProperty("id", out var id) && id.ValueKind != JsonValueKind.Null)
+                                deltaInfo.Id = id.GetString() ?? "";
+
+                            if (tc.TryGetProperty("function", out var func))
+                            {
+                                if (func.TryGetProperty("name", out var name) && name.ValueKind != JsonValueKind.Null)
+                                    deltaInfo.Name = name.GetString() ?? "";
+
+                                if (func.TryGetProperty("arguments", out var args) && args.ValueKind != JsonValueKind.Null)
+                                    deltaInfo.Arguments = args.GetString() ?? "";
+                            }
+
+                            result.ToolCallDeltas.Add(deltaInfo);
+                        }
+                    }
+                }
+            }
+        }
+        catch (JsonException ex)
+        {
+            result.Error = ex.Message;
+        }
+
+        return result;
+    }
+
+    private Dictionary<string, object> BuildRequestBody(List<object> messages, List<ToolDefinition>? tools)
     {
         var body = new Dictionary<string, object>
         {

@@ -103,247 +103,227 @@ public class OpenAICompatibleProvider : BaseLLMProvider
         const int maxRetries = 3;
         const int retryDelayMs = 1000;
 
-        while (true)
+        HttpResponseMessage? response = null;
+        HttpRequestMessage? request = null;
+
+        while (response == null)
         {
-            StreamResult? result = null;
-            Exception? caughtException = null;
+            request?.Dispose();
 
             try
             {
-                result = await ProcessStreamAsync(requestBody, cancellationToken);
+                var jsonPayload = JsonSerializer.Serialize(requestBody);
+                request = new HttpRequestMessage(HttpMethod.Post, $"{_baseUrl}/v1/chat/completions");
+                request.Content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
+
+                var resp = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+
+                if (!resp.IsSuccessStatusCode)
+                {
+                    var errorContent = await resp.Content.ReadAsStringAsync(cancellationToken);
+                    var ex = LLMException.CreateWithStatusCode((int)resp.StatusCode, errorContent, Name);
+
+                    if (ex.StatusCode == 429 && retryCount < maxRetries)
+                    {
+                        resp.Dispose();
+                        retryCount++;
+                        LogRetry(retryCount, maxRetries, retryDelayMs);
+                        await Task.Delay(retryDelayMs * retryCount, cancellationToken);
+                        continue;
+                    }
+
+                    request.Dispose();
+                    throw ex;
+                }
+
+                response = resp;
             }
             catch (OperationCanceledException)
             {
+                request?.Dispose();
                 LogCancelled();
                 throw;
             }
-            catch (HttpRequestException ex) when (retryCount < maxRetries)
-            {
-                caughtException = ex;
-            }
-            catch (LLMException ex) when (ex.StatusCode == 429 && retryCount < maxRetries)
-            {
-                caughtException = ex;
-            }
-
-            if (caughtException != null)
+            catch (HttpRequestException) when (retryCount < maxRetries)
             {
                 retryCount++;
                 LogRetry(retryCount, maxRetries, retryDelayMs);
                 await Task.Delay(retryDelayMs * retryCount, cancellationToken);
-                continue;
             }
+        }
 
-            if (result != null)
+        using (request!)
+        using (response)
+        {
+            using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+            using var reader = new StreamReader(stream);
+
+            var fullContent = new StringBuilder();
+            var toolCalls = new Dictionary<int, ToolCallBuilder>();
+            bool hasToolCalls = false;
+            int chunkIndex = 0;
+
+            string? line;
+            while ((line = await reader.ReadLineAsync(cancellationToken)) != null)
             {
-                foreach (var chunk in result.Chunks)
+                if (string.IsNullOrWhiteSpace(line))
                 {
-                    yield return chunk;
+                    LogSseLineSkipped("empty line");
+                    continue;
+                }
+                if (!line.StartsWith("data: "))
+                {
+                    LogSseLineSkipped($"no data prefix: {line.Substring(0, Math.Min(20, line.Length))}");
+                    continue;
                 }
 
-                if (result.ToolCalls != null && result.ToolCalls.Count > 0 && result.HasToolCalls)
+                var jsonPart = line.Substring(6);
+                LogSseLineReceived(jsonPart);
+
+                if (jsonPart == "[DONE]")
+                    break;
+
+                string? chunkToYield = null;
+
+                try
                 {
-                    foreach (var toolCall in result.ToolCalls)
+                    using var doc = JsonDocument.Parse(jsonPart);
+                    var root = doc.RootElement;
+
+                    if (root.TryGetProperty("choices", out var choices) && choices.GetArrayLength() > 0)
                     {
-                        if (toolCall.Name == "web_search")
+                        var choice = choices[0];
+
+                        if (choice.TryGetProperty("finish_reason", out var finishReason) &&
+                            finishReason.GetString() == "tool_calls")
                         {
-                            RaiseOnStatusChange("searching");
+                            hasToolCalls = true;
                         }
 
-                        ToolResult? toolResult = await RaiseOnToolCallAsync(toolCall);
-
-                        if (toolResult == null && toolCall.Name == "web_search" && _searchService != null)
+                        if (choice.TryGetProperty("delta", out var delta))
                         {
-                            toolResult = await ExecuteWebSearchToolAsync(toolCall);
-                        }
-
-                        RaiseOnStatusChange(null);
-
-                        if (toolResult != null)
-                        {
-                            var messages = (List<object>)requestBody["messages"];
-                            var newMessages = new List<object>(messages);
-
-                            newMessages.Add(new
+                            if (delta.TryGetProperty("content", out var content) &&
+                                content.ValueKind != JsonValueKind.Null)
                             {
-                                role = "assistant",
-                                content = result.FullContent ?? "",
-                                tool_calls = result.ToolCalls.Select(tc => new
+                                chunkToYield = content.GetString() ?? "";
+                            }
+
+                            if (delta.TryGetProperty("tool_calls", out var toolCallsDelta))
+                            {
+                                foreach (var tc in toolCallsDelta.EnumerateArray())
                                 {
-                                    id = tc.Id,
-                                    type = "function",
-                                    function = new
+                                    var index = tc.TryGetProperty("index", out var idx) ? idx.GetInt32() : 0;
+
+                                    if (!toolCalls.TryGetValue(index, out var builder))
                                     {
-                                        name = tc.Name,
-                                        arguments = tc.Arguments.Count > 0
-                                            ? JsonSerializer.Serialize(tc.Arguments)
-                                            : "{}"
+                                        builder = new ToolCallBuilder();
+                                        toolCalls[index] = builder;
                                     }
-                                }).ToArray()
-                            });
 
-                            newMessages.Add(new
-                            {
-                                role = "tool",
-                                tool_call_id = toolCall.Id,
-                                content = toolResult.Content
-                            });
+                                    if (tc.TryGetProperty("id", out var id) && id.ValueKind != JsonValueKind.Null)
+                                        builder.Id = id.GetString() ?? "";
 
-                            requestBody["messages"] = newMessages;
+                                    if (tc.TryGetProperty("function", out var func))
+                                    {
+                                        if (func.TryGetProperty("name", out var name) && name.ValueKind != JsonValueKind.Null)
+                                            builder.Name = name.GetString() ?? "";
 
-                            await foreach (var chunk in StreamWithRetryAsync(requestBody, cancellationToken))
-                            {
-                                yield return chunk;
-                            }
-                            yield break;
-                        }
-                    }
-                }
-            }
-
-            yield break;
-        }
-    }
-
-    private async Task<StreamResult> ProcessStreamAsync(
-        Dictionary<string, object> requestBody,
-        CancellationToken cancellationToken)
-    {
-        var chunks = new List<string>();
-        var fullContent = new StringBuilder();
-        var toolCalls = new Dictionary<int, ToolCallBuilder>();
-        bool hasToolCalls = false;
-        int chunkIndex = 0;
-
-        var jsonPayload = JsonSerializer.Serialize(requestBody);
-        using var request = new HttpRequestMessage(HttpMethod.Post, $"{_baseUrl}/v1/chat/completions");
-        request.Content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
-
-        using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-
-        if (!response.IsSuccessStatusCode)
-        {
-            var errorContent = await response.Content.ReadAsStringAsync(cancellationToken);
-            throw LLMException.CreateWithStatusCode((int)response.StatusCode, errorContent, Name);
-        }
-
-        using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
-        using var reader = new StreamReader(stream);
-
-        string? line;
-        while ((line = await reader.ReadLineAsync(cancellationToken)) != null)
-        {
-            if (string.IsNullOrWhiteSpace(line))
-            {
-                LogSseLineSkipped("empty line");
-                continue;
-            }
-            if (!line.StartsWith("data: "))
-            {
-                LogSseLineSkipped($"no data prefix: {line.Substring(0, Math.Min(20, line.Length))}");
-                continue;
-            }
-
-            var jsonPart = line.Substring(6);
-            LogSseLineReceived(jsonPart);
-
-            if (jsonPart == "[DONE]")
-                break;
-
-            try
-            {
-                using var doc = JsonDocument.Parse(jsonPart);
-                var root = doc.RootElement;
-
-                if (root.TryGetProperty("choices", out var choices) && choices.GetArrayLength() > 0)
-                {
-                    var choice = choices[0];
-
-                    if (choice.TryGetProperty("finish_reason", out var finishReason) &&
-                        finishReason.GetString() == "tool_calls")
-                    {
-                        hasToolCalls = true;
-                    }
-
-                    if (choice.TryGetProperty("delta", out var delta))
-                    {
-                        if (delta.TryGetProperty("content", out var content) &&
-                            content.ValueKind != JsonValueKind.Null)
-                        {
-                            var chunk = content.GetString() ?? "";
-                            if (!string.IsNullOrEmpty(chunk))
-                            {
-                                fullContent.Append(chunk);
-                                chunks.Add(chunk);
-                                chunkIndex++;
-                                LogStreamChunk(chunkIndex, chunk);
-                            }
-                        }
-
-                        if (delta.TryGetProperty("tool_calls", out var toolCallsDelta))
-                        {
-                            foreach (var tc in toolCallsDelta.EnumerateArray())
-                            {
-                                var index = tc.TryGetProperty("index", out var idx) ? idx.GetInt32() : 0;
-
-                                if (!toolCalls.TryGetValue(index, out var builder))
-                                {
-                                    builder = new ToolCallBuilder();
-                                    toolCalls[index] = builder;
-                                }
-
-                                if (tc.TryGetProperty("id", out var id) && id.ValueKind != JsonValueKind.Null)
-                                    builder.Id = id.GetString() ?? "";
-
-                                if (tc.TryGetProperty("function", out var func))
-                                {
-                                    if (func.TryGetProperty("name", out var name) && name.ValueKind != JsonValueKind.Null)
-                                        builder.Name = name.GetString() ?? "";
-
-                                    if (func.TryGetProperty("arguments", out var args) && args.ValueKind != JsonValueKind.Null)
-                                        builder.Arguments += args.GetString() ?? "";
+                                        if (func.TryGetProperty("arguments", out var args) && args.ValueKind != JsonValueKind.Null)
+                                            builder.Arguments += args.GetString() ?? "";
+                                    }
                                 }
                             }
                         }
                     }
                 }
+                catch (JsonException ex)
+                {
+                    LogJsonParseError(jsonPart, ex.Message);
+                }
+
+                if (!string.IsNullOrEmpty(chunkToYield))
+                {
+                    fullContent.Append(chunkToYield);
+                    chunkIndex++;
+                    LogStreamChunk(chunkIndex, chunkToYield);
+                    yield return chunkToYield;
+                }
             }
-            catch (JsonException ex)
+
+            LogStreamComplete(chunkIndex, toolCalls.Count);
+
+            var completedToolCalls = toolCalls.Count > 0
+                ? toolCalls.OrderBy(kv => kv.Key)
+                    .Select(kv => new ToolCall
+                    {
+                        Id = kv.Value.Id,
+                        Name = kv.Value.Name,
+                        Arguments = string.IsNullOrEmpty(kv.Value.Arguments)
+                            ? new Dictionary<string, object?>()
+                            : DeserializeArguments(kv.Value.Arguments)
+                    })
+                    .ToList()
+                : null;
+
+            if (completedToolCalls != null && completedToolCalls.Count > 0 && hasToolCalls)
             {
-                LogJsonParseError(jsonPart, ex.Message);
+                foreach (var toolCall in completedToolCalls)
+                {
+                    if (toolCall.Name == "web_search")
+                    {
+                        RaiseOnStatusChange("searching");
+                    }
+
+                    ToolResult? toolResult = await RaiseOnToolCallAsync(toolCall);
+
+                    if (toolResult == null && toolCall.Name == "web_search" && _searchService != null)
+                    {
+                        toolResult = await ExecuteWebSearchToolAsync(toolCall);
+                    }
+
+                    RaiseOnStatusChange(null);
+
+                    if (toolResult != null)
+                    {
+                        var messages = (List<object>)requestBody["messages"];
+                        var newMessages = new List<object>(messages);
+
+                        newMessages.Add(new
+                        {
+                            role = "assistant",
+                            content = fullContent.ToString(),
+                            tool_calls = completedToolCalls.Select(tc => new
+                            {
+                                id = tc.Id,
+                                type = "function",
+                                function = new
+                                {
+                                    name = tc.Name,
+                                    arguments = tc.Arguments.Count > 0
+                                        ? JsonSerializer.Serialize(tc.Arguments)
+                                        : "{}"
+                                }
+                            }).ToArray()
+                        });
+
+                        newMessages.Add(new
+                        {
+                            role = "tool",
+                            tool_call_id = toolCall.Id,
+                            content = toolResult.Content
+                        });
+
+                        requestBody["messages"] = newMessages;
+
+                        await foreach (var chunk in StreamWithRetryAsync(requestBody, cancellationToken))
+                        {
+                            yield return chunk;
+                        }
+                        yield break;
+                    }
+                }
             }
         }
-
-        LogStreamComplete(chunks.Count, toolCalls.Count);
-
-        var completedToolCalls = toolCalls.Count > 0
-            ? toolCalls.OrderBy(kv => kv.Key)
-                .Select(kv => new ToolCall
-                {
-                    Id = kv.Value.Id,
-                    Name = kv.Value.Name,
-                    Arguments = string.IsNullOrEmpty(kv.Value.Arguments)
-                        ? new Dictionary<string, object?>()
-                        : DeserializeArguments(kv.Value.Arguments)
-                })
-                .ToList()
-            : null;
-
-        return new StreamResult
-        {
-            Chunks = chunks,
-            FullContent = fullContent.ToString(),
-            ToolCalls = completedToolCalls,
-            HasToolCalls = hasToolCalls
-        };
-    }
-
-    private class StreamResult
-    {
-        public List<string> Chunks { get; set; } = new();
-        public string? FullContent { get; set; }
-        public List<ToolCall>? ToolCalls { get; set; }
-        public bool HasToolCalls { get; set; }
     }
 
     private class ToolCallBuilder
