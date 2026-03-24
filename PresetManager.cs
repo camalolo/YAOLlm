@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using dotenv.net;
 using dotenv.net.Utilities;
+using YAOLlm.Providers;
 
 namespace YAOLlm;
 
@@ -17,7 +18,7 @@ public class PresetManager
 
     private static readonly List<ProviderConfig> DefaultPresets = new()
     {
-        new ProviderConfig("gemini", "gemini-3.1-flash-lite-preview", "Gemini"),
+        new ProviderConfig("gemini", "gemini-2.5-flash-lite", "Gemini"),
         new ProviderConfig("openrouter", "arcee-ai/trinity-large-preview:free", "Trinity (Free)"),
         new ProviderConfig("openai-compatible", "nvidia-nemotron-3-nano-4b", "Nemotron (Local)")
     };
@@ -190,7 +191,7 @@ public class PresetManager
         {
             throw new InvalidOperationException("GEMINI_API_KEY not set");
         }
-        return new GeminiProvider(model, apiKey, _searchService, _logger);
+        return new GeminiProvider(model, apiKey, httpClient: null, _searchService, _logger);
     }
 
     private ILLMProvider CreateOpenRouterProvider(string model)
@@ -206,12 +207,12 @@ public class PresetManager
     private ILLMProvider CreateOllamaProvider(string model)
     {
         var baseUrl = Environment.GetEnvironmentVariable("OLLAMA_BASE_URL") ?? "http://localhost:11434";
-        return new OllamaProvider(model, baseUrl, _logger);
+        return new OllamaProvider(model, baseUrl, httpClient: null, _logger);
     }
 
     private ILLMProvider CreateOpenAICompatibleProvider(string model)
     {
         var baseUrl = Environment.GetEnvironmentVariable("OPENAI_COMPATIBLE_BASE_URL") ?? "http://localhost:11434";
-        return new OpenAICompatibleProvider(model, baseUrl, _searchService, _logger);
+        return new OpenAICompatibleProvider(model, baseUrl, httpClient: null, _searchService, _logger);
     }
 }

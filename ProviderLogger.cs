@@ -47,4 +47,32 @@ public static class ProviderLogger
     {
         logger.Log($"[{provider}] Request cancelled");
     }
+
+    public static void LogSseLineReceived(Logger logger, string provider, string line, int maxLength = 200)
+    {
+        var truncated = line.Length > maxLength ? line.Substring(0, maxLength) + "..." : line;
+        logger.Log($"[{provider}] SSE line: {truncated}");
+    }
+
+    public static void LogSseLineSkipped(Logger logger, string provider, string reason)
+    {
+        logger.Log($"[{provider}] SSE line skipped: {reason}");
+    }
+
+    public static void LogJsonParseError(Logger logger, string provider, string rawContent, string error, int maxLength = 100)
+    {
+        var truncated = rawContent.Length > maxLength ? rawContent.Substring(0, maxLength) + "..." : rawContent;
+        logger.Log($"[{provider}] JSON parse error: {error} in content: {truncated}");
+    }
+
+    public static void LogStreamChunk(Logger logger, string provider, int chunkIndex, string content, int maxLength = 50)
+    {
+        var truncated = content.Length > maxLength ? content.Substring(0, maxLength) + "..." : content;
+        logger.Log($"[{provider}] Stream chunk #{chunkIndex}: \"{truncated}\"");
+    }
+
+    public static void LogStreamComplete(Logger logger, string provider, int totalChunks, int toolCallCount)
+    {
+        logger.Log($"[{provider}] Stream complete: {totalChunks} chunks, {toolCallCount} tool calls");
+    }
 }
