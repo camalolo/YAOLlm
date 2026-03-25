@@ -231,9 +231,11 @@ public abstract class BaseLLMProvider : ILLMProvider
         if (toolCall.Name == "web_search" && searchService != null)
         {
             var query = toolCall.Arguments.TryGetValue("query", out var queryObj) ? queryObj?.ToString() : null;
-            var maxResults = toolCall.Arguments.TryGetValue("max_results", out var maxResultsObj) && maxResultsObj is int max
-                ? max
-                : 5;
+            int maxResults;
+            if (toolCall.Arguments.TryGetValue("max_results", out var maxResultsObj) && maxResultsObj is long l && l >= 0)
+                maxResults = (int)l;
+            else
+                maxResults = 5;
 
             if (string.IsNullOrEmpty(query))
             {

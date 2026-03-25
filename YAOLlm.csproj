@@ -24,12 +24,9 @@
 
   <ItemGroup>
     <PackageReference Include="dotenv.net" Version="3.2.1" />
-    <PackageReference Include="HtmlAgilityPack" Version="1.11.74" />
     <PackageReference Include="Markdig" Version="0.40.0" />
-    <PackageReference Include="Microsoft.Data.SQLite" Version="9.0.2" />
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.2277.86" />
     <PackageReference Include="RestSharp" Version="112.1.0" />
-    <PackageReference Include="SentenceTransformers" Version="25.2.56400" />
     <PackageReference Include="System.Drawing.Common" Version="9.0.2" />
   </ItemGroup>
 
