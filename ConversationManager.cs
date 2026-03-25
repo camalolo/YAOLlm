@@ -4,7 +4,7 @@ namespace YAOLlm
 {
     public class ConversationManager
     {
-        private readonly List<Dictionary<string, object>> _conversationHistory = new();
+        private readonly List<ChatMessage> _conversationHistory = new();
         private readonly object _historyLock = new();
         private const int MaxHistoryEntries = 32;
         private string _currentWindowTitle = "";
@@ -20,28 +20,24 @@ namespace YAOLlm
             lock (_historyLock)
             {
                 _conversationHistory.Clear();
-                _conversationHistory.Add(new Dictionary<string, object>
-                {
-                    { "role", "system" },
-                    { "content", systemPrompt }
-                });
+                _conversationHistory.Add(new ChatMessage("system", systemPrompt));
             }
         }
 
-        public List<Dictionary<string, object>> GetSnapshot()
+        public List<ChatMessage> GetSnapshot()
         {
             lock (_historyLock)
             {
-                return new List<Dictionary<string, object>>(_conversationHistory);
+                return new List<ChatMessage>(_conversationHistory);
             }
         }
 
-        public void AddExchange(Dictionary<string, object> userMessage, string modelResponse)
+        public void AddExchange(ChatMessage userMessage, string modelResponse)
         {
             lock (_historyLock)
             {
                 _conversationHistory.Add(userMessage);
-                _conversationHistory.Add(new Dictionary<string, object> { { "role", "model" }, { "content", modelResponse } });
+                _conversationHistory.Add(new ChatMessage("model", modelResponse));
                 TrimHistoryIfNeeded();
             }
         }
@@ -58,7 +54,7 @@ namespace YAOLlm
                     {
                         if (_conversationHistory.Count > 0)
                         {
-                            _conversationHistory[0]["content"] = BuildSystemPrompt();
+                            _conversationHistory[0].Content = BuildSystemPrompt();
                         }
                     }
                 }
@@ -105,7 +101,7 @@ You are an AI assistant with the following guidelines:
         {
             lock (_historyLock)
             {
-                return _conversationHistory.Sum(turn => turn.GetValueOrDefault("content", "")?.ToString()?.Length ?? 0);
+                return _conversationHistory.Sum(turn => turn.Content?.Length ?? 0);
             }
         }
     }

@@ -158,8 +158,8 @@ namespace YAOLlm
             _trayIconManager.Dispose();
             _currentProvider?.Dispose();
             _sendLock.Dispose();
-            _logger.Flush();
             _logger.Log("Hotkey unregistered, tray icon disposed, and provider disposed.");
+            _logger.Dispose();
         }
 
         private void InputField_KeyDown(object? sender, KeyEventArgs e)
@@ -206,7 +206,7 @@ namespace YAOLlm
                 var provider = _currentProvider;
 
                 var messages = _conversationManager.GetSnapshot();
-                var userMessage = new Dictionary<string, object> { { "role", "user" } };
+                var userMessage = new ChatMessage("user");
 
                 byte[]? imageBytes = null;
                 if (!string.IsNullOrEmpty(imageBase64))
@@ -216,7 +216,7 @@ namespace YAOLlm
 
                 if (!string.IsNullOrEmpty(prompt))
                 {
-                    userMessage["content"] = prompt;
+                    userMessage.Content = prompt;
                 }
 
                 messages.Add(userMessage);

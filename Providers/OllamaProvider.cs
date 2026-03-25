@@ -31,7 +31,7 @@ public class OllamaProvider : BaseLLMProvider
     }
 
     public override async Task<string> SendAsync(
-        List<Dictionary<string, object>> history,
+        List<ChatMessage> history,
         byte[]? image = null,
         List<ToolDefinition>? tools = null,
         CancellationToken cancellationToken = default)
@@ -49,15 +49,15 @@ public class OllamaProvider : BaseLLMProvider
         return await ProcessResponseAsync(response.Value, messages, tools, cancellationToken);
     }
 
-    private List<object> BuildMessages(List<Dictionary<string, object>> history, byte[]? image)
+    private List<object> BuildMessages(List<ChatMessage> history, byte[]? image)
     {
         var messages = new List<object>();
 
         for (int i = 0; i < history.Count; i++)
         {
             var msg = history[i];
-            var role = msg.TryGetValue("role", out var roleObj) ? roleObj?.ToString() ?? "user" : "user";
-            var content = msg.TryGetValue("content", out var contentObj) ? contentObj?.ToString() ?? "" : "";
+            var role = msg.Role;
+            var content = msg.Content ?? "";
 
             if (i == history.Count - 1 && image != null && role == "user")
             {
@@ -275,7 +275,7 @@ public class OllamaProvider : BaseLLMProvider
     }
 
     public override async IAsyncEnumerable<string> StreamAsync(
-        List<Dictionary<string, object>> history,
+        List<ChatMessage> history,
         byte[]? image = null,
         List<ToolDefinition>? tools = null,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)

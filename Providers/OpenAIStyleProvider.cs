@@ -23,7 +23,7 @@ public abstract class OpenAIStyleProvider : BaseLLMProvider
 
     // ─── Template: SendAsync ───────────────────────────────────────────
     public override async Task<string> SendAsync(
-        List<Dictionary<string, object>> history,
+        List<ChatMessage> history,
         byte[]? image = null,
         List<ToolDefinition>? tools = null,
         CancellationToken cancellationToken = default)
@@ -41,7 +41,7 @@ public abstract class OpenAIStyleProvider : BaseLLMProvider
 
     // ─── Template: StreamAsync ─────────────────────────────────────────
     public override async IAsyncEnumerable<string> StreamAsync(
-        List<Dictionary<string, object>> history,
+        List<ChatMessage> history,
         byte[]? image = null,
         List<ToolDefinition>? tools = null,
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
@@ -70,16 +70,16 @@ public abstract class OpenAIStyleProvider : BaseLLMProvider
         CancellationToken cancellationToken);
 
     // ─── Shared: Message Building ──────────────────────────────────────
-    protected List<object> BuildMessages(List<Dictionary<string, object>> history, byte[]? image)
+    protected List<object> BuildMessages(List<ChatMessage> history, byte[]? image)
     {
         var messages = new List<object>();
 
         for (int i = 0; i < history.Count; i++)
         {
             var entry = history[i];
-            var role = entry.TryGetValue("role", out var roleObj) ? roleObj?.ToString() ?? "user" : "user";
+            var role = entry.Role;
             role = MapRoleToOpenAI(role);
-            var content = entry.TryGetValue("content", out var contentObj) ? contentObj?.ToString() ?? "" : "";
+            var content = entry.Content ?? "";
 
             var isLastUserMessage = i == history.Count - 1 && role == "user" && image != null && image.Length > 0;
 

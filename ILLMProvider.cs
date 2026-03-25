@@ -30,13 +30,13 @@ public interface ILLMProvider : IDisposable
     /// <summary>
     /// Send a conversation to the LLM and get a response
     /// </summary>
-    /// <param name="history">Conversation history with role and content keys</param>
+    /// <param name="history">Conversation history</param>
     /// <param name="image">Optional image data (PNG/JPEG bytes)</param>
     /// <param name="tools">Optional tool definitions for function calling</param>
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>LLM response text</returns>
     Task<string> SendAsync(
-        List<Dictionary<string, object>> history,
+        List<ChatMessage> history,
         byte[]? image = null,
         List<ToolDefinition>? tools = null,
         CancellationToken cancellationToken = default);
@@ -44,13 +44,13 @@ public interface ILLMProvider : IDisposable
     /// <summary>
     /// Stream a conversation response from the LLM chunk by chunk
     /// </summary>
-    /// <param name="history">Conversation history with role and content keys</param>
+    /// <param name="history">Conversation history</param>
     /// <param name="image">Optional image data (PNG/JPEG bytes)</param>
     /// <param name="tools">Optional tool definitions for function calling</param>
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>Async enumerable of response text chunks</returns>
     IAsyncEnumerable<string> StreamAsync(
-        List<Dictionary<string, object>> history,
+        List<ChatMessage> history,
         byte[]? image = null,
         List<ToolDefinition>? tools = null,
         CancellationToken cancellationToken = default);

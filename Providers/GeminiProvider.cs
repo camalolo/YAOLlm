@@ -33,7 +33,7 @@ public class GeminiProvider : BaseLLMProvider
     }
 
     public override async Task<string> SendAsync(
-        List<Dictionary<string, object>> history,
+        List<ChatMessage> history,
         byte[]? image = null,
         List<ToolDefinition>? tools = null,
         CancellationToken cancellationToken = default)
@@ -52,7 +52,7 @@ public class GeminiProvider : BaseLLMProvider
     }
 
     public override async IAsyncEnumerable<string> StreamAsync(
-        List<Dictionary<string, object>> history,
+        List<ChatMessage> history,
         byte[]? image = null,
         List<ToolDefinition>? tools = null,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
@@ -137,9 +137,9 @@ public class GeminiProvider : BaseLLMProvider
                 if (result != null)
                 {
                     ThrowIfDisposed();
-                    var toolHistory = new List<Dictionary<string, object>>(history)
+                    var toolHistory = new List<ChatMessage>(history)
                     {
-                        new() { ["role"] = "user", ["content"] = fullContent.ToString() }
+                        new ChatMessage("user", fullContent.ToString())
                     };
 
                     await foreach (var chunk in StreamWithToolResultAsync(toolHistory, result, tools, cancellationToken))
@@ -216,7 +216,7 @@ public class GeminiProvider : BaseLLMProvider
     }
 
     private async IAsyncEnumerable<string> StreamWithToolResultAsync(
-        List<Dictionary<string, object>> history,
+        List<ChatMessage> history,
         ToolResult toolResult,
         List<ToolDefinition>? tools,
         [EnumeratorCancellation] CancellationToken cancellationToken)
@@ -296,30 +296,24 @@ public class GeminiProvider : BaseLLMProvider
         }
     }
 
-    private object[] BuildContents(List<Dictionary<string, object>> history, byte[]? image)
+    private object[] BuildContents(List<ChatMessage> history, byte[]? image)
     {
         var contents = new List<object>();
 
         foreach (var message in history)
         {
-            if (!message.TryGetValue("role", out var roleObj) || roleObj is not string role)
-                continue;
+            var role = message.Role;
 
             var parts = new List<object>();
 
-            if (message.TryGetValue("content", out var contentObj) && contentObj is string content && !string.IsNullOrEmpty(content))
+            if (!string.IsNullOrEmpty(message.Content))
             {
-                parts.Add(new { text = content });
+                parts.Add(new { text = message.Content });
             }
 
-            if (message.TryGetValue("image", out var imageObj))
+            if (message.Image != null)
             {
-                (string? mimeType, string? base64Data) = imageObj switch
-                {
-                    byte[] imgBytes => GetImageInfo(imgBytes),
-                    string base64 => ("image/png", base64),
-                    _ => (null, null)
-                };
+                (string? mimeType, string? base64Data) = GetImageInfo(message.Image);
 
                 if (mimeType != null && base64Data != null)
                 {
@@ -701,6 +695,10 @@ public class GeminiProvider : BaseLLMProvider
 
             return ExtractSimpleResponse(content);
         }
+        catch (LLMException)
+        {
+            throw;
+        }
         catch (Exception ex)
         {
             LogError("ContinueWithFunctionResult", ex.Message);
@@ -728,11 +726,6 @@ public class GeminiProvider : BaseLLMProvider
         catch (LLMException)
         {
             throw;
-        }
-        catch (Exception ex)
-        {
-            LogError("ExtractSimpleResponse", ex.Message);
-            return string.Empty;
         }
     }
 

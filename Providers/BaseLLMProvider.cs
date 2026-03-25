@@ -62,7 +62,7 @@ public abstract class BaseLLMProvider : ILLMProvider
     /// Send a conversation to the LLM and get a response
     /// </summary>
     public abstract Task<string> SendAsync(
-        List<Dictionary<string, object>> history,
+        List<ChatMessage> history,
         byte[]? image = null,
         List<ToolDefinition>? tools = null,
         CancellationToken cancellationToken = default);
@@ -71,7 +71,7 @@ public abstract class BaseLLMProvider : ILLMProvider
     /// Stream a conversation response from the LLM chunk by chunk
     /// </summary>
     public abstract IAsyncEnumerable<string> StreamAsync(
-        List<Dictionary<string, object>> history,
+        List<ChatMessage> history,
         byte[]? image = null,
         List<ToolDefinition>? tools = null,
         CancellationToken cancellationToken = default);
