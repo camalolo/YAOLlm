@@ -364,3 +364,6 @@ FodyWeavers.xsd
 
 # Windows reserved device name artifact
 nul
+
+# Plans and tracking docs
+plans/
