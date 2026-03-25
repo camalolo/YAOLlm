@@ -1,22 +1,23 @@
-﻿namespace YAOLlm
+namespace YAOLlm;
+
+public enum Status
 {
-    public enum Status
-    {
-        Idle = 0,
-        Sending,
-        Receiving,
-        Searching,
-        Analyzing
-    }
+    Idle = 0,
+    Sending,
+    Receiving,
+    Searching,
+    Analyzing
+}
 
-    public class StatusManager
-    {
-        public event Action<Status>? StatusChanged;
+public class StatusManager
+{
+    public const string SearchingStatus = "searching";
 
-        public void SetStatus(Status status)
-        {
-            var handler = StatusChanged;
-            handler?.Invoke(status);
-        }
+    public event Action<Status>? StatusChanged;
+
+    public void SetStatus(Status status)
+    {
+        var handler = StatusChanged;
+        handler?.Invoke(status);
     }
 }

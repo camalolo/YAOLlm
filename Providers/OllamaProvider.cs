@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Net.Http;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
@@ -12,6 +13,8 @@ namespace YAOLlm.Providers;
 
 public class OllamaProvider : BaseLLMProvider
 {
+    private const int MaxRetries = 3;
+
     private readonly string _baseUrl;
     private readonly RestClient _client;
     private string _model;
@@ -56,7 +59,7 @@ public class OllamaProvider : BaseLLMProvider
         for (int i = 0; i < history.Count; i++)
         {
             var msg = history[i];
-            var role = msg.Role;
+            string role = msg.Role == ChatRole.Model ? "assistant" : msg.Role.ToApiString();
             var content = msg.Content ?? "";
 
             if (i == history.Count - 1 && image != null && role == "user")
@@ -92,47 +95,64 @@ public class OllamaProvider : BaseLLMProvider
 
     private async Task<JsonElement?> SendRequestAsync(object payload, CancellationToken cancellationToken)
     {
-        var request = new RestRequest("/api/chat", Method.Post);
-        request.AddHeader("Content-Type", "application/json");
-        request.AddJsonBody(payload);
-
-        try
+        for (int attempt = 0; attempt <= MaxRetries; attempt++)
         {
-            var response = await _client.ExecuteAsync(request, cancellationToken);
+            var request = new RestRequest("/api/chat", Method.Post);
+            request.AddHeader("Content-Type", "application/json");
+            request.AddJsonBody(payload);
 
-            if (!response.IsSuccessful)
+            try
             {
-                LogError("SendRequestAsync", $"Status: {response.StatusCode}");
-                throw LLMException.CreateWithStatusCode((int)response.StatusCode, response.Content, Name);
-            }
+                var response = await _client.ExecuteAsync(request, cancellationToken);
 
-            if (string.IsNullOrEmpty(response.Content))
-            {
-                LogError("SendRequestAsync", "Empty response");
-                throw LLMException.CreateWithMessage("Empty response from server", Name);
-            }
+                if (!response.IsSuccessful)
+                {
+                    var errorMessage = $"Status: {response.StatusCode}";
+                    var ex = LLMException.CreateWithStatusCode((int)response.StatusCode, response.Content, Name);
 
-            LogResponse(response.Content);
-            var responseJson = JsonSerializer.Deserialize<JsonElement>(response.Content);
-            
-            if (responseJson.TryGetProperty("error", out var errorProp))
-            {
-                var errorMsg = errorProp.GetString() ?? "Unknown error";
-                throw LLMException.CreateWithMessage(errorMsg, Name);
+                    if (ShouldRetry(ex, attempt, MaxRetries))
+                    {
+                        var delay = GetRetryDelay(attempt);
+                        LogRetry(attempt + 1, MaxRetries, (int)delay.TotalMilliseconds);
+                        await Task.Delay(delay, cancellationToken);
+                        continue;
+                    }
+
+                    LogError("SendRequestAsync", errorMessage);
+                    throw ex;
+                }
+
+                if (string.IsNullOrEmpty(response.Content))
+                {
+                    LogError("SendRequestAsync", "Empty response");
+                    throw LLMException.CreateWithMessage("Empty response from server", Name);
+                }
+
+                LogResponse(response.Content);
+                var responseJson = JsonSerializer.Deserialize<JsonElement>(response.Content);
+                
+                if (responseJson.TryGetProperty("error", out var errorProp))
+                {
+                    var errorMsg = errorProp.GetString() ?? "Unknown error";
+                    throw LLMException.CreateWithMessage(errorMsg, Name);
+                }
+                
+                return responseJson;
             }
-            
-            return responseJson;
+            catch (TaskCanceledException)
+            {
+                LogCancelled();
+                throw;
+            }
+            catch (Exception ex) when (ShouldRetry(ex, attempt, MaxRetries))
+            {
+                var delay = GetRetryDelay(attempt);
+                LogRetry(attempt + 1, MaxRetries, (int)delay.TotalMilliseconds);
+                await Task.Delay(delay, cancellationToken);
+            }
         }
-        catch (TaskCanceledException)
-        {
-            LogCancelled();
-            throw;
-        }
-        catch (Exception ex)
-        {
-            LogError("SendRequestAsync", ex.Message);
-            throw LLMException.CreateWithMessage(ex.Message, Name);
-        }
+
+        return null;
     }
 
     private async Task<string> ProcessResponseAsync(
@@ -288,7 +308,7 @@ public class OllamaProvider : BaseLLMProvider
         var messages = BuildMessages(history, image);
         var requestBody = BuildStreamingRequestBody(messages, tools);
 
-        await foreach (var chunk in StreamWithRetryAsync(requestBody, cancellationToken))
+        await foreach (var chunk in StreamInternalAsync(requestBody, cancellationToken))
         {
             yield return chunk;
         }
@@ -311,7 +331,7 @@ public class OllamaProvider : BaseLLMProvider
         return body;
     }
 
-    private async IAsyncEnumerable<string> StreamWithRetryAsync(
+    private async IAsyncEnumerable<string> StreamInternalAsync(
         Dictionary<string, object> requestBody,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
@@ -321,13 +341,38 @@ public class OllamaProvider : BaseLLMProvider
         
         using var httpClient = new HttpClient();
         httpClient.Timeout = TimeSpan.FromMinutes(5);
-        
-        var jsonPayload = JsonSerializer.Serialize(requestBody);
-        using var request = new HttpRequestMessage(HttpMethod.Post, $"{_baseUrl}/api/chat");
-        request.Content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
-        
-        using var response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-        response.EnsureSuccessStatusCode();
+
+        HttpResponseMessage response = null!;
+        for (int attempt = 0; attempt <= MaxRetries; attempt++)
+        {
+            HttpResponseMessage? attemptResponse = null;
+            try
+            {
+                var jsonPayload = JsonSerializer.Serialize(requestBody);
+                using (var request = new HttpRequestMessage(HttpMethod.Post, $"{_baseUrl}/api/chat"))
+                {
+                    request.Content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
+                    attemptResponse = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+                }
+                attemptResponse.EnsureSuccessStatusCode();
+                response = attemptResponse;
+                break;
+            }
+            catch (Exception ex)
+            {
+                attemptResponse?.Dispose();
+                if (ShouldRetry(ex, attempt, MaxRetries))
+                {
+                    var delay = GetRetryDelay(attempt);
+                    LogRetry(attempt + 1, MaxRetries, (int)delay.TotalMilliseconds);
+                    await Task.Delay(delay, cancellationToken);
+                }
+                else
+                {
+                    throw;
+                }
+            }
+        }
         
         using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
         using var reader = new StreamReader(stream);
@@ -355,7 +400,7 @@ public class OllamaProvider : BaseLLMProvider
             {
                 if (toolCall.Name == "web_search")
                 {
-                    RaiseOnStatusChange("searching");
+                    RaiseOnStatusChange(StatusManager.SearchingStatus);
                 }
                 
                 var result = await RaiseOnToolCallAsync(toolCall);
@@ -390,7 +435,7 @@ public class OllamaProvider : BaseLLMProvider
                     requestBody["messages"] = newMessages;
                     
                     ThrowIfDisposed();
-                    await foreach (var chunk in StreamWithRetryAsync(requestBody, cancellationToken))
+                    await foreach (var chunk in StreamInternalAsync(requestBody, cancellationToken))
                     {
                         yield return chunk;
                     }

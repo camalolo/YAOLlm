@@ -17,7 +17,6 @@ public class OpenRouterProvider : OpenAIStyleProvider
     private const string DefaultReferer = "https://github.com/camalolo/YAOLlm";
     private const string DefaultTitle = "YAOLlm";
     private const int MaxRetries = 3;
-    private const int RetryDelayMs = 1000;
 
     private readonly RestClient _client;
     private readonly string? _apiKey;
@@ -68,9 +67,10 @@ public class OpenRouterProvider : OpenAIStyleProvider
 
             if (shouldRetry)
             {
+                var delay = GetRetryDelay(retryCount);
+                LogRetry(retryCount + 1, MaxRetries, (int)delay.TotalMilliseconds);
+                await Task.Delay(delay, cancellationToken);
                 retryCount++;
-                LogRetry(retryCount, MaxRetries, RetryDelayMs);
-                await Task.Delay(RetryDelayMs * retryCount, cancellationToken);
                 continue;
             }
 
@@ -110,7 +110,7 @@ public class OpenRouterProvider : OpenAIStyleProvider
             httpClient.DefaultRequestHeaders.Add("X-Title", DefaultTitle);
 
             var jsonPayload = JsonSerializer.Serialize(requestBody);
-            var request = new HttpRequestMessage(HttpMethod.Post, ApiUrl);
+            using var request = new HttpRequestMessage(HttpMethod.Post, ApiUrl);
             request.Content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
 
             var response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
@@ -118,16 +118,9 @@ public class OpenRouterProvider : OpenAIStyleProvider
             if (!response.IsSuccessStatusCode)
             {
                 var errorContent = await response.Content.ReadAsStringAsync(cancellationToken);
-
-                if ((int)response.StatusCode == 429 && currentRetryCount < MaxRetries)
-                {
-                    response.Dispose();
-                    return (null, true, null);
-                }
-
                 var exception = LLMException.CreateWithStatusCode((int)response.StatusCode, errorContent, Name);
                 response.Dispose();
-                return (null, false, exception);
+                return (null, ShouldRetry(exception, currentRetryCount, MaxRetries), exception);
             }
 
             return (response, false, null);
@@ -137,9 +130,9 @@ public class OpenRouterProvider : OpenAIStyleProvider
             LogCancelled();
             throw;
         }
-        catch (HttpRequestException) when (currentRetryCount < MaxRetries)
+        catch (Exception ex)
         {
-            return (null, true, null);
+            return (null, ShouldRetry(ex, currentRetryCount, MaxRetries), ex);
         }
     }
 
@@ -219,7 +212,7 @@ public class OpenRouterProvider : OpenAIStyleProvider
                 {
                     if (toolCall.Name == "web_search")
                     {
-                        RaiseOnStatusChange("searching");
+                        RaiseOnStatusChange(StatusManager.SearchingStatus);
                     }
 
                     ToolResult? result = await RaiseOnToolCallAsync(toolCall);
@@ -300,9 +293,7 @@ public class OpenRouterProvider : OpenAIStyleProvider
 
     private async Task<string> SendWithRetryAsync(object requestBody, CancellationToken cancellationToken)
     {
-        int retryCount = 0;
-
-        while (true)
+        for (int attempt = 0; attempt <= MaxRetries; attempt++)
         {
             var request = CreateRequest(requestBody);
             RestResponse response;
@@ -315,19 +306,17 @@ public class OpenRouterProvider : OpenAIStyleProvider
                 LogCancelled();
                 throw;
             }
+            catch (Exception ex) when (ShouldRetry(ex, attempt, MaxRetries))
+            {
+                var delay = GetRetryDelay(attempt);
+                LogRetry(attempt + 1, MaxRetries, (int)delay.TotalMilliseconds);
+                await Task.Delay(delay, cancellationToken);
+                continue;
+            }
 
             if (response.IsSuccessful && !string.IsNullOrEmpty(response.Content))
             {
                 return await ProcessResponseAsync(response.Content, requestBody, cancellationToken);
-            }
-
-            if ((int)response.StatusCode == 429 && retryCount < MaxRetries)
-            {
-                retryCount++;
-                var delay = RetryDelayMs * (int)Math.Pow(2, retryCount - 1);
-                LogRetry(retryCount, MaxRetries, delay);
-                await Task.Delay(delay, cancellationToken);
-                continue;
             }
 
             if (!response.IsSuccessful)
@@ -335,13 +324,25 @@ public class OpenRouterProvider : OpenAIStyleProvider
                 var errorMessage = string.IsNullOrEmpty(response.Content)
                     ? $"Status: {response.StatusCode}"
                     : response.Content;
+                var ex = LLMException.CreateWithStatusCode((int)response.StatusCode, errorMessage, Name);
+
+                if (ShouldRetry(ex, attempt, MaxRetries))
+                {
+                    var delay = GetRetryDelay(attempt);
+                    LogRetry(attempt + 1, MaxRetries, (int)delay.TotalMilliseconds);
+                    await Task.Delay(delay, cancellationToken);
+                    continue;
+                }
+
                 LogError("SendWithRetryAsync", errorMessage);
-                throw LLMException.CreateWithStatusCode((int)response.StatusCode, errorMessage, Name);
+                throw ex;
             }
 
             LogError("SendWithRetryAsync", "Empty response from API");
             throw LLMException.CreateWithMessage("Empty response from API", Name);
         }
+
+        return string.Empty;
     }
 
     private RestRequest CreateRequest(object requestBody)

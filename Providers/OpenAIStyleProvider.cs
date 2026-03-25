@@ -77,8 +77,7 @@ public abstract class OpenAIStyleProvider : BaseLLMProvider
         for (int i = 0; i < history.Count; i++)
         {
             var entry = history[i];
-            var role = entry.Role;
-            role = MapRoleToOpenAI(role);
+            string role = MapRoleToOpenAI(entry.Role);
             var content = entry.Content ?? "";
 
             var isLastUserMessage = i == history.Count - 1 && role == "user" && image != null && image.Length > 0;

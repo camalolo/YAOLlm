@@ -129,12 +129,12 @@ public abstract class BaseLLMProvider : ILLMProvider
     /// </summary>
     /// <param name="role">The role to map</param>
     /// <returns>The OpenAI-compatible role name</returns>
-    protected static string MapRoleToOpenAI(string role)
+    protected static string MapRoleToOpenAI(ChatRole role)
     {
-        return role.ToLowerInvariant() switch
+        return role switch
         {
-            "model" => "assistant",
-            _ => role
+            ChatRole.Model => "assistant",
+            _ => role.ToApiString()
         };
     }
 
@@ -244,7 +244,7 @@ public abstract class BaseLLMProvider : ILLMProvider
 
             try
             {
-                RaiseOnStatusChange("searching");
+                RaiseOnStatusChange(StatusManager.SearchingStatus);
                 var result = await searchService.SearchAsync(query, maxResults);
                 RaiseOnStatusChange(null);
                 return new ToolResult(toolCall.Id, result);
@@ -276,57 +276,81 @@ public abstract class BaseLLMProvider : ILLMProvider
 
     protected void LogRequest(int messageCount, bool hasTools)
     {
-        ProviderLogger.LogRequest(_logger, Name, Model, messageCount, hasTools);
+        _logger.Log($"[{Name}] Request: model={Model}, messages={messageCount}, tools={hasTools.ToString().ToLower()}");
     }
 
     protected void LogResponse(string response, int maxLength = 500)
     {
-        ProviderLogger.LogResponse(_logger, Name, response, maxLength);
+        var trimmed = response.TrimStart();
+        var truncated = trimmed.Length > maxLength ? trimmed.Substring(0, maxLength) + "..." : trimmed;
+        _logger.Log($"[{Name}] Response: {truncated}");
     }
 
     protected void LogRetry(int attempt, int maxAttempts, int delayMs)
     {
-        ProviderLogger.LogRetry(_logger, Name, attempt, maxAttempts, delayMs);
+        _logger.Log($"[{Name}] Retry: attempt {attempt}/{maxAttempts}, waiting {delayMs}ms");
+    }
+
+    protected static bool ShouldRetry(Exception ex, int attempt, int maxRetries = 3)
+    {
+        if (attempt >= maxRetries) return false;
+        return ex switch
+        {
+            LLMException llm when llm.StatusCode == 429 || llm.StatusCode == 503 => true,
+            HttpRequestException => true,
+            TaskCanceledException tc when tc.InnerException is TimeoutException => true,
+            _ => false
+        };
+    }
+
+    protected static TimeSpan GetRetryDelay(int attempt, TimeSpan? baseDelay = null)
+    {
+        var delay = baseDelay ?? TimeSpan.FromSeconds(1);
+        return TimeSpan.FromMilliseconds(delay.TotalMilliseconds * Math.Pow(2, attempt));
     }
 
     protected void LogToolCallReceived(string toolName, Dictionary<string, object?> args)
     {
-        ProviderLogger.LogToolCallReceived(_logger, Name, toolName, args);
+        var argsJson = JsonSerializer.Serialize(args);
+        _logger.Log($"[{Name}] Tool call: {toolName}({argsJson})");
     }
 
     protected void LogToolExecution(string toolName)
     {
-        ProviderLogger.LogToolExecution(_logger, Name, toolName);
+        _logger.Log($"[{Name}] Tool executing: {toolName}");
     }
 
     protected void LogToolResult(string toolName, string result, int maxLength = 200)
     {
-        ProviderLogger.LogToolResult(_logger, Name, toolName, result, maxLength);
+        var truncated = result.Length > maxLength ? result.Substring(0, maxLength) + "..." : result;
+        _logger.Log($"[{Name}] Tool result: {toolName} -> \"{truncated}\"");
     }
 
     protected void LogError(string operation, string error)
     {
-        ProviderLogger.LogError(_logger, Name, operation, error);
+        _logger.Log($"[{Name}] Error in {operation}: {error}");
     }
 
     protected void LogCancelled()
     {
-        ProviderLogger.LogCancelled(_logger, Name);
+        _logger.Log($"[{Name}] Request cancelled");
     }
 
     protected void LogJsonParseError(string rawContent, string error, int maxLength = 100)
     {
-        ProviderLogger.LogJsonParseError(_logger, Name, rawContent, error, maxLength);
+        var truncated = rawContent.Length > maxLength ? rawContent.Substring(0, maxLength) + "..." : rawContent;
+        _logger.Log($"[{Name}] JSON parse error: {error} in content: {truncated}");
     }
 
     protected void LogStreamChunk(int chunkIndex, string content, int maxLength = 50)
     {
-        ProviderLogger.LogStreamChunk(_logger, Name, chunkIndex, content, maxLength);
+        var truncated = content.Length > maxLength ? content.Substring(0, maxLength) + "..." : content;
+        _logger.Log($"[{Name}] Stream chunk #{chunkIndex}: \"{truncated}\"");
     }
 
     protected void LogStreamComplete(int totalChunks, int toolCallCount)
     {
-        ProviderLogger.LogStreamComplete(_logger, Name, totalChunks, toolCallCount);
+        _logger.Log($"[{Name}] Stream complete: {totalChunks} chunks, {toolCallCount} tool calls");
     }
 
     #endregion

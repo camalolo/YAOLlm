@@ -1,54 +1,40 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Net;
 using System.Net.Http;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
-using RestSharp;
 
 namespace YAOLlm.Providers;
 
 public class GeminiProvider : BaseLLMProvider
 {
     private const string ApiBaseUrl = "https://generativelanguage.googleapis.com/v1beta/models/";
-    private const int GenerationRpmLimit = 15;
     private const int MaxRetries = 3;
 
-    private static readonly SemaphoreSlim RateLimiter = new(GenerationRpmLimit, GenerationRpmLimit);
     private readonly string _apiKey;
 
     public override string Name => "gemini";
     public override string Model { get; protected set; }
     public override bool SupportsWebSearch => true;
 
-    public GeminiProvider(string model, string apiKey, HttpClient? httpClient = null, TavilySearchService? searchService = null, Logger? logger = null)
-        : base(httpClient ?? new HttpClient(), searchService, logger)
-    {
-        Model = model ?? throw new ArgumentNullException(nameof(model));
-        _apiKey = apiKey ?? throw new ArgumentNullException(nameof(apiKey));
-    }
-
-    public override async Task<string> SendAsync(
+    public override Task<string> SendAsync(
         List<ChatMessage> history,
         byte[]? image = null,
         List<ToolDefinition>? tools = null,
         CancellationToken cancellationToken = default)
     {
-        if (history == null || history.Count == 0)
-            throw new ArgumentException("History cannot be null or empty", nameof(history));
+        throw new NotSupportedException("Gemini provider only supports streaming. Use StreamAsync instead.");
+    }
 
-        var contents = BuildContents(history, image);
-        var toolsPayload = BuildToolsPayload(tools);
-        var payload = new Dictionary<string, object> { ["contents"] = contents };
-        if (toolsPayload != null)
-            payload["tools"] = toolsPayload;
-
-        LogRequest(history.Count, tools != null && tools.Count > 0);
-        return await SendWithRetryAsync(payload, contents, cancellationToken);
+    public GeminiProvider(string model, string apiKey, HttpClient? httpClient = null, TavilySearchService? searchService = null, Logger? logger = null)
+        : base(httpClient ?? new HttpClient(), searchService, logger)
+    {
+        Model = model ?? throw new ArgumentNullException(nameof(model));
+        _apiKey = apiKey ?? throw new ArgumentNullException(nameof(apiKey));
     }
 
     public override async IAsyncEnumerable<string> StreamAsync(
@@ -75,12 +61,38 @@ public class GeminiProvider : BaseLLMProvider
         var url = $"{ApiBaseUrl}{Model}:streamGenerateContent?alt=sse&key={_apiKey}";
 
         using var httpClient = new HttpClient();
-        var jsonPayload = JsonSerializer.Serialize(payload);
-        using var request = new HttpRequestMessage(HttpMethod.Post, url);
-        request.Content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
 
-        using var response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-        response.EnsureSuccessStatusCode();
+        HttpResponseMessage response = null!;
+        for (int attempt = 0; attempt <= MaxRetries; attempt++)
+        {
+            HttpResponseMessage? attemptResponse = null;
+            try
+            {
+                var jsonPayload = JsonSerializer.Serialize(payload);
+                using (var request = new HttpRequestMessage(HttpMethod.Post, url))
+                {
+                    request.Content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
+                    attemptResponse = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+                }
+                attemptResponse.EnsureSuccessStatusCode();
+                response = attemptResponse;
+                break;
+            }
+            catch (Exception ex)
+            {
+                attemptResponse?.Dispose();
+                if (ShouldRetry(ex, attempt, MaxRetries))
+                {
+                    var delay = GetRetryDelay(attempt);
+                    LogRetry(attempt + 1, MaxRetries, (int)delay.TotalMilliseconds);
+                    await Task.Delay(delay, cancellationToken);
+                }
+                else
+                {
+                    throw;
+                }
+            }
+        }
 
         using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
         using var reader = new StreamReader(stream);
@@ -121,7 +133,7 @@ public class GeminiProvider : BaseLLMProvider
             {
                 if (toolCall.Name == "web_search")
                 {
-                    RaiseOnStatusChange("searching");
+                    RaiseOnStatusChange(StatusManager.SearchingStatus);
                 }
 
                 ToolResult? result = await RaiseOnToolCallAsync(toolCall);
@@ -139,7 +151,7 @@ public class GeminiProvider : BaseLLMProvider
                     ThrowIfDisposed();
                     var toolHistory = new List<ChatMessage>(history)
                     {
-                        new ChatMessage("user", fullContent.ToString())
+                        new ChatMessage(ChatRole.User, fullContent.ToString())
                     };
 
                     await foreach (var chunk in StreamWithToolResultAsync(toolHistory, result, tools, cancellationToken))
@@ -268,12 +280,38 @@ public class GeminiProvider : BaseLLMProvider
         var url = $"{ApiBaseUrl}{Model}:streamGenerateContent?alt=sse&key={_apiKey}";
 
         using var httpClient = new HttpClient();
-        var jsonPayload = JsonSerializer.Serialize(payload);
-        using var request = new HttpRequestMessage(HttpMethod.Post, url);
-        request.Content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
 
-        using var response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-        response.EnsureSuccessStatusCode();
+        HttpResponseMessage response = null!;
+        for (int attempt = 0; attempt <= MaxRetries; attempt++)
+        {
+            HttpResponseMessage? attemptResponse = null;
+            try
+            {
+                var jsonPayload = JsonSerializer.Serialize(payload);
+                using (var request = new HttpRequestMessage(HttpMethod.Post, url))
+                {
+                    request.Content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
+                    attemptResponse = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+                }
+                attemptResponse.EnsureSuccessStatusCode();
+                response = attemptResponse;
+                break;
+            }
+            catch (Exception ex)
+            {
+                attemptResponse?.Dispose();
+                if (ShouldRetry(ex, attempt, MaxRetries))
+                {
+                    var delay = GetRetryDelay(attempt);
+                    LogRetry(attempt + 1, MaxRetries, (int)delay.TotalMilliseconds);
+                    await Task.Delay(delay, cancellationToken);
+                }
+                else
+                {
+                    throw;
+                }
+            }
+        }
 
         using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
         using var reader = new StreamReader(stream);
@@ -391,223 +429,6 @@ public class GeminiProvider : BaseLLMProvider
         return new[] { new { functionDeclarations } };
     }
 
-    private string GetGenerateUrl() => $"{ApiBaseUrl}{Model}:generateContent?key={_apiKey}";
-
-    private async Task<string> SendWithRetryAsync(
-        Dictionary<string, object> payload,
-        object[] originalContents,
-        CancellationToken cancellationToken)
-    {
-        await RateLimiter.WaitAsync(cancellationToken);
-
-        try
-        {
-            for (int retry = 0; retry <= MaxRetries; retry++)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-
-                var (content, response) = await ExecuteRequestAsync(payload, cancellationToken);
-
-                if (response.StatusCode == HttpStatusCode.TooManyRequests ||
-                    response.StatusCode == HttpStatusCode.ServiceUnavailable)
-                {
-                    if (retry == MaxRetries)
-                    {
-                        LogError("rate limit", "Max retries reached");
-                        throw LLMException.CreateWithStatusCode(429, "Max retries reached", Name);
-                    }
-
-                    int delay = (int)Math.Pow(2, retry) * 1000;
-                    LogRetry(retry + 1, MaxRetries, delay);
-                    await Task.Delay(delay, cancellationToken);
-                    continue;
-                }
-
-                if (content == null)
-                {
-                    LogError("request", $"StatusCode={response.StatusCode}, Error={response.ErrorMessage}");
-                    throw LLMException.CreateWithStatusCode((int)response.StatusCode, response.ErrorMessage ?? $"Status: {response.StatusCode}", Name);
-                }
-
-                return await ExtractResponseAsync(content, originalContents, cancellationToken);
-            }
-        }
-        catch (OperationCanceledException)
-        {
-            LogCancelled();
-            throw;
-        }
-        catch (Exception ex)
-        {
-            LogError("SendWithRetryAsync", ex.Message);
-            throw;
-        }
-        finally
-        {
-            RateLimiter.Release();
-        }
-
-        return string.Empty;
-    }
-
-    private async Task<(string? content, RestResponse response)> ExecuteRequestAsync(
-        object payload,
-        CancellationToken cancellationToken)
-    {
-        try
-        {
-            var url = GetGenerateUrl();
-            using var client = new RestClient(url);
-            var request = new RestRequest { Method = Method.Post };
-            request.AddHeader("Content-Type", "application/json");
-            request.AddJsonBody(payload);
-
-            var response = await client.ExecuteAsync(request, cancellationToken);
-
-            if (response.IsSuccessful && !string.IsNullOrEmpty(response.Content))
-            {
-                LogResponse(response.Content);
-                return (response.Content, response);
-            }
-
-            return (null, response);
-        }
-        catch (Exception ex)
-        {
-            LogError("ExecuteRequestAsync", ex.Message);
-            return (null, new RestResponse());
-        }
-    }
-
-    private async Task<string> ExtractResponseAsync(
-        string content,
-        object[] originalContents,
-        CancellationToken cancellationToken)
-    {
-        try
-        {
-            var data = JsonSerializer.Deserialize<JsonElement>(content);
-
-            if (data.TryGetProperty("error", out var errorObj))
-            {
-                var errorMsg = errorObj.TryGetProperty("message", out var msg)
-                    ? msg.GetString() ?? "Unknown API error"
-                    : errorObj.GetString() ?? "Unknown API error";
-                throw LLMException.CreateWithMessage(errorMsg, Name);
-            }
-
-            if (!data.TryGetProperty("candidates", out var candidates) || !candidates.EnumerateArray().Any())
-            {
-                LogError("ExtractResponseAsync", "No candidates in LLM response");
-                return string.Empty;
-            }
-
-            var messageParts = ExtractTextFromCandidates(data, Name);
-            JsonElement? modelContentElement = null;
-
-            foreach (var candidate in candidates.EnumerateArray())
-            {
-                if (!candidate.TryGetProperty("content", out var contentElement))
-                    continue;
-
-                modelContentElement = contentElement;
-
-                if (!contentElement.TryGetProperty("parts", out var partsElement))
-                    continue;
-
-                foreach (var part in partsElement.EnumerateArray())
-                {
-                    if (part.TryGetProperty("functionCall", out var functionCall))
-                    {
-                        var functionMessage = await HandleFunctionCallAsync(
-                            functionCall,
-                            contentElement,
-                            originalContents,
-                            cancellationToken);
-
-                        if (!string.IsNullOrEmpty(functionMessage))
-                            messageParts.Add(functionMessage);
-                    }
-                }
-            }
-
-            return string.Join("\n\n", messageParts);
-        }
-        catch (Exception ex)
-        {
-            LogError("ExtractResponseAsync", ex.Message);
-            throw;
-        }
-    }
-
-    private async Task<string> HandleFunctionCallAsync(
-        JsonElement functionCall,
-        JsonElement modelContentElement,
-        object[] originalContents,
-        CancellationToken cancellationToken)
-    {
-        var functionName = functionCall.TryGetProperty("name", out var nameElement)
-            ? nameElement.GetString()
-            : null;
-
-        if (string.IsNullOrEmpty(functionName))
-        {
-            LogError("HandleFunctionCall", "Function call missing name");
-            return string.Empty;
-        }
-
-        var args = new Dictionary<string, object?>();
-        if (functionCall.TryGetProperty("args", out var argsElement))
-        {
-            foreach (var prop in argsElement.EnumerateObject())
-            {
-                args[prop.Name] = prop.Value.ValueKind switch
-                {
-                    JsonValueKind.String => prop.Value.GetString() ?? string.Empty,
-                    JsonValueKind.Number => prop.Value.TryGetInt32(out var intVal) ? intVal : prop.Value.GetDouble(),
-                    JsonValueKind.True => true,
-                    JsonValueKind.False => false,
-                    _ => prop.Value.ToString()
-                };
-            }
-        }
-
-        LogToolCallReceived(functionName, args);
-
-        var toolCall = new ToolCall
-        {
-            Id = Guid.NewGuid().ToString(),
-            Name = functionName,
-            Arguments = args
-        };
-
-        string functionResult;
-
-        var result = await RaiseOnToolCallAsync(toolCall);
-        if (result != null)
-        {
-            LogToolExecution(functionName);
-            functionResult = result.Content ?? string.Empty;
-            LogToolResult(functionName, functionResult);
-        }
-        else if (functionName == "web_search" && _searchService != null)
-        {
-            functionResult = await ExecuteWebSearchAsync(args);
-        }
-        else
-        {
-            LogError("HandleFunctionCall", $"No handler for function: {functionName}");
-            functionResult = $"Error: No handler available for function '{functionName}'";
-        }
-
-        return await ContinueWithFunctionResultAsync(
-            modelContentElement,
-            originalContents,
-            functionName,
-            functionResult,
-            cancellationToken);
-    }
-
     private async Task<string> ExecuteWebSearchAsync(Dictionary<string, object?> args)
     {
         try
@@ -625,7 +446,7 @@ public class GeminiProvider : BaseLLMProvider
                 return "Error: Missing query parameter";
             }
 
-            RaiseOnStatusChange("searching");
+            RaiseOnStatusChange(StatusManager.SearchingStatus);
             LogToolExecution("web_search");
             var result = await _searchService!.SearchAsync(query, maxResults);
             RaiseOnStatusChange(null);
@@ -639,166 +460,12 @@ public class GeminiProvider : BaseLLMProvider
         }
     }
 
-    private async Task<string> ContinueWithFunctionResultAsync(
-        JsonElement modelContentElement,
-        object[] originalContents,
-        string functionName,
-        string functionResult,
-        CancellationToken cancellationToken)
+    private static string MapRoleToGemini(ChatRole role)
     {
-        try
+        return role switch
         {
-            var conversationHistory = new List<object>(originalContents);
-
-            var modelParts = new List<object>();
-            foreach (var contentPart in modelContentElement.GetProperty("parts").EnumerateArray())
-            {
-                var partObj = JsonSerializer.Deserialize<object>(contentPart.GetRawText());
-                if (partObj != null)
-                    modelParts.Add(partObj);
-            }
-
-            conversationHistory.Add(new
-            {
-                role = "model",
-                parts = modelParts.ToArray()
-            });
-
-            conversationHistory.Add(new
-            {
-                role = "function",
-                parts = new[]
-                {
-                    new
-                    {
-                        functionResponse = new
-                        {
-                            name = functionName,
-                            response = new { result = functionResult }
-                        }
-                    }
-                }
-            });
-
-            var continuePayload = new Dictionary<string, object>
-            {
-                ["contents"] = conversationHistory.ToArray()
-            };
-
-            var (content, _) = await ExecuteRequestAsync(continuePayload, cancellationToken);
-
-            if (content == null)
-            {
-                LogError("ContinueWithFunctionResult", "Failed to get response after function call");
-                return string.Empty;
-            }
-
-            return ExtractSimpleResponse(content);
-        }
-        catch (LLMException)
-        {
-            throw;
-        }
-        catch (Exception ex)
-        {
-            LogError("ContinueWithFunctionResult", ex.Message);
-            return $"Error: {ex.Message}";
-        }
-    }
-
-    private string ExtractSimpleResponse(string content)
-    {
-        try
-        {
-            var data = JsonSerializer.Deserialize<JsonElement>(content);
-
-            if (data.TryGetProperty("error", out var errorObj))
-            {
-                var errorMsg = errorObj.TryGetProperty("message", out var msg)
-                    ? msg.GetString() ?? "Unknown API error"
-                    : errorObj.GetString() ?? "Unknown API error";
-                throw LLMException.CreateWithMessage(errorMsg, Name);
-            }
-
-            var messageParts = ExtractTextFromCandidates(data, Name);
-            return string.Join("\n\n", messageParts);
-        }
-        catch (LLMException)
-        {
-            throw;
-        }
-    }
-
-    /// <summary>
-    /// Validates the finish reason and throws LLMException if the response was blocked or truncated.
-    /// </summary>
-    /// <param name="finishReason">The finish reason string from the API response</param>
-    /// <exception cref="LLMException">Thrown when the finish reason indicates a blocked or truncated response</exception>
-    private static void ValidateFinishReason(string? finishReason, string providerName)
-    {
-        if (string.IsNullOrEmpty(finishReason) || finishReason == "STOP" || finishReason == "END_TURN")
-            return;
-
-        var userMessage = finishReason switch
-        {
-            "SAFETY" => "Content blocked by safety filter",
-            "RECITATION" => "Content blocked (copyright)",
-            "PROHIBITED" => "Content prohibited",
-            "BLOCKLIST" => "Content blocked",
-            "MAX_TOKENS" => "Response truncated (max tokens)",
-            "MALFORMED_FUNCTION_CALL" => "Tool call error",
-            "IMAGE_SAFETY" => "Image blocked by safety filter",
-            _ => $"API error: {finishReason}"
-        };
-        throw LLMException.CreateWithMessage(userMessage, providerName);
-    }
-
-    /// <summary>
-    /// Extracts all text content from the candidates in a Gemini API response.
-    /// Validates finish reasons for each candidate.
-    /// </summary>
-    /// <param name="data">The parsed JSON response</param>
-    /// <returns>List of text strings extracted from all candidates' parts</returns>
-    private static List<string> ExtractTextFromCandidates(JsonElement data, string providerName)
-    {
-        var messageParts = new List<string>();
-
-        if (!data.TryGetProperty("candidates", out var candidates))
-            return messageParts;
-
-        foreach (var candidate in candidates.EnumerateArray())
-        {
-            var finishReason = candidate.TryGetProperty("finishReason", out var fr)
-                ? fr.GetString()
-                : null;
-
-            ValidateFinishReason(finishReason, providerName);
-
-            if (!candidate.TryGetProperty("content", out var contentElement))
-                continue;
-
-            if (!contentElement.TryGetProperty("parts", out var partsElement))
-                continue;
-
-            foreach (var part in partsElement.EnumerateArray())
-            {
-                if (part.TryGetProperty("text", out var text) && text.GetString() is string textValue)
-                {
-                    messageParts.Add(textValue);
-                }
-            }
-        }
-
-        return messageParts;
-    }
-
-    private static string MapRoleToGemini(string role)
-    {
-        return role.ToLowerInvariant() switch
-        {
-            "assistant" => "model",
-            "system" => "user",
-            _ => role
+            ChatRole.System => "user",
+            _ => role.ToApiString()
         };
     }
 

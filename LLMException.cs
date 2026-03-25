@@ -1,5 +1,7 @@
 using System;
 
+namespace YAOLlm;
+
 public class LLMException : Exception
 {
     public int StatusCode { get; }

@@ -35,19 +35,47 @@ public class OpenAICompatibleProvider : OpenAIStyleProvider
         Dictionary<string, object> requestBody,
         CancellationToken cancellationToken)
     {
-        var request = CreateRequest(requestBody);
+        const int maxRetries = 3;
 
-        try
+        for (int attempt = 0; attempt <= maxRetries; attempt++)
         {
-            var response = await _client.ExecuteAsync(request, cancellationToken);
+            var request = CreateRequest(requestBody);
+            RestResponse response;
+
+            try
+            {
+                response = await _client.ExecuteAsync(request, cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                LogCancelled();
+                throw;
+            }
+            catch (Exception ex) when (ShouldRetry(ex, attempt, maxRetries))
+            {
+                var delay = GetRetryDelay(attempt);
+                LogRetry(attempt + 1, maxRetries, (int)delay.TotalMilliseconds);
+                await Task.Delay(delay, cancellationToken);
+                continue;
+            }
 
             if (!response.IsSuccessful)
             {
                 var errorMessage = string.IsNullOrEmpty(response.Content)
                     ? $"Status: {response.StatusCode}"
                     : response.Content;
+                var ex = LLMException.CreateWithStatusCode((int)response.StatusCode, errorMessage, Name);
+
+                if (ShouldRetry(ex, attempt, maxRetries))
+                {
+                    var delay = GetRetryDelay(attempt);
+                    LogRetry(attempt + 1, maxRetries, (int)delay.TotalMilliseconds);
+                    await Task.Delay(delay, cancellationToken);
+                    continue;
+                }
+
                 LogError("ExecuteSendAsync", errorMessage);
-                throw LLMException.CreateWithStatusCode((int)response.StatusCode, errorMessage, Name);
+                throw ex;
             }
 
             if (string.IsNullOrEmpty(response.Content))
@@ -58,11 +86,8 @@ public class OpenAICompatibleProvider : OpenAIStyleProvider
 
             return await ProcessResponseAsync(response.Content, requestBody, cancellationToken);
         }
-        catch (OperationCanceledException)
-        {
-            LogCancelled();
-            throw;
-        }
+
+        return string.Empty;
     }
 
     protected override async IAsyncEnumerable<string> ExecuteStreamAsync(
@@ -71,13 +96,11 @@ public class OpenAICompatibleProvider : OpenAIStyleProvider
     {
         ThrowIfDisposed();
         const int maxRetries = 3;
-        const int retryDelayMs = 1000;
-        int retryCount = 0;
 
         HttpResponseMessage? response = null;
         HttpRequestMessage? request = null;
 
-        while (response == null)
+        for (int attempt = 0; attempt <= maxRetries; attempt++)
         {
             request?.Dispose();
 
@@ -93,13 +116,13 @@ public class OpenAICompatibleProvider : OpenAIStyleProvider
                 {
                     var errorContent = await resp.Content.ReadAsStringAsync(cancellationToken);
                     var ex = LLMException.CreateWithStatusCode((int)resp.StatusCode, errorContent, Name);
+                    resp.Dispose();
 
-                    if (ex.StatusCode == 429 && retryCount < maxRetries)
+                    if (ShouldRetry(ex, attempt, maxRetries))
                     {
-                        resp.Dispose();
-                        retryCount++;
-                        LogRetry(retryCount, maxRetries, retryDelayMs);
-                        await Task.Delay(retryDelayMs * retryCount, cancellationToken);
+                        var delay = GetRetryDelay(attempt);
+                        LogRetry(attempt + 1, maxRetries, (int)delay.TotalMilliseconds);
+                        await Task.Delay(delay, cancellationToken);
                         continue;
                     }
 
@@ -108,6 +131,7 @@ public class OpenAICompatibleProvider : OpenAIStyleProvider
                 }
 
                 response = resp;
+                break;
             }
             catch (OperationCanceledException)
             {
@@ -115,18 +139,18 @@ public class OpenAICompatibleProvider : OpenAIStyleProvider
                 LogCancelled();
                 throw;
             }
-            catch (HttpRequestException) when (retryCount < maxRetries)
+            catch (Exception ex) when (ShouldRetry(ex, attempt, maxRetries))
             {
-                retryCount++;
-                LogRetry(retryCount, maxRetries, retryDelayMs);
-                await Task.Delay(retryDelayMs * retryCount, cancellationToken);
+                var delay = GetRetryDelay(attempt);
+                LogRetry(attempt + 1, maxRetries, (int)delay.TotalMilliseconds);
+                await Task.Delay(delay, cancellationToken);
             }
         }
 
         using (request!)
         using (response)
         {
-            using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+            using var stream = await response!.Content.ReadAsStreamAsync(cancellationToken);
             using var reader = new StreamReader(stream);
 
             var fullContent = new StringBuilder();
@@ -196,7 +220,7 @@ public class OpenAICompatibleProvider : OpenAIStyleProvider
                 {
                     if (toolCall.Name == "web_search")
                     {
-                        RaiseOnStatusChange("searching");
+                        RaiseOnStatusChange(StatusManager.SearchingStatus);
                     }
 
                     ToolResult? toolResult = await RaiseOnToolCallAsync(toolCall);
@@ -277,7 +301,7 @@ public class OpenAICompatibleProvider : OpenAIStyleProvider
                 return new ToolResult(toolCall.Id, "Error: Missing query parameter", isError: true);
             }
 
-            RaiseOnStatusChange("searching");
+            RaiseOnStatusChange(StatusManager.SearchingStatus);
             LogToolExecution("web_search");
             var searchResult = await _searchService!.SearchAsync(query, maxResults);
             RaiseOnStatusChange(null);

@@ -1,14 +1,27 @@
 namespace YAOLlm;
 
+public enum ChatRole
+{
+    User,
+    System,
+    Model,
+    Error
+}
+
+public static class ChatRoleExtensions
+{
+    public static string ToApiString(this ChatRole role) => role.ToString().ToLowerInvariant();
+}
+
 public class ChatMessage
 {
-    public string Role { get; }
+    public ChatRole Role { get; }
     public string? Content { get; set; }
     public byte[]? Image { get; }
 
-    public ChatMessage(string role, string? content = null, byte[]? image = null)
+    public ChatMessage(ChatRole role, string? content = null, byte[]? image = null)
     {
-        Role = role ?? throw new ArgumentNullException(nameof(role));
+        Role = role;
         Content = content;
         Image = image;
     }
