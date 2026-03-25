@@ -59,6 +59,7 @@ public class OpenRouterProvider : OpenAIStyleProvider
         Dictionary<string, object> requestBody,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
+        ThrowIfDisposed();
         int retryCount = 0;
 
         while (true)
@@ -86,6 +87,7 @@ public class OpenRouterProvider : OpenAIStyleProvider
 
             if (state.FollowUpRequest != null)
             {
+                ThrowIfDisposed();
                 requestBody = state.FollowUpRequest;
                 retryCount = 0;
                 continue;
@@ -102,7 +104,7 @@ public class OpenRouterProvider : OpenAIStyleProvider
     {
         try
         {
-            var httpClient = new HttpClient();
+            using var httpClient = new HttpClient();
             httpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {_apiKey}");
             httpClient.DefaultRequestHeaders.Add("HTTP-Referer", DefaultReferer);
             httpClient.DefaultRequestHeaders.Add("X-Title", DefaultTitle);
@@ -160,18 +162,11 @@ public class OpenRouterProvider : OpenAIStyleProvider
             while ((line = await reader.ReadLineAsync(cancellationToken)) != null)
             {
                 if (string.IsNullOrWhiteSpace(line))
-                {
-                    LogSseLineSkipped("empty line");
                     continue;
-                }
                 if (!line.StartsWith("data: "))
-                {
-                    LogSseLineSkipped($"no data prefix: {line.Substring(0, Math.Min(20, line.Length))}");
                     continue;
-                }
 
                 var jsonPart = line.Substring(6);
-                LogSseLineReceived(jsonPart);
                 if (jsonPart == "[DONE]")
                     break;
 
@@ -356,5 +351,11 @@ public class OpenRouterProvider : OpenAIStyleProvider
         request.AddHeader("Content-Type", "application/json");
         request.AddJsonBody(requestBody);
         return request;
+    }
+
+    public override void Dispose()
+    {
+        _client.Dispose();
+        base.Dispose();
     }
 }

@@ -23,7 +23,7 @@ namespace YAOLlm
             {
                 _logger.Log($"Performing Tavily search: '{query}' (maxResults: {maxResults}, depth: {searchDepth})");
 
-                var client = new RestClient(ApiBaseUrl);
+                using var client = new RestClient(ApiBaseUrl);
                 var request = new RestRequest("/search", Method.Post);
                 
                 // Add API key header

@@ -18,6 +18,7 @@ public abstract class BaseLLMProvider : ILLMProvider
     protected readonly HttpClient _httpClient;
     protected readonly TavilySearchService? _searchService;
     protected readonly Logger _logger;
+    protected volatile bool _isDisposed;
 
     /// <summary>
     /// Provider name (e.g., "gemini", "openrouter", "ollama")
@@ -256,6 +257,19 @@ public abstract class BaseLLMProvider : ILLMProvider
         return new ToolResult(toolCall.Id, $"No handler for tool: {toolCall.Name}", isError: true);
     }
 
+    public virtual void Dispose()
+    {
+        if (_isDisposed) return;
+        _isDisposed = true;
+        _httpClient.Dispose();
+    }
+
+    protected void ThrowIfDisposed()
+    {
+        if (_isDisposed)
+            throw new ObjectDisposedException(Name);
+    }
+
     #region Protected Logging Methods
 
     protected void LogRequest(int messageCount, bool hasTools)
@@ -296,16 +310,6 @@ public abstract class BaseLLMProvider : ILLMProvider
     protected void LogCancelled()
     {
         ProviderLogger.LogCancelled(_logger, Name);
-    }
-
-    protected void LogSseLineReceived(string line, int maxLength = 200)
-    {
-        ProviderLogger.LogSseLineReceived(_logger, Name, line, maxLength);
-    }
-
-    protected void LogSseLineSkipped(string reason)
-    {
-        ProviderLogger.LogSseLineSkipped(_logger, Name, reason);
     }
 
     protected void LogJsonParseError(string rawContent, string error, int maxLength = 100)

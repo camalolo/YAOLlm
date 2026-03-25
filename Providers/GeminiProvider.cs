@@ -93,18 +93,11 @@ public class GeminiProvider : BaseLLMProvider
         while ((line = await reader.ReadLineAsync(cancellationToken)) != null)
         {
             if (string.IsNullOrWhiteSpace(line))
-            {
-                LogSseLineSkipped("empty line");
                 continue;
-            }
             if (!line.StartsWith("data: "))
-            {
-                LogSseLineSkipped($"no data prefix: {line.Substring(0, Math.Min(20, line.Length))}");
                 continue;
-            }
 
             var jsonPart = line.Substring(6);
-            LogSseLineReceived(jsonPart);
             
             if (jsonPart == "[DONE]")
                 break;
@@ -143,6 +136,7 @@ public class GeminiProvider : BaseLLMProvider
 
                 if (result != null)
                 {
+                    ThrowIfDisposed();
                     var toolHistory = new List<Dictionary<string, object>>(history)
                     {
                         new() { ["role"] = "user", ["content"] = fullContent.ToString() }
@@ -469,7 +463,7 @@ public class GeminiProvider : BaseLLMProvider
         try
         {
             var url = GetGenerateUrl();
-            var client = new RestClient(url);
+            using var client = new RestClient(url);
             var request = new RestRequest { Method = Method.Post };
             request.AddHeader("Content-Type", "application/json");
             request.AddJsonBody(payload);
@@ -811,5 +805,10 @@ public class GeminiProvider : BaseLLMProvider
             "system" => "user",
             _ => role
         };
+    }
+
+    public override void Dispose()
+    {
+        base.Dispose();
     }
 }

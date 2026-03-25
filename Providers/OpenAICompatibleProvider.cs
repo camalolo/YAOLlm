@@ -69,6 +69,7 @@ public class OpenAICompatibleProvider : OpenAIStyleProvider
         Dictionary<string, object> requestBody,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
+        ThrowIfDisposed();
         const int maxRetries = 3;
         const int retryDelayMs = 1000;
         int retryCount = 0;
@@ -137,18 +138,11 @@ public class OpenAICompatibleProvider : OpenAIStyleProvider
             while ((line = await reader.ReadLineAsync(cancellationToken)) != null)
             {
                 if (string.IsNullOrWhiteSpace(line))
-                {
-                    LogSseLineSkipped("empty line");
                     continue;
-                }
                 if (!line.StartsWith("data: "))
-                {
-                    LogSseLineSkipped($"no data prefix: {line.Substring(0, Math.Min(20, line.Length))}");
                     continue;
-                }
 
                 var jsonPart = line.Substring(6);
-                LogSseLineReceived(jsonPart);
 
                 if (jsonPart == "[DONE]")
                     break;
@@ -246,6 +240,7 @@ public class OpenAICompatibleProvider : OpenAIStyleProvider
 
                         requestBody["messages"] = newMessages;
 
+                        ThrowIfDisposed();
                         await foreach (var chunk in ExecuteStreamAsync(requestBody, cancellationToken))
                         {
                             yield return chunk;
@@ -293,5 +288,11 @@ public class OpenAICompatibleProvider : OpenAIStyleProvider
             LogError("web_search", ex.Message);
             return new ToolResult(toolCall.Id, $"Error executing web search: {ex.Message}", isError: true);
         }
+    }
+
+    public override void Dispose()
+    {
+        _client.Dispose();
+        base.Dispose();
     }
 }

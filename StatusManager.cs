@@ -15,7 +15,8 @@
 
         public void SetStatus(Status status)
         {
-            StatusChanged?.Invoke(status);
+            var handler = StatusChanged;
+            handler?.Invoke(status);
         }
     }
 }

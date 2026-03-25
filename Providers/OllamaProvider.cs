@@ -336,10 +336,7 @@ public class OllamaProvider : BaseLLMProvider
         while ((line = await reader.ReadLineAsync(cancellationToken)) != null)
         {
             if (string.IsNullOrWhiteSpace(line))
-            {
-                LogSseLineSkipped("empty line");
                 continue;
-            }
                 
             var chunk = ParseStreamLine(line, fullContent, pendingToolCalls);
             if (chunk != null)
@@ -392,6 +389,7 @@ public class OllamaProvider : BaseLLMProvider
                     
                     requestBody["messages"] = newMessages;
                     
+                    ThrowIfDisposed();
                     await foreach (var chunk in StreamWithRetryAsync(requestBody, cancellationToken))
                     {
                         yield return chunk;
@@ -455,5 +453,11 @@ public class OllamaProvider : BaseLLMProvider
             LogJsonParseError(line, ex.Message);
             return null;
         }
+    }
+
+    public override void Dispose()
+    {
+        _client.Dispose();
+        base.Dispose();
     }
 }

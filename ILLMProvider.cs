@@ -9,7 +9,7 @@ namespace YAOLlm;
 /// <summary>
 /// Interface for LLM provider implementations
 /// </summary>
-public interface ILLMProvider
+public interface ILLMProvider : IDisposable
 {
     /// <summary>
     /// Provider name (e.g., "gemini", "openrouter", "ollama")

@@ -190,6 +190,7 @@ public abstract class OpenAIStyleProvider : BaseLLMProvider
     // ─── Shared: Tool Call Handling (non-streaming) ────────────────────
     protected async Task<string> HandleToolCallsAsync(JsonArray toolCalls, object originalRequestBody, CancellationToken cancellationToken)
     {
+        ThrowIfDisposed();
         var requestBodyDict = originalRequestBody as Dictionary<string, object>;
         var messages = requestBodyDict?["messages"] as List<object>;
 
@@ -248,6 +249,7 @@ public abstract class OpenAIStyleProvider : BaseLLMProvider
         {
             newRequestBody["tools"] = originalTools;
         }
+        ThrowIfDisposed();
         return await ExecuteSendAsync(newRequestBody, cancellationToken);
     }
 
