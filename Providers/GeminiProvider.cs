@@ -619,9 +619,11 @@ public class GeminiProvider : BaseLLMProvider
         try
         {
             var query = args.TryGetValue("query", out var queryObj) ? queryObj?.ToString() : null;
-            var maxResults = args.TryGetValue("max_results", out var maxResultsObj) && maxResultsObj is int max
-                ? max
-                : 5;
+            int maxResults;
+            if (args.TryGetValue("max_results", out var maxResultsObj) && maxResultsObj is long l && l >= 0)
+                maxResults = (int)l;
+            else
+                maxResults = 5;
 
             if (string.IsNullOrEmpty(query))
             {

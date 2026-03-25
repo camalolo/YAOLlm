@@ -227,9 +227,11 @@ public class OpenRouterProvider : OpenAIStyleProvider
                     if (result == null && toolCall.Name == "web_search" && _searchService != null)
                     {
                         var query = toolCall.Arguments.TryGetValue("query", out var queryObj) ? queryObj?.ToString() : null;
-                        var maxResults = toolCall.Arguments.TryGetValue("max_results", out var maxResultsObj) && maxResultsObj is int max
-                            ? max
-                            : 5;
+                        int maxResults;
+                        if (toolCall.Arguments.TryGetValue("max_results", out var maxResultsObj) && maxResultsObj is long l && l >= 0)
+                            maxResults = (int)l;
+                        else
+                            maxResults = 5;
 
                         if (string.IsNullOrEmpty(query))
                         {
@@ -263,7 +265,7 @@ public class OpenRouterProvider : OpenAIStyleProvider
                         newMessages.Add(new
                         {
                             role = "assistant",
-                            content = state.FullContent.ToString() ?? "",
+                            content = state.FullContent.Length > 0 ? state.FullContent.ToString() : null,
                             tool_calls = completedToolCalls.Select(tc => new
                             {
                                 id = tc.Id,

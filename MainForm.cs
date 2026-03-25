@@ -41,7 +41,6 @@ namespace YAOLlm
             _statusManager = statusManager ?? throw new ArgumentNullException(nameof(statusManager));
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
 
-            _presetManager.LoadConfig();
             _currentProvider = _presetManager.CreateProvider();
 
             _chatBox = FormLayout.CreateChatBox();
@@ -104,7 +103,7 @@ namespace YAOLlm
                 {
                     _logger.Log("Preset switch blocked: request in progress.");
                     _ = _chatRenderer.UpdateChat("⚠ Cannot switch preset while a request is active.\r\n", "system");
-                    return false;
+                    return true;
                 }
 
                 var oldProvider = _currentProvider;
@@ -250,13 +249,15 @@ namespace YAOLlm
 
                 var response = fullResponse.ToString();
 
-                _conversationManager.AddExchange(userMessage, response);
-
-                UpdateHistoryCounter();
-
                 if (!string.IsNullOrEmpty(response))
                 {
+                    _conversationManager.AddExchange(userMessage, response);
+                    UpdateHistoryCounter();
                     _ = _chatRenderer.UpdateChat(response, "model");
+                }
+                else
+                {
+                    _ = _chatRenderer.UpdateChat("⚠️ The model returned no response.\n", "system");
                 }
             }
             catch (LLMException ex)
