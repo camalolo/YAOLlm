@@ -294,47 +294,12 @@ public class GeminiProvider : BaseLLMProvider
             if (jsonPart == "[DONE]")
                 break;
 
-            var chunks = ParseStreamTextChunk(jsonPart);
-            foreach (var chunk in chunks)
+            var (textChunks, _) = ParseStreamChunk(jsonPart);
+            foreach (var chunk in textChunks)
             {
                 yield return chunk;
             }
         }
-    }
-
-    private List<string> ParseStreamTextChunk(string jsonPart)
-    {
-        var chunks = new List<string>();
-        try
-        {
-            using var doc = JsonDocument.Parse(jsonPart);
-            var root = doc.RootElement;
-
-            if (root.TryGetProperty("candidates", out var candidates) && candidates.GetArrayLength() > 0)
-            {
-                var candidate = candidates[0];
-                if (candidate.TryGetProperty("content", out var content) &&
-                    content.TryGetProperty("parts", out var parts))
-                {
-                    foreach (var part in parts.EnumerateArray())
-                    {
-                        if (part.TryGetProperty("text", out var text))
-                        {
-                            var chunk = text.GetString() ?? "";
-                            if (!string.IsNullOrEmpty(chunk))
-                            {
-                                chunks.Add(chunk);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        catch (JsonException ex)
-        {
-            LogJsonParseError(jsonPart, ex.Message);
-        }
-        return chunks;
     }
 
     private object[] BuildContents(List<Dictionary<string, object>> history, byte[]? image)
@@ -549,31 +514,11 @@ public class GeminiProvider : BaseLLMProvider
                 return string.Empty;
             }
 
-            var messageParts = new List<string>();
+            var messageParts = ExtractTextFromCandidates(data, Name);
             JsonElement? modelContentElement = null;
 
             foreach (var candidate in candidates.EnumerateArray())
             {
-                var finishReason = candidate.TryGetProperty("finishReason", out var fr)
-                    ? fr.GetString()
-                    : null;
-
-                if (!string.IsNullOrEmpty(finishReason) && finishReason != "STOP" && finishReason != "END_TURN")
-                {
-                    var userMessage = finishReason switch
-                    {
-                        "SAFETY" => "Content blocked by safety filter",
-                        "RECITATION" => "Content blocked (copyright)",
-                        "PROHIBITED" => "Content prohibited",
-                        "BLOCKLIST" => "Content blocked",
-                        "MAX_TOKENS" => "Response truncated (max tokens)",
-                        "MALFORMED_FUNCTION_CALL" => "Tool call error",
-                        "IMAGE_SAFETY" => "Image blocked by safety filter",
-                        _ => $"API error: {finishReason}"
-                    };
-                    throw LLMException.CreateWithMessage(userMessage, Name);
-                }
-
                 if (!candidate.TryGetProperty("content", out var contentElement))
                     continue;
 
@@ -584,11 +529,7 @@ public class GeminiProvider : BaseLLMProvider
 
                 foreach (var part in partsElement.EnumerateArray())
                 {
-                    if (part.TryGetProperty("text", out var text) && text.GetString() is string textValue)
-                    {
-                        messageParts.Add(textValue);
-                    }
-                    else if (part.TryGetProperty("functionCall", out var functionCall))
+                    if (part.TryGetProperty("functionCall", out var functionCall))
                     {
                         var functionMessage = await HandleFunctionCallAsync(
                             functionCall,
@@ -785,55 +726,81 @@ public class GeminiProvider : BaseLLMProvider
                 throw LLMException.CreateWithMessage(errorMsg, Name);
             }
 
-            if (!data.TryGetProperty("candidates", out var candidates))
-                return string.Empty;
-
-            var messageParts = new List<string>();
-
-            foreach (var candidate in candidates.EnumerateArray())
-            {
-                var finishReason = candidate.TryGetProperty("finishReason", out var fr)
-                    ? fr.GetString()
-                    : null;
-
-                if (!string.IsNullOrEmpty(finishReason) && finishReason != "STOP" && finishReason != "END_TURN")
-                {
-                    var userMessage = finishReason switch
-                    {
-                        "SAFETY" => "Content blocked by safety filter",
-                        "RECITATION" => "Content blocked (copyright)",
-                        "PROHIBITED" => "Content prohibited",
-                        "BLOCKLIST" => "Content blocked",
-                        "MAX_TOKENS" => "Response truncated (max tokens)",
-                        "MALFORMED_FUNCTION_CALL" => "Tool call error",
-                        "IMAGE_SAFETY" => "Image blocked by safety filter",
-                        _ => $"API error: {finishReason}"
-                    };
-                    throw LLMException.CreateWithMessage(userMessage, Name);
-                }
-
-                if (!candidate.TryGetProperty("content", out var contentElement))
-                    continue;
-
-                if (!contentElement.TryGetProperty("parts", out var partsElement))
-                    continue;
-
-                foreach (var part in partsElement.EnumerateArray())
-                {
-                    if (part.TryGetProperty("text", out var text) && text.GetString() is string textValue)
-                    {
-                        messageParts.Add(textValue);
-                    }
-                }
-            }
-
+            var messageParts = ExtractTextFromCandidates(data, Name);
             return string.Join("\n\n", messageParts);
+        }
+        catch (LLMException)
+        {
+            throw;
         }
         catch (Exception ex)
         {
             LogError("ExtractSimpleResponse", ex.Message);
             return string.Empty;
         }
+    }
+
+    /// <summary>
+    /// Validates the finish reason and throws LLMException if the response was blocked or truncated.
+    /// </summary>
+    /// <param name="finishReason">The finish reason string from the API response</param>
+    /// <exception cref="LLMException">Thrown when the finish reason indicates a blocked or truncated response</exception>
+    private static void ValidateFinishReason(string? finishReason, string providerName)
+    {
+        if (string.IsNullOrEmpty(finishReason) || finishReason == "STOP" || finishReason == "END_TURN")
+            return;
+
+        var userMessage = finishReason switch
+        {
+            "SAFETY" => "Content blocked by safety filter",
+            "RECITATION" => "Content blocked (copyright)",
+            "PROHIBITED" => "Content prohibited",
+            "BLOCKLIST" => "Content blocked",
+            "MAX_TOKENS" => "Response truncated (max tokens)",
+            "MALFORMED_FUNCTION_CALL" => "Tool call error",
+            "IMAGE_SAFETY" => "Image blocked by safety filter",
+            _ => $"API error: {finishReason}"
+        };
+        throw LLMException.CreateWithMessage(userMessage, providerName);
+    }
+
+    /// <summary>
+    /// Extracts all text content from the candidates in a Gemini API response.
+    /// Validates finish reasons for each candidate.
+    /// </summary>
+    /// <param name="data">The parsed JSON response</param>
+    /// <returns>List of text strings extracted from all candidates' parts</returns>
+    private static List<string> ExtractTextFromCandidates(JsonElement data, string providerName)
+    {
+        var messageParts = new List<string>();
+
+        if (!data.TryGetProperty("candidates", out var candidates))
+            return messageParts;
+
+        foreach (var candidate in candidates.EnumerateArray())
+        {
+            var finishReason = candidate.TryGetProperty("finishReason", out var fr)
+                ? fr.GetString()
+                : null;
+
+            ValidateFinishReason(finishReason, providerName);
+
+            if (!candidate.TryGetProperty("content", out var contentElement))
+                continue;
+
+            if (!contentElement.TryGetProperty("parts", out var partsElement))
+                continue;
+
+            foreach (var part in partsElement.EnumerateArray())
+            {
+                if (part.TryGetProperty("text", out var text) && text.GetString() is string textValue)
+                {
+                    messageParts.Add(textValue);
+                }
+            }
+        }
+
+        return messageParts;
     }
 
     private static string MapRoleToGemini(string role)

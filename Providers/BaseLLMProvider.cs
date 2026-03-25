@@ -182,28 +182,23 @@ public abstract class BaseLLMProvider : ILLMProvider
     }
 
     /// <summary>
-    /// Executes a web search using the provided search service.
+    /// Formats a list of tool definitions into the OpenAI-compatible structure
+    /// required by OpenAI-style API endpoints.
     /// </summary>
-    /// <param name="query">The search query</param>
-    /// <param name="searchService">The search service to use (can be null)</param>
-    /// <returns>The search results as a string, or null if service is unavailable</returns>
-    protected static async Task<string?> ExecuteWebSearchAsync(string query, TavilySearchService? searchService)
+    /// <param name="tools">The tool definitions to format</param>
+    /// <returns>List of formatted tool objects</returns>
+    protected static List<object> FormatToolDefinitions(List<ToolDefinition> tools)
     {
-        if (searchService == null)
-            return null;
-
-        if (string.IsNullOrEmpty(query))
-            return "Error: Missing query parameter";
-
-        try
+        return tools.Select(t => (object)new
         {
-            var result = await searchService.SearchAsync(query, 5);
-            return result;
-        }
-        catch (Exception ex)
-        {
-            return $"Error executing web search: {ex.Message}";
-        }
+            type = "function",
+            function = new
+            {
+                name = t.Name,
+                description = t.Description,
+                parameters = t.Parameters
+            }
+        }).ToList();
     }
 
     /// <summary>

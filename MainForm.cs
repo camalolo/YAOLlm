@@ -252,6 +252,8 @@ namespace YAOLlm
             {
                 if (status == "searching")
                     _statusManager.SetStatus(Status.Searching);
+                else if (status == null)
+                    _statusManager.SetStatus(Status.Receiving);
             };
         }
 

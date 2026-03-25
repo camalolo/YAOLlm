@@ -16,7 +16,7 @@ public class OllamaProvider : BaseLLMProvider
     private readonly RestClient _client;
     private string _model;
 
-    public override string Name => "Ollama";
+    public override string Name => "ollama";
     public override string Model { get => _model; protected set => _model = value; }
     public override bool SupportsWebSearch => false;
 
@@ -84,16 +84,7 @@ public class OllamaProvider : BaseLLMProvider
 
         if (tools != null && tools.Count > 0)
         {
-            payload["tools"] = tools.Select(t => new
-            {
-                type = "function",
-                function = new
-                {
-                    name = t.Name,
-                    description = t.Description,
-                    parameters = t.Parameters
-                }
-            }).ToList();
+            payload["tools"] = FormatToolDefinitions(tools);
         }
 
         return payload;
@@ -314,16 +305,7 @@ public class OllamaProvider : BaseLLMProvider
 
         if (tools != null && tools.Count > 0)
         {
-            body["tools"] = tools.Select(t => new
-            {
-                type = "function",
-                function = new
-                {
-                    name = t.Name,
-                    description = t.Description,
-                    parameters = t.Parameters
-                }
-            }).ToList();
+            body["tools"] = FormatToolDefinitions(tools);
         }
 
         return body;
