@@ -1,6 +1,7 @@
 using System.Runtime.InteropServices;
 using System.Drawing.Imaging;
 using System.Text;
+using Markdig;
 using Microsoft.Web.WebView2.WinForms;
 using Microsoft.Web.WebView2.Core;
 
@@ -11,17 +12,15 @@ public partial class MainForm : Form
     private readonly PresetManager _presetManager;
     private readonly StatusManager _statusManager;
     private readonly Logger _logger;
-    private readonly ChatRenderer _chatRenderer;
     private readonly ConversationManager _conversationManager;
     private readonly TrayIconManager _trayIconManager;
-    private readonly WebView2 _chatBox;
-    private readonly TextBox _inputField;
-    private Button _statusButton;
-    private Button _historyButton;
-    private Label _providerLabel;
+    private readonly WebView2 _webView;
+    private WebViewBridge? _bridge;
     private ILLMProvider _currentProvider;
     private Action<string?>? _providerStatusHandler;
     private readonly SemaphoreSlim _sendLock = new(1, 1);
+
+    private static readonly MarkdownPipeline MdPipeline = new MarkdownPipelineBuilder().UseAdvancedExtensions().Build();
 
     private const int WM_HOTKEY = 0x0312;
     private const int HOTKEY_ID = 1;
@@ -41,47 +40,19 @@ public partial class MainForm : Form
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
 
         _currentProvider = _presetManager.CreateProvider();
-
-        _chatBox = FormLayout.CreateChatBox();
-        _chatRenderer = new ChatRenderer(_chatBox, _logger);
         _conversationManager = new ConversationManager(_logger);
-        _inputField = FormLayout.CreateInputField(InputField_KeyDown);
 
-        var topPanel = FormLayout.CreateTopPanel(HideOverlay, Application.Exit);
-        var bottomResult = FormLayout.CreateBottomPanel(
-            _presetManager.ActivePreset.ToString(),
-            new Dictionary<string, (string, Action)>
-            {
-                ["send"] = ("Send", () => SendMessage()),
-                ["capture_send"] = ("Capture && Send", CaptureAndSend),
-                ["load_image"] = ("Load Image", LoadAndSendImage),
-                ["proceed"] = ("Proceed", () => SendMessage("Please proceed")),
-                ["clear"] = ("Clear", ClearChat)
-            });
-        Panel bottomPanel = bottomResult.panel;
-        _statusButton = bottomResult.statusButton;
-        _historyButton = bottomResult.historyButton;
-        _providerLabel = bottomResult.providerLabel;
+        _webView = new WebView2
+        {
+            Dock = DockStyle.Fill,
+            BackColor = Color.Black
+        };
 
-        _chatBox.BackColor = Color.Black;
-        FormLayout.ConfigureForm(this, new Control[] { _chatBox, _inputField, bottomPanel, topPanel });
-        ClearChat();
+        FormLayout.ConfigureForm(this);
+        this.Controls.Add(_webView);
 
         _trayIconManager = new TrayIconManager(ToggleVisibility);
         RegisterGlobalHotkey();
-
-        _statusManager.StatusChanged += status =>
-        {
-            _logger.Log($"StatusChanged event fired: {status}");
-            _statusButton.InvokeIfRequired(() => _statusButton.Text = status.ToString());
-        };
-
-        SubscribeToProviderStatus();
-
-        _presetManager.PresetChanged += preset =>
-        {
-            _providerLabel.InvokeIfRequired(() => _providerLabel.Text = $"[{preset}]");
-        };
 
         this.FormClosing += MainForm_FormClosing;
         this.Load += async (s, e) =>
@@ -89,19 +60,114 @@ public partial class MainForm : Form
             var userDataFolder = Path.Combine(Path.GetTempPath(), "YAOLlm", "WebView2");
             Directory.CreateDirectory(userDataFolder);
             var env = await CoreWebView2Environment.CreateAsync(null, userDataFolder);
-            await _chatBox.EnsureCoreWebView2Async(env);
-            _chatRenderer.Reset();
+            await _webView.EnsureCoreWebView2Async(env);
+            _webView.DefaultBackgroundColor = Color.FromArgb(0, 0, 0, 0);
+
+            // Log JS console messages for debugging
+            _webView.CoreWebView2.WebMessageReceived += (s, e) =>
+            {
+                try
+                {
+                    var json = e.TryGetWebMessageAsString();
+                    if (json.Contains("\"_console\""))
+                    {
+                        var element = System.Text.Json.JsonSerializer.Deserialize<System.Text.Json.JsonElement>(json);
+                        var level = element.GetProperty("level").GetString() ?? "log";
+                        var message = element.GetProperty("message").GetString() ?? "";
+                        _logger.Log($"[JS:{level}] {message}");
+                    }
+                }
+                catch { }
+            };
+
+            // Inject console log forwarder
+            await _webView.CoreWebView2.AddScriptToExecuteOnDocumentCreatedAsync(@"
+    (function() {
+        var _posting = false;
+        var _postMessage = function(msg) {
+            if (_posting || !window.chrome || !window.chrome.webview) return;
+            _posting = true;
+            try { window.chrome.webview.postMessage(msg); }
+            catch(e) {}
+            finally { _posting = false; }
+        };
+        var _origLog = console.log.bind(console);
+        var _origWarn = console.warn.bind(console);
+        var _origError = console.error.bind(console);
+        var _origInfo = console.info.bind(console);
+        var _handlers = { log: _origLog, warn: _origWarn, error: _origError, info: _origInfo };
+        Object.keys(_handlers).forEach(function(method) {
+            console[method] = function() {
+                var args = Array.from(arguments).map(function(a) {
+                    try { return typeof a === 'object' ? JSON.stringify(a) : String(a); }
+                    catch(e) { return String(a); }
+                }).join(' ');
+                _postMessage(JSON.stringify({type: '_console', level: method, message: args}));
+                _handlers[method].apply(console, arguments);
+            };
+        });
+        window.addEventListener('error', function(e) {
+            _postMessage(JSON.stringify({type: '_console', level: 'error', message: 'Uncaught: ' + (e.message || e) + ' at ' + (e.filename || '') + ':' + (e.lineno || '')}));
+        });
+    })();
+");
+
+            // Create bridge
+            _bridge = new WebViewBridge(_webView.CoreWebView2!, _logger);
+
+            _bridge.SendMessage += OnSendMessage;
+            _bridge.CaptureSend += CaptureAndSend;
+            _bridge.LoadImage += LoadAndSendImage;
+            _bridge.Proceed += () => SendMessage("Please proceed");
+            _bridge.Clear += ClearChat;
+            _bridge.Hide += HideOverlay;
+            _bridge.Exit += Application.Exit;
+            _bridge.CycleProvider += CyclePreset;
+
+            // Check if any provider is configured
+            if (!_presetManager.HasProvider)
+            {
+                _bridge.SendNoProvider();
+            }
+
+            // Load HTML from temp file (file:// gives proper origin for CDN resources)
+            var htmlPath = WriteHtmlToTempFile();
+
+            _webView.CoreWebView2.NavigationCompleted += (s, e) =>
+            {
+                if (e.IsSuccess)
+                {
+                    _logger.Log("WebView2: Navigation completed, sending initial state.");
+                    _bridge?.Provider(_presetManager.ActivePreset.DisplayName ?? _presetManager.ActivePreset.ToString());
+                    _bridge?.Status("Idle");
+                }
+            };
+
+            _webView.CoreWebView2.Navigate(htmlPath);
+
+            _statusManager.StatusChanged += status =>
+            {
+                _logger.Log($"StatusChanged event fired: {status}");
+                _bridge?.Status(status.ToString());
+            };
+
+            SubscribeToProviderStatus();
+
+            _presetManager.PresetChanged += preset =>
+            {
+                _bridge?.Provider(preset.DisplayName ?? preset.ToString());
+            };
         };
     }
 
     protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
     {
-        if (keyData == Keys.Tab && _inputField.Focused)
+        if (keyData == Keys.Tab && this.Visible)
         {
             if (_sendLock.CurrentCount == 0)
             {
                 _logger.Log("Preset switch blocked: request in progress.");
-                _ = _chatRenderer.UpdateChat("⚠ Cannot switch preset while a request is active.\r\n", ChatRole.System);
+                _bridge?.Warning("Cannot switch preset while a request is active.");
                 return true;
             }
 
@@ -112,7 +178,7 @@ public partial class MainForm : Form
             _presetManager.CycleNext();
             _currentProvider = _presetManager.CreateProvider();
             SubscribeToProviderStatus();
-            _providerLabel.Text = $"[{_presetManager.ActivePreset}]";
+            _bridge?.Provider(_presetManager.ActivePreset.DisplayName ?? _presetManager.ActivePreset.ToString());
             _presetManager.SaveConfig();
 
             oldProvider?.Dispose();
@@ -140,7 +206,7 @@ public partial class MainForm : Form
         else
         {
             _logger.Log("Failed to register hotkey.");
-            _ = _chatRenderer.UpdateChat("Warning: hotkey registration failed.\r\n", ChatRole.System);
+            _bridge?.Warning("Warning: hotkey registration failed.");
         }
     }
 
@@ -161,33 +227,50 @@ public partial class MainForm : Form
         _logger.Dispose();
     }
 
-    private void InputField_KeyDown(object? sender, KeyEventArgs e)
+    private void OnSendMessage(string text)
     {
-        if (e.KeyCode == Keys.Enter)
+        if (!_presetManager.HasProvider)
         {
-            SendMessage();
-            e.SuppressKeyPress = true;
+            _bridge?.Warning("No provider configured. Add presets to ~/.yaollm.conf");
+            return;
         }
-        else if (e.KeyCode == Keys.Escape)
-            HideOverlay();
+        SendMessage(text);
+    }
+
+    private void CyclePreset()
+    {
+        if (_sendLock.CurrentCount == 0)
+        {
+            _logger.Log("Preset switch blocked: request in progress.");
+            _bridge?.Warning("Cannot switch preset while a request is active.");
+            return;
+        }
+
+        var oldProvider = _currentProvider;
+        if (oldProvider != null && _providerStatusHandler != null)
+            oldProvider.OnStatusChange -= _providerStatusHandler;
+
+        _presetManager.CycleNext();
+        _currentProvider = _presetManager.CreateProvider();
+        SubscribeToProviderStatus();
+        _bridge?.Provider(_presetManager.ActivePreset.DisplayName ?? _presetManager.ActivePreset.ToString());
+        _presetManager.SaveConfig();
+
+        oldProvider?.Dispose();
     }
 
     private void SendMessage(string? message = null, string? imageBase64 = null, string? title = null)
     {
-        if (message == null && string.IsNullOrEmpty(imageBase64))
-            message = _inputField.Text;
-
         message = (message ?? "").Trim();
         if (string.IsNullOrEmpty(message) && string.IsNullOrEmpty(imageBase64)) return;
 
         if (!_sendLock.Wait(0))
         {
-            _ = _chatRenderer.UpdateChat("⚠ A request is already in progress.\r\n", ChatRole.System);
+            _bridge?.Warning("A request is already in progress.");
             return;
         }
 
-        _ = _chatRenderer.UpdateChat($"You: {message}\r\n", ChatRole.User);
-        _inputField.Text = "";
+        _bridge?.ChatMessageFromMarkdown("user", message);
         _ = Task.Run(async () =>
         {
             try { await ProcessLLMRequestAsync(message, imageBase64, title); }
@@ -240,7 +323,7 @@ public partial class MainForm : Form
                     var now = DateTime.UtcNow;
                     if ((now - lastStreamUpdate).TotalMilliseconds >= streamThrottleMs)
                     {
-                        _ = _chatRenderer.UpdateChatStreaming(fullResponse.ToString());
+                        _bridge?.ChatStream(Markdig.Markdown.ToHtml(fullResponse.ToString(), MdPipeline));
                         lastStreamUpdate = now;
                     }
                 }
@@ -252,22 +335,22 @@ public partial class MainForm : Form
             {
                 _conversationManager.AddExchange(userMessage, response);
                 UpdateHistoryCounter();
-                _ = _chatRenderer.UpdateChat(response, ChatRole.Model);
+                _bridge?.ChatMessageFromMarkdown("model", response);
             }
             else
             {
-                _ = _chatRenderer.UpdateChat("⚠️ The model returned no response.\n", ChatRole.System);
+                _bridge?.Warning("The model returned no response.");
             }
         }
         catch (LLMException ex)
         {
             _logger.Log($"LLM Error: {ex.Message}");
-            _ = _chatRenderer.UpdateChat($"❌ {ex.UserMessage}\n", ChatRole.Error);
+            _bridge?.Warning($"{ex.UserMessage}");
         }
         catch (Exception ex)
         {
             _logger.Log($"Error in ProcessLLMRequestAsync: {ex.Message}");
-            _ = _chatRenderer.UpdateChat($"❌ {ex.Message}\n", ChatRole.Error);
+            _bridge?.Warning($"{ex.Message}");
         }
         finally
         {
@@ -275,28 +358,32 @@ public partial class MainForm : Form
         }
     }
 
-    private void CaptureAndSend()
+    private void CaptureAndSend(string text)
     {
-        string message = string.IsNullOrEmpty(_inputField.Text.Trim()) ? "[Screenshot Taken]" : _inputField.Text.Trim();
+        if (!_presetManager.HasProvider)
+        {
+            _bridge?.Warning("No provider configured. Add presets to ~/.yaollm.conf");
+            return;
+        }
+        string message = string.IsNullOrEmpty(text.Trim()) ? "[Screenshot Taken]" : text.Trim();
         var (imageBase64, title) = ImageService.CaptureScreen(_logger, this);
         if (!string.IsNullOrEmpty(imageBase64))
             SendMessage(message, imageBase64, title);
         else
-            _ = _chatRenderer.UpdateChat("Error: Screen capture failed.\r\n", ChatRole.System);
+            _bridge?.Warning("Error: Screen capture failed.");
     }
 
     private void ClearChat()
     {
-        _chatRenderer.Reset();
+        _bridge?.Reset();
         _conversationManager.Initialize(_conversationManager.BuildSystemPrompt());
         UpdateHistoryCounter();
-        FocusInputField();
     }
 
     private void UpdateHistoryCounter()
     {
         int length = _conversationManager.GetTotalCharacterCount();
-        _historyButton.InvokeIfRequired(() => _historyButton.Text = $"[{length}]");
+        _bridge?.History(length);
     }
 
     private void LoadAndSendImage()
@@ -315,20 +402,14 @@ public partial class MainForm : Form
                 image.Save(ms, ImageFormat.Png);
                 string base64 = Convert.ToBase64String(ms.ToArray());
                 string resizedBase64 = ImageService.ResizeImageBase64(_logger, base64);
-                string message = string.IsNullOrEmpty(_inputField.Text.Trim()) ? "[Image Loaded]" : _inputField.Text.Trim();
-                SendMessage(message, resizedBase64, Path.GetFileName(openFileDialog.FileName));
+                SendMessage("[Image Loaded]", resizedBase64, Path.GetFileName(openFileDialog.FileName));
             }
             catch (Exception ex)
             {
                 _logger.Log($"Error loading image: {ex.Message}");
-                _ = _chatRenderer.UpdateChat($"Error: Failed to load image - {ex.Message}\r\n", ChatRole.System);
+                _bridge?.Warning($"Error: Failed to load image - {ex.Message}");
             }
         }
-    }
-
-    private void FocusInputField()
-    {
-        _inputField.InvokeIfRequired(() => { this.Activate(); _inputField.Focus(); });
     }
 
     private void ToggleVisibility()
@@ -340,8 +421,31 @@ public partial class MainForm : Form
                 _conversationManager.CurrentWindowTitle = title;
         }
         this.Visible = !this.Visible;
-        if (this.Visible) FocusInputField();
+
+        if (this.Visible)
+        {
+            this.Activate();
+            _bridge?.FocusInput();
+        }
     }
 
     private void HideOverlay() => this.Visible = false;
+
+    private static string WriteHtmlToTempFile()
+    {
+        var assembly = typeof(MainForm).Assembly;
+        var resourceName = "YAOLlm.ui.index.html";
+        using var stream = assembly.GetManifestResourceStream(resourceName);
+        if (stream == null)
+            throw new InvalidOperationException($"Embedded resource '{resourceName}' not found.");
+        
+        var tempDir = Path.Combine(Path.GetTempPath(), "YAOLlm");
+        Directory.CreateDirectory(tempDir);
+        var tempPath = Path.Combine(tempDir, "index.html");
+        
+        using var fileStream = new FileStream(tempPath, FileMode.Create, FileAccess.Write);
+        stream.CopyTo(fileStream);
+        
+        return new Uri(tempPath).AbsoluteUri;
+    }
 }

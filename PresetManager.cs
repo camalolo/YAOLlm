@@ -16,12 +16,7 @@ public class PresetManager
     private List<ProviderConfig> _presets;
     private int _activeIndex;
 
-    private static readonly List<ProviderConfig> DefaultPresets = new()
-    {
-        new ProviderConfig("gemini", "gemini-2.5-flash-lite", "Gemini"),
-        new ProviderConfig("openrouter", "arcee-ai/trinity-large-preview:free", "Trinity (Free)"),
-        new ProviderConfig("openai-compatible", "nvidia-nemotron-3-nano-4b", "Nemotron (Local)")
-    };
+    public bool HasProvider => _presets.Count > 0;
 
     public IReadOnlyList<ProviderConfig> Presets => _presets;
     public int ActiveIndex => _activeIndex;
@@ -33,7 +28,7 @@ public class PresetManager
     {
         _searchService = searchService;
         _logger = logger ?? new Logger();
-        _presets = new List<ProviderConfig>(DefaultPresets);
+        _presets = new List<ProviderConfig>();
         _activeIndex = 0;
 
         var homeDir = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
@@ -44,8 +39,8 @@ public class PresetManager
     {
         if (!File.Exists(_configPath))
         {
-            _logger.Log("Config file not found, using default presets");
-            _presets = new List<ProviderConfig>(DefaultPresets);
+            _logger.Log("Config file not found, no presets configured");
+            _presets = new List<ProviderConfig>();
             _activeIndex = 0;
             return;
         }
@@ -75,8 +70,8 @@ public class PresetManager
 
             if (_presets.Count == 0)
             {
-                _logger.Log("No valid presets found, using defaults");
-                _presets = new List<ProviderConfig>(DefaultPresets);
+                _logger.Log("No valid presets found, no provider configured");
+                _presets = new List<ProviderConfig>();
             }
 
             if (envVars.TryGetValue("ACTIVE_PRESET", out var activeStr) && int.TryParse(activeStr, out var activeNum))
@@ -93,7 +88,7 @@ public class PresetManager
         catch (Exception ex)
         {
             _logger.Log($"Error loading config: {ex.Message}");
-            _presets = new List<ProviderConfig>(DefaultPresets);
+            _presets = new List<ProviderConfig>();
             _activeIndex = 0;
         }
     }

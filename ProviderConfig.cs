@@ -13,17 +13,37 @@ public class ProviderConfig
         DisplayName = displayName;
     }
 
-    public override string ToString() => DisplayName ?? $"{Provider}:{Model}";
+    public override string ToString()
+    {
+        if (!string.IsNullOrEmpty(DisplayName))
+            return $"{Provider}:{Model}:{DisplayName}";
+        return $"{Provider}:{Model}";
+    }
 
     public static ProviderConfig? Parse(string value)
     {
         if (string.IsNullOrWhiteSpace(value))
             return null;
 
-        var parts = value.Split(':', 2);
-        if (parts.Length != 2)
+        var parts = value.Split(':');
+        if (parts.Length < 2)
             return null;
 
-        return new ProviderConfig(parts[0].Trim(), parts[1].Trim());
+        var provider = parts[0].Trim();
+
+        string model;
+        string? displayName = null;
+
+        if (parts.Length >= 3)
+        {
+            displayName = parts[^1].Trim();
+            model = string.Join(':', parts[1..^1]).Trim();
+        }
+        else
+        {
+            model = parts[1].Trim();
+        }
+
+        return new ProviderConfig(provider, model, displayName);
     }
 }

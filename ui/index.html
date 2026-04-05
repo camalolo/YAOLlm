@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>YAOLlm Chat</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
+  <style>
+    html, body {
+      background: transparent;
+      margin: 0;
+      padding: 0;
+      height: 100vh;
+      overflow: hidden;
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    }
+
+    /* Custom scrollbar */
+    #chat-area::-webkit-scrollbar {
+      width: 6px;
+    }
+    #chat-area::-webkit-scrollbar-track {
+      background: transparent;
+    }
+    #chat-area::-webkit-scrollbar-thumb {
+      background: rgba(255, 255, 255, 0.3);
+      border-radius: 3px;
+    }
+    #chat-area::-webkit-scrollbar-thumb:hover {
+      background: rgba(255, 255, 255, 0.5);
+    }
+
+    /* Markdown-like styles for message content */
+    .msg-content h1 { font-size: 1.5em; font-weight: 700; margin: 0.5em 0 0.3em; }
+    .msg-content h2 { font-size: 1.3em; font-weight: 600; margin: 0.5em 0 0.3em; }
+    .msg-content h3 { font-size: 1.15em; font-weight: 600; margin: 0.4em 0 0.2em; }
+    .msg-content h4 { font-size: 1.05em; font-weight: 600; margin: 0.3em 0 0.2em; }
+    .msg-content p { margin: 0.4em 0; line-height: 1.6; }
+    .msg-content ul { list-style: disc; padding-left: 1.5em; margin: 0.4em 0; }
+    .msg-content ol { list-style: decimal; padding-left: 1.5em; margin: 0.4em 0; }
+    .msg-content li { margin: 0.2em 0; line-height: 1.5; }
+    .msg-content pre {
+      background: rgba(255, 255, 255, 0.1);
+      border-radius: 0.5rem;
+      padding: 0.75rem;
+      overflow-x: auto;
+      font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+      font-size: 0.85rem;
+      margin: 0.5em 0;
+    }
+    .msg-content code {
+      background: rgba(255, 255, 255, 0.2);
+      border-radius: 0.25rem;
+      padding: 0.1em 0.35em;
+      font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+      font-size: 0.85em;
+    }
+    .msg-content pre code {
+      background: none;
+      padding: 0;
+      border-radius: 0;
+    }
+    .msg-content blockquote {
+      border-left: 3px solid rgba(255, 255, 255, 0.2);
+      padding-left: 0.75em;
+      margin: 0.5em 0;
+      color: rgba(255, 255, 255, 0.8);
+    }
+    .msg-content a {
+      color: #60a5fa;
+      text-decoration: underline;
+    }
+    .msg-content strong { font-weight: 600; }
+    .msg-content em { font-style: italic; }
+    .msg-content table {
+      border-collapse: collapse;
+      margin: 0.5em 0;
+      width: 100%;
+    }
+    .msg-content th, .msg-content td {
+      border: 1px solid rgba(255, 255, 255, 0.3);
+      padding: 0.4em 0.7em;
+      text-align: left;
+    }
+    .msg-content th {
+      background: rgba(255, 255, 255, 0.15);
+      font-weight: 600;
+    }
+
+    /* Streaming cursor */
+    @keyframes blink {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0; }
+    }
+    .streaming-cursor::after {
+      content: '\2588';
+      animation: blink 0.8s step-end infinite;
+      color: rgba(250, 204, 21, 1);
+    }
+
+    /* Textarea auto-grow handled by JS, but set min/max */
+    #chat-input {
+      min-height: 40px;
+      max-height: 150px;
+      resize: none;
+      overflow: hidden;
+    }
+
+    /* Pulse animation for status dot */
+    @keyframes status-pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+    .status-dot-active {
+      animation: status-pulse 1.5s ease-in-out infinite;
+    }
+  </style>
+</head>
+<body>
+  <div x-data="chatApp()" x-init="init()" @keydown.tab.prevent="cycleProvider()" class="flex flex-col h-screen">
+    <!-- Top Bar -->
+    <div class="flex-shrink-0 h-10 bg-black/70 backdrop-blur-xl flex items-center justify-end px-3">
+      <button @click="hide()" class="text-white/70 hover:text-white text-lg w-8 h-8 flex items-center justify-center rounded hover:bg-white/10 transition-all">&minus;</button>
+      <button @click="exit()" class="text-white/70 hover:text-white text-sm w-8 h-8 flex items-center justify-center rounded hover:bg-white/10 transition-all ml-1">&times;</button>
+    </div>
+
+    <!-- Chat Area -->
+    <div id="chat-area" class="flex-1 overflow-y-auto px-4 py-3">
+      <div class="space-y-2">
+        <template x-for="msg in messages" :key="msg.id">
+          <div class="text-left" :class="{
+            'border-l-2 border-blue-400/50 pl-3': msg.role === 'user',
+            'border-l-2 border-yellow-400/50 pl-3': msg.role === 'model',
+            'text-white/60 italic text-sm pl-3': msg.role === 'system',
+            'text-red-400 pl-3': msg.role === 'error'
+          }" :style="msg.role === 'user' ? 'color: rgba(255,255,255,1)' : msg.role === 'model' ? 'color: rgba(254,249,195,1)' : ''">
+            <div class="msg-content" x-html="msg.html"></div>
+          </div>
+        </template>
+
+        <!-- Streaming content -->
+        <div x-show="streamingHtml" x-cloak
+             class="border-l-2 border-yellow-400/50 pl-3 text-left"
+              style="color: rgba(254,249,195,1)">
+          <div class="msg-content streaming-cursor" x-html="streamingHtml"></div>
+        </div>
+
+        <!-- Scroll anchor -->
+        <div id="scroll-anchor"></div>
+      </div>
+    </div>
+
+    <!-- Bottom Bar -->
+    <div class="flex-shrink-0 bg-black/70 backdrop-blur-xl border-t border-white/30 px-4 py-3">
+      <div class="max-w-3xl mx-auto">
+        <!-- Textarea -->
+        <textarea
+          id="chat-input"
+          x-ref="input"
+          x-model="inputText"
+          @keydown.enter.prevent="if (!$event.shiftKey) sendMessage()"
+          placeholder="Type a message..."
+          :disabled="!hasProvider"
+          :class="!hasProvider ? 'opacity-50 cursor-not-allowed' : ''"
+          class="w-full bg-white/10 border border-white/30 rounded-xl text-white placeholder-white/60 focus:border-white/50 focus:outline-none p-3 font-mono text-sm leading-relaxed"
+        ></textarea>
+
+        <!-- Button row -->
+        <div class="flex items-center justify-between mt-2">
+          <!-- Left: action buttons -->
+          <div class="flex items-center gap-1.5 flex-wrap">
+            <button @click="sendMessage()" :disabled="!hasProvider" class="bg-white/10 hover:bg-white/20 text-white text-xs rounded-lg px-3 py-1.5 transition-all">Send</button>
+            <button @click="captureSend()" :disabled="!hasProvider" class="bg-white/10 hover:bg-white/20 text-white text-xs rounded-lg px-3 py-1.5 transition-all">Capture &amp; Send</button>
+            <button @click="loadImage()" :disabled="!hasProvider" class="bg-white/10 hover:bg-white/20 text-white text-xs rounded-lg px-3 py-1.5 transition-all">Load Image</button>
+            <button @click="proceed()" :disabled="!hasProvider" class="bg-white/10 hover:bg-white/20 text-white text-xs rounded-lg px-3 py-1.5 transition-all">Proceed</button>
+            <button @click="clearChat()" :disabled="!hasProvider" class="bg-white/10 hover:bg-white/20 text-white text-xs rounded-lg px-3 py-1.5 transition-all">Clear</button>
+            <button @click="cycleProvider()" :disabled="!hasProvider" class="bg-white/10 hover:bg-white/20 text-white text-xs rounded-lg px-3 py-1.5 transition-all">⇄ Provider</button>
+          </div>
+
+          <!-- Right: status info -->
+          <div class="flex flex-col items-end gap-0.5 flex-shrink-0 ml-2">
+            <div class="flex items-center gap-3">
+              <div class="flex items-center gap-1.5">
+                <span class="w-2 h-2 rounded-full inline-block" :class="[statusColor(), status !== 'Idle' ? 'status-dot-active' : '']"></span>
+                <span class="text-white text-xs font-mono" x-text="status"></span>
+              </div>
+              <span class="text-white/80 text-xs font-mono" x-show="historyChars > 0" x-text="historyChars + ' chars'"></span>
+            </div>
+            <span class="text-xs font-mono" :class="hasProvider ? 'text-white/80' : 'text-red-400'" x-text="hasProvider ? (provider || '—') : 'No provider configured'"></span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    function chatApp() {
+      return {
+        messages: [],
+        streamingHtml: '',
+        status: 'Idle',
+        provider: '',
+        historyChars: 0,
+        inputText: '',
+        nextId: 0,
+        hasProvider: true,
+
+        sendMessage() {
+          if (!this.inputText.trim()) return;
+          window.chrome.webview.postMessage(JSON.stringify({type: 'send', text: this.inputText}));
+          this.inputText = '';
+          this.$nextTick(() => {
+            const input = this.$refs.input;
+            if (input) {
+              input.style.height = 'auto';
+              input.style.height = input.scrollHeight + 'px';
+            }
+          });
+        },
+
+        captureSend() {
+          const text = this.inputText.trim();
+          window.chrome.webview.postMessage(JSON.stringify({type: 'capture_send', text: text}));
+          this.inputText = '';
+          this.$nextTick(() => {
+            const input = this.$refs.input;
+            if (input) {
+              input.style.height = 'auto';
+              input.style.height = input.scrollHeight + 'px';
+            }
+          });
+        },
+
+        loadImage() {
+          window.chrome.webview.postMessage(JSON.stringify({type: 'load_image'}));
+        },
+
+        proceed() {
+          window.chrome.webview.postMessage(JSON.stringify({type: 'proceed'}));
+        },
+
+        clearChat() {
+          window.chrome.webview.postMessage(JSON.stringify({type: 'clear'}));
+        },
+
+        hide() {
+          window.chrome.webview.postMessage(JSON.stringify({type: 'hide'}));
+        },
+
+        exit() {
+          window.chrome.webview.postMessage(JSON.stringify({type: 'exit'}));
+        },
+
+        cycleProvider() {
+          window.chrome.webview.postMessage(JSON.stringify({type: 'cycle_provider'}));
+        },
+
+        statusColor() {
+          return {
+            'Idle': 'bg-gray-500',
+            'Sending': 'bg-blue-400',
+            'Receiving': 'bg-green-400',
+            'Searching': 'bg-yellow-400',
+            'Analyzing': 'bg-purple-400'
+          }[this.status] || 'bg-gray-500';
+        },
+
+        init() {
+          const self = this;
+          let _msgCounter = 0;
+
+          // WebView2 safety check
+          if (!window.chrome || !window.chrome.webview) {
+            console.error('WebView2 API not available');
+            return;
+          }
+
+          // Focus input on load
+          this.$nextTick(() => {
+            if (self.$refs.input) self.$refs.input.focus();
+          });
+
+          // Auto-resize textarea
+          this.$nextTick(() => {
+            const input = document.getElementById('chat-input');
+            if (input) {
+              input.addEventListener('input', () => {
+                input.style.height = 'auto';
+                input.style.height = Math.min(input.scrollHeight, 150) + 'px';
+              });
+            }
+          });
+
+          // Listen for WebView2 messages (guard against double registration)
+          if (!window._bridgeReady) {
+            window._bridgeReady = true;
+            window.chrome.webview.addEventListener('message', (event) => {
+              const msg = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
+              _msgCounter++;
+              console.log('[bridge] msg #' + _msgCounter + ' type=' + (msg ? msg.type : 'null'));
+              switch(msg.type) {
+                case 'reset':
+                  self.messages = [];
+                  self.streamingHtml = '';
+                  break;
+                case 'chat_message':
+                  // Dedup: skip if last message has same role and html
+                  if (self.messages.length > 0) {
+                    var last = self.messages[self.messages.length - 1];
+                    if (last.role === msg.role && last.html === msg.html) {
+                      console.log('[bridge] duplicate chat_message skipped');
+                      break;
+                    }
+                  }
+                  self.messages.push({role: msg.role, html: msg.html, id: self.nextId++});
+                  self.streamingHtml = '';
+                  self.$nextTick(() => self.scrollToBottom());
+                  break;
+                case 'chat_stream':
+                  self.streamingHtml = msg.html;
+                  self.$nextTick(() => self.scrollToBottom());
+                  break;
+                case 'status':
+                  self.status = msg.status;
+                  break;
+                case 'provider':
+                  self.provider = msg.name;
+                  if (msg.name) self.hasProvider = true;
+                  break;
+                case 'history':
+                  self.historyChars = msg.chars;
+                  break;
+                case 'warning':
+                  self.messages.push({role: 'system', html: '<em>' + msg.message + '</em>', id: self.nextId++});
+                  self.$nextTick(() => self.scrollToBottom());
+                  break;
+                case 'focus_input':
+                  self.$nextTick(() => {
+                    if (self.$refs.input) self.$refs.input.focus();
+                  });
+                  break;
+                case 'no_provider':
+                  self.hasProvider = false;
+                  self.provider = '';
+                  break;
+              }
+            });
+          }
+        },
+
+        scrollToBottom() {
+          const chat = document.getElementById('chat-area');
+          if (chat) chat.scrollTop = chat.scrollHeight;
+        }
+      };
+    }
+  </script>
+</body>
+</html>
