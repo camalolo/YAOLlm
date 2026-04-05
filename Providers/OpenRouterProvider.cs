@@ -7,7 +7,6 @@ using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
-using RestSharp;
 
 namespace YAOLlm.Providers;
 
@@ -18,7 +17,6 @@ public class OpenRouterProvider : OpenAIStyleProvider
     private const string DefaultTitle = "YAOLlm";
     private const int MaxRetries = 3;
 
-    private readonly RestClient _client;
     private readonly string? _apiKey;
 
     public override string Name => "openrouter";
@@ -34,14 +32,6 @@ public class OpenRouterProvider : OpenAIStyleProvider
         if (string.IsNullOrEmpty(_apiKey))
             throw new InvalidOperationException("OpenRouter API key not provided. Set OPENROUTER_API_KEY environment variable or pass apiKey parameter.");
 
-        _client = new RestClient();
-    }
-
-    protected override async Task<string> ExecuteSendAsync(
-        Dictionary<string, object> requestBody,
-        CancellationToken cancellationToken)
-    {
-        return await SendWithRetryAsync(requestBody, cancellationToken);
     }
 
     protected override async IAsyncEnumerable<string> ExecuteStreamAsync(
@@ -215,7 +205,7 @@ public class OpenRouterProvider : OpenAIStyleProvider
                         RaiseOnStatusChange(StatusManager.SearchingStatus);
                     }
 
-                    ToolResult? result = await RaiseOnToolCallAsync(toolCall);
+                    ToolResult? result = null;
 
                     if (result == null && toolCall.Name == "web_search" && _searchService != null)
                     {
@@ -291,74 +281,8 @@ public class OpenRouterProvider : OpenAIStyleProvider
         }
     }
 
-    private async Task<string> SendWithRetryAsync(object requestBody, CancellationToken cancellationToken)
-    {
-        for (int attempt = 0; attempt <= MaxRetries; attempt++)
-        {
-            var request = CreateRequest(requestBody);
-            RestResponse response;
-            try
-            {
-                response = await _client.ExecuteAsync(request, cancellationToken);
-            }
-            catch (OperationCanceledException)
-            {
-                LogCancelled();
-                throw;
-            }
-            catch (Exception ex) when (ShouldRetry(ex, attempt, MaxRetries))
-            {
-                var delay = GetRetryDelay(attempt);
-                LogRetry(attempt + 1, MaxRetries, (int)delay.TotalMilliseconds);
-                await Task.Delay(delay, cancellationToken);
-                continue;
-            }
-
-            if (response.IsSuccessful && !string.IsNullOrEmpty(response.Content))
-            {
-                return await ProcessResponseAsync(response.Content, requestBody, cancellationToken);
-            }
-
-            if (!response.IsSuccessful)
-            {
-                var errorMessage = string.IsNullOrEmpty(response.Content)
-                    ? $"Status: {response.StatusCode}"
-                    : response.Content;
-                var ex = LLMException.CreateWithStatusCode((int)response.StatusCode, errorMessage, Name);
-
-                if (ShouldRetry(ex, attempt, MaxRetries))
-                {
-                    var delay = GetRetryDelay(attempt);
-                    LogRetry(attempt + 1, MaxRetries, (int)delay.TotalMilliseconds);
-                    await Task.Delay(delay, cancellationToken);
-                    continue;
-                }
-
-                LogError("SendWithRetryAsync", errorMessage);
-                throw ex;
-            }
-
-            LogError("SendWithRetryAsync", "Empty response from API");
-            throw LLMException.CreateWithMessage("Empty response from API", Name);
-        }
-
-        return string.Empty;
-    }
-
-    private RestRequest CreateRequest(object requestBody)
-    {
-        var request = new RestRequest(ApiUrl, Method.Post);
-        request.AddHeader("Authorization", $"Bearer {_apiKey}");
-        request.AddHeader("HTTP-Referer", DefaultReferer);
-        request.AddHeader("X-Title", DefaultTitle);
-        request.AddHeader("Content-Type", "application/json");
-        request.AddJsonBody(requestBody);
-        return request;
-    }
-
     public override void Dispose()
     {
-        _client.Dispose();
         base.Dispose();
     }
 }

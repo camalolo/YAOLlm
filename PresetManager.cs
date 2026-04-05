@@ -18,8 +18,6 @@ public class PresetManager
 
     public bool HasProvider => _presets.Count > 0;
 
-    public IReadOnlyList<ProviderConfig> Presets => _presets;
-    public int ActiveIndex => _activeIndex;
     public ProviderConfig ActivePreset => _presets[_activeIndex];
 
     public event Action<ProviderConfig>? PresetChanged;
@@ -175,6 +173,7 @@ public class PresetManager
             "openrouter" => CreateOpenRouterProvider(model),
             "ollama" => CreateOllamaProvider(model),
             "openai-compatible" => CreateOpenAICompatibleProvider(model),
+            "deepseek" => CreateDeepSeekProvider(model),
             _ => throw new NotSupportedException($"Unknown provider: {providerName}")
         };
     }
@@ -209,5 +208,15 @@ public class PresetManager
     {
         var baseUrl = Environment.GetEnvironmentVariable("OPENAI_COMPATIBLE_BASE_URL") ?? "http://localhost:11434";
         return new OpenAICompatibleProvider(model, baseUrl, httpClient: null, _searchService, _logger);
+    }
+
+    private ILLMProvider CreateDeepSeekProvider(string model)
+    {
+        var apiKey = Environment.GetEnvironmentVariable("DEEPSEEK_API_KEY");
+        if (string.IsNullOrEmpty(apiKey))
+        {
+            throw new InvalidOperationException("DEEPSEEK_API_KEY not set");
+        }
+        return new DeepSeekProvider(model, apiKey, httpClient: null, _searchService, _logger);
     }
 }

@@ -7,14 +7,11 @@ using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
-using RestSharp;
 
 namespace YAOLlm.Providers;
 
 public class OpenAICompatibleProvider : OpenAIStyleProvider
 {
-    private readonly RestClient _client;
-    private readonly string _apiUrl;
     private readonly string _baseUrl;
     private string _model;
 
@@ -27,67 +24,6 @@ public class OpenAICompatibleProvider : OpenAIStyleProvider
     {
         _model = model ?? throw new ArgumentNullException(nameof(model));
         _baseUrl = baseUrl.TrimEnd('/');
-        _apiUrl = $"{_baseUrl}/v1/chat/completions";
-        _client = new RestClient();
-    }
-
-    protected override async Task<string> ExecuteSendAsync(
-        Dictionary<string, object> requestBody,
-        CancellationToken cancellationToken)
-    {
-        const int maxRetries = 3;
-
-        for (int attempt = 0; attempt <= maxRetries; attempt++)
-        {
-            var request = CreateRequest(requestBody);
-            RestResponse response;
-
-            try
-            {
-                response = await _client.ExecuteAsync(request, cancellationToken);
-            }
-            catch (OperationCanceledException)
-            {
-                LogCancelled();
-                throw;
-            }
-            catch (Exception ex) when (ShouldRetry(ex, attempt, maxRetries))
-            {
-                var delay = GetRetryDelay(attempt);
-                LogRetry(attempt + 1, maxRetries, (int)delay.TotalMilliseconds);
-                await Task.Delay(delay, cancellationToken);
-                continue;
-            }
-
-            if (!response.IsSuccessful)
-            {
-                var errorMessage = string.IsNullOrEmpty(response.Content)
-                    ? $"Status: {response.StatusCode}"
-                    : response.Content;
-                var ex = LLMException.CreateWithStatusCode((int)response.StatusCode, errorMessage, Name);
-
-                if (ShouldRetry(ex, attempt, maxRetries))
-                {
-                    var delay = GetRetryDelay(attempt);
-                    LogRetry(attempt + 1, maxRetries, (int)delay.TotalMilliseconds);
-                    await Task.Delay(delay, cancellationToken);
-                    continue;
-                }
-
-                LogError("ExecuteSendAsync", errorMessage);
-                throw ex;
-            }
-
-            if (string.IsNullOrEmpty(response.Content))
-            {
-                LogError("ExecuteSendAsync", "Empty response");
-                throw LLMException.CreateWithMessage("Empty response from API", Name);
-            }
-
-            return await ProcessResponseAsync(response.Content, requestBody, cancellationToken);
-        }
-
-        return string.Empty;
     }
 
     protected override async IAsyncEnumerable<string> ExecuteStreamAsync(
@@ -223,7 +159,7 @@ public class OpenAICompatibleProvider : OpenAIStyleProvider
                         RaiseOnStatusChange(StatusManager.SearchingStatus);
                     }
 
-                    ToolResult? toolResult = await RaiseOnToolCallAsync(toolCall);
+                    ToolResult? toolResult = null;
 
                     if (toolResult == null && toolCall.Name == "web_search" && _searchService != null)
                     {
@@ -276,14 +212,6 @@ public class OpenAICompatibleProvider : OpenAIStyleProvider
         }
     }
 
-    private RestRequest CreateRequest(object requestBody)
-    {
-        var request = new RestRequest(_apiUrl, Method.Post);
-        request.AddHeader("Content-Type", "application/json");
-        request.AddJsonBody(requestBody);
-        return request;
-    }
-
     private async Task<ToolResult> ExecuteWebSearchFallbackAsync(ToolCall toolCall)
     {
         try
@@ -318,7 +246,6 @@ public class OpenAICompatibleProvider : OpenAIStyleProvider
 
     public override void Dispose()
     {
-        _client.Dispose();
         base.Dispose();
     }
 }

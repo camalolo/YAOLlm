@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Text.Json;
-using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -19,24 +18,6 @@ public abstract class OpenAIStyleProvider : BaseLLMProvider
     protected OpenAIStyleProvider(HttpClient httpClient, TavilySearchService? searchService = null, Logger? logger = null)
         : base(httpClient, searchService, logger)
     {
-    }
-
-    // ─── Template: SendAsync ───────────────────────────────────────────
-    public override async Task<string> SendAsync(
-        List<ChatMessage> history,
-        byte[]? image = null,
-        List<ToolDefinition>? tools = null,
-        CancellationToken cancellationToken = default)
-    {
-        if (history == null || history.Count == 0)
-            throw new ArgumentException("History cannot be null or empty", nameof(history));
-
-        LogRequest(history.Count, tools != null && tools.Count > 0);
-
-        var messages = BuildMessages(history, image);
-        var requestBody = BuildRequestBody(messages, tools);
-
-        return await ExecuteSendAsync(requestBody, cancellationToken);
     }
 
     // ─── Template: StreamAsync ─────────────────────────────────────────
@@ -60,11 +41,7 @@ public abstract class OpenAIStyleProvider : BaseLLMProvider
         }
     }
 
-    // ─── Abstract: Subclass implements actual HTTP send ────────────────
-    protected abstract Task<string> ExecuteSendAsync(
-        Dictionary<string, object> requestBody,
-        CancellationToken cancellationToken);
-
+    // ─── Abstract: Subclass implements actual HTTP stream ───────────────
     protected abstract IAsyncEnumerable<string> ExecuteStreamAsync(
         Dictionary<string, object> requestBody,
         CancellationToken cancellationToken);
@@ -108,23 +85,6 @@ public abstract class OpenAIStyleProvider : BaseLLMProvider
         return messages;
     }
 
-    // ─── Shared: Request Body Construction ─────────────────────────────
-    protected Dictionary<string, object> BuildRequestBody(List<object> messages, List<ToolDefinition>? tools)
-    {
-        var body = new Dictionary<string, object>
-        {
-            ["model"] = Model,
-            ["messages"] = messages
-        };
-
-        if (tools != null && tools.Count > 0)
-        {
-            body["tools"] = FormatToolDefinitions(tools);
-        }
-
-        return body;
-    }
-
     protected Dictionary<string, object> BuildStreamingRequestBody(List<object> messages, List<ToolDefinition>? tools)
     {
         var body = new Dictionary<string, object>
@@ -140,133 +100,6 @@ public abstract class OpenAIStyleProvider : BaseLLMProvider
         }
 
         return body;
-    }
-
-    // ─── Shared: Non-Streaming Response Processing ─────────────────────
-    protected async Task<string> ProcessResponseAsync(string responseContent, object requestBody, CancellationToken cancellationToken)
-    {
-        LogResponse(responseContent);
-
-        var json = JsonNode.Parse(responseContent);
-
-        if (json?["error"] is JsonNode errorNode)
-        {
-            var errorMsg = errorNode["message"]?.ToString()
-                ?? errorNode.ToString();
-            throw LLMException.CreateWithMessage(errorMsg, Name);
-        }
-
-        var choices = json?["choices"] as JsonArray;
-
-        if (choices == null || choices.Count == 0)
-            throw LLMException.CreateWithMessage("Invalid API response: no choices", Name);
-
-        var choice = choices[0];
-        var finishReason = choice?["finish_reason"]?.ToString();
-        if (finishReason == "content_filter")
-        {
-            throw LLMException.CreateWithMessage("Content blocked by filter", Name);
-        }
-        if (finishReason == "length")
-        {
-            throw LLMException.CreateWithMessage("Response truncated (max tokens)", Name);
-        }
-
-        var message = choice?["message"];
-        if (message == null)
-            throw LLMException.CreateWithMessage("Invalid API response: no message", Name);
-
-        var toolCalls = message["tool_calls"] as JsonArray;
-
-        if (toolCalls != null && toolCalls.Count > 0)
-        {
-            return await HandleToolCallsAsync(toolCalls, requestBody, cancellationToken);
-        }
-
-        return message["content"]?.ToString() ?? string.Empty;
-    }
-
-    // ─── Shared: Tool Call Handling (non-streaming) ────────────────────
-    protected async Task<string> HandleToolCallsAsync(JsonArray toolCalls, object originalRequestBody, CancellationToken cancellationToken)
-    {
-        ThrowIfDisposed();
-        var requestBodyDict = originalRequestBody as Dictionary<string, object>;
-        var messages = requestBodyDict?["messages"] as List<object>;
-
-        if (messages == null)
-            throw LLMException.CreateWithMessage("Tool call processing failed", Name);
-
-        var completedToolCalls = new List<object>();
-
-        foreach (var toolCall in toolCalls)
-        {
-            var id = toolCall?["id"]?.ToString();
-            var function = toolCall?["function"];
-            var name = function?["name"]?.ToString();
-            var argsJson = function?["arguments"]?.ToString() ?? "{}";
-            var args = DeserializeArguments(argsJson);
-
-            LogToolCallReceived(name ?? string.Empty, args);
-
-            var toolCallRequest = new ToolCall
-            {
-                Id = id ?? string.Empty,
-                Name = name ?? string.Empty,
-                Arguments = args
-            };
-
-            var result = await ExecuteToolCallAsync(toolCallRequest, null, _searchService);
-
-            completedToolCalls.Add(new
-            {
-                id = id ?? string.Empty,
-                type = "function",
-                function = new { name = name ?? string.Empty, arguments = argsJson }
-            });
-
-            messages.Add(new
-            {
-                role = "tool",
-                tool_call_id = id,
-                name = name,
-                content = result.Content
-            });
-        }
-
-        messages.Insert(messages.Count - completedToolCalls.Count, new
-        {
-            role = "assistant",
-            tool_calls = completedToolCalls
-        });
-
-        var newRequestBody = BuildRequestBody(messages, null);
-
-        var originalTools = requestBodyDict?.TryGetValue("tools", out var toolsObj) == true
-            ? toolsObj as List<object>
-            : null;
-        if (originalTools != null && originalTools.Count > 0)
-        {
-            newRequestBody["tools"] = originalTools;
-        }
-        ThrowIfDisposed();
-        return await ExecuteSendAsync(newRequestBody, cancellationToken);
-    }
-
-    // ─── Override: Tool Call Execution with RaiseOnToolCall pattern ────
-    protected override async Task<ToolResult> ExecuteToolCallAsync(
-        ToolCall toolCall,
-        Dictionary<string, Func<string, Task<string>>>? toolHandlers,
-        TavilySearchService? searchService)
-    {
-        var result = await RaiseOnToolCallAsync(toolCall);
-        if (result != null)
-        {
-            LogToolExecution(toolCall.Name);
-            LogToolResult(toolCall.Name, result.Content);
-            return result;
-        }
-
-        return await base.ExecuteToolCallAsync(toolCall, toolHandlers, searchService);
     }
 
     // ─── Shared: Streaming Chunk Parsing Infrastructure ────────────────

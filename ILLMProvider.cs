@@ -28,20 +28,6 @@ public interface ILLMProvider : IDisposable
     bool SupportsWebSearch { get; }
 
     /// <summary>
-    /// Send a conversation to the LLM and get a response
-    /// </summary>
-    /// <param name="history">Conversation history</param>
-    /// <param name="image">Optional image data (PNG/JPEG bytes)</param>
-    /// <param name="tools">Optional tool definitions for function calling</param>
-    /// <param name="cancellationToken">Cancellation token</param>
-    /// <returns>LLM response text</returns>
-    Task<string> SendAsync(
-        List<ChatMessage> history,
-        byte[]? image = null,
-        List<ToolDefinition>? tools = null,
-        CancellationToken cancellationToken = default);
-
-    /// <summary>
     /// Stream a conversation response from the LLM chunk by chunk
     /// </summary>
     /// <param name="history">Conversation history</param>
@@ -54,11 +40,6 @@ public interface ILLMProvider : IDisposable
         byte[]? image = null,
         List<ToolDefinition>? tools = null,
         CancellationToken cancellationToken = default);
-
-    /// <summary>
-    /// Called when a tool/function should be executed
-    /// </summary>
-    event Func<ToolCall, Task<ToolResult>> OnToolCall;
 
     /// <summary>
     /// Called when the provider status changes (e.g., "searching", "processing")

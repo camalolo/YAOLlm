@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net.Http;
-using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Threading;
@@ -36,11 +35,6 @@ public abstract class BaseLLMProvider : ILLMProvider
     public abstract bool SupportsWebSearch { get; }
 
     /// <summary>
-    /// Called when a tool/function should be executed
-    /// </summary>
-    public event Func<ToolCall, Task<ToolResult>>? OnToolCall;
-
-    /// <summary>
     /// Called when the provider status changes (e.g., "searching", "processing")
     /// </summary>
     public event Action<string?>? OnStatusChange;
@@ -59,15 +53,6 @@ public abstract class BaseLLMProvider : ILLMProvider
     }
 
     /// <summary>
-    /// Send a conversation to the LLM and get a response
-    /// </summary>
-    public abstract Task<string> SendAsync(
-        List<ChatMessage> history,
-        byte[]? image = null,
-        List<ToolDefinition>? tools = null,
-        CancellationToken cancellationToken = default);
-
-    /// <summary>
     /// Stream a conversation response from the LLM chunk by chunk
     /// </summary>
     public abstract IAsyncEnumerable<string> StreamAsync(
@@ -75,20 +60,6 @@ public abstract class BaseLLMProvider : ILLMProvider
         byte[]? image = null,
         List<ToolDefinition>? tools = null,
         CancellationToken cancellationToken = default);
-
-    /// <summary>
-    /// Raises the OnToolCall event.
-    /// </summary>
-    /// <param name="toolCall">The tool call to process</param>
-    /// <returns>The tool result, or null if no handler is attached</returns>
-    protected virtual async Task<ToolResult?> RaiseOnToolCallAsync(ToolCall toolCall)
-    {
-        if (OnToolCall != null)
-        {
-            return await OnToolCall.Invoke(toolCall);
-        }
-        return null;
-    }
 
     /// <summary>
     /// Raises the OnStatusChange event.
@@ -200,63 +171,6 @@ public abstract class BaseLLMProvider : ILLMProvider
                 parameters = t.Parameters
             }
         }).ToList();
-    }
-
-    /// <summary>
-    /// Executes a tool call using provided handlers or web search fallback.
-    /// </summary>
-    /// <param name="toolCall">The tool call to execute</param>
-    /// <param name="toolHandlers">Optional dictionary of tool name to handler functions</param>
-    /// <param name="searchService">Optional search service for web_search fallback</param>
-    /// <returns>The tool result</returns>
-    protected virtual async Task<ToolResult> ExecuteToolCallAsync(
-        ToolCall toolCall,
-        Dictionary<string, Func<string, Task<string>>>? toolHandlers,
-        TavilySearchService? searchService)
-    {
-        if (toolHandlers != null && toolHandlers.TryGetValue(toolCall.Name, out var handler))
-        {
-            try
-            {
-                var argsJson = JsonSerializer.Serialize(toolCall.Arguments);
-                var result = await handler(argsJson);
-                return new ToolResult(toolCall.Id, result);
-            }
-            catch (Exception ex)
-            {
-                return new ToolResult(toolCall.Id, $"Tool execution error: {ex.Message}", isError: true);
-            }
-        }
-
-        if (toolCall.Name == "web_search" && searchService != null)
-        {
-            var query = toolCall.Arguments.TryGetValue("query", out var queryObj) ? queryObj?.ToString() : null;
-            int maxResults;
-            if (toolCall.Arguments.TryGetValue("max_results", out var maxResultsObj) && maxResultsObj is long l && l >= 0)
-                maxResults = (int)l;
-            else
-                maxResults = 5;
-
-            if (string.IsNullOrEmpty(query))
-            {
-                return new ToolResult(toolCall.Id, "Error: Missing query parameter", isError: true);
-            }
-
-            try
-            {
-                RaiseOnStatusChange(StatusManager.SearchingStatus);
-                var result = await searchService.SearchAsync(query, maxResults);
-                RaiseOnStatusChange(null);
-                return new ToolResult(toolCall.Id, result);
-            }
-            catch (Exception ex)
-            {
-                RaiseOnStatusChange(null);
-                return new ToolResult(toolCall.Id, $"Error executing web search: {ex.Message}", isError: true);
-            }
-        }
-
-        return new ToolResult(toolCall.Id, $"No handler for tool: {toolCall.Name}", isError: true);
     }
 
     public virtual void Dispose()

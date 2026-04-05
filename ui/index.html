@@ -6,6 +6,8 @@
   <title>YAOLlm Chat</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/atom-one-dark.min.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/highlight.min.js"></script>
   <style>
     html, body {
       background: transparent;
@@ -115,18 +117,20 @@
     .status-dot-active {
       animation: status-pulse 1.5s ease-in-out infinite;
     }
+
+    [x-cloak] { display: none !important; }
   </style>
 </head>
 <body>
   <div x-data="chatApp()" x-init="init()" @keydown.tab.prevent="cycleProvider()" class="flex flex-col h-screen">
     <!-- Top Bar -->
-    <div class="flex-shrink-0 h-10 bg-black/70 backdrop-blur-xl flex items-center justify-end px-3">
+    <div class="flex-shrink-0 h-10 bg-black/95 backdrop-blur-xl flex items-center justify-end px-3">
       <button @click="hide()" class="text-white/70 hover:text-white text-lg w-8 h-8 flex items-center justify-center rounded hover:bg-white/10 transition-all">&minus;</button>
       <button @click="exit()" class="text-white/70 hover:text-white text-sm w-8 h-8 flex items-center justify-center rounded hover:bg-white/10 transition-all ml-1">&times;</button>
     </div>
 
     <!-- Chat Area -->
-    <div id="chat-area" class="flex-1 overflow-y-auto px-4 py-3">
+    <div id="chat-area" class="flex-1 overflow-y-auto px-4 py-3 bg-black/95 backdrop-blur-xl">
       <div class="space-y-2">
         <template x-for="msg in messages" :key="msg.id">
           <div class="text-left" :class="{
@@ -152,7 +156,7 @@
     </div>
 
     <!-- Bottom Bar -->
-    <div class="flex-shrink-0 bg-black/70 backdrop-blur-xl border-t border-white/30 px-4 py-3">
+    <div class="flex-shrink-0 bg-black/95 backdrop-blur-xl border-t border-white/30 px-4 py-3">
       <div class="max-w-3xl mx-auto">
         <!-- Textarea -->
         <textarea
@@ -261,8 +265,7 @@
             'Idle': 'bg-gray-500',
             'Sending': 'bg-blue-400',
             'Receiving': 'bg-green-400',
-            'Searching': 'bg-yellow-400',
-            'Analyzing': 'bg-purple-400'
+            'Searching': 'bg-yellow-400'
           }[this.status] || 'bg-gray-500';
         },
 
@@ -315,11 +318,12 @@
                   }
                   self.messages.push({role: msg.role, html: msg.html, id: self.nextId++});
                   self.streamingHtml = '';
+                  self.$nextTick(() => { if (window.hljs) hljs.highlightAll(); });
                   self.$nextTick(() => self.scrollToBottom());
                   break;
                 case 'chat_stream':
                   self.streamingHtml = msg.html;
-                  self.$nextTick(() => self.scrollToBottom());
+                  self.$nextTick(() => { self.scrollToBottom(); if (window.hljs) hljs.highlightAll(); });
                   break;
                 case 'status':
                   self.status = msg.status;
@@ -333,6 +337,7 @@
                   break;
                 case 'warning':
                   self.messages.push({role: 'system', html: '<em>' + msg.message + '</em>', id: self.nextId++});
+                  self.$nextTick(() => { if (window.hljs) hljs.highlightAll(); });
                   self.$nextTick(() => self.scrollToBottom());
                   break;
                 case 'focus_input':

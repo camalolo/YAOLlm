@@ -5,8 +5,7 @@ public enum Status
     Idle = 0,
     Sending,
     Receiving,
-    Searching,
-    Analyzing
+    Searching
 }
 
 public class StatusManager

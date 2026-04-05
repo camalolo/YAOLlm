@@ -21,15 +21,6 @@ public class GeminiProvider : BaseLLMProvider
     public override string Model { get; protected set; }
     public override bool SupportsWebSearch => true;
 
-    public override Task<string> SendAsync(
-        List<ChatMessage> history,
-        byte[]? image = null,
-        List<ToolDefinition>? tools = null,
-        CancellationToken cancellationToken = default)
-    {
-        throw new NotSupportedException("Gemini provider only supports streaming. Use StreamAsync instead.");
-    }
-
     public GeminiProvider(string model, string apiKey, HttpClient? httpClient = null, TavilySearchService? searchService = null, Logger? logger = null)
         : base(httpClient ?? new HttpClient(), searchService, logger)
     {
@@ -136,7 +127,7 @@ public class GeminiProvider : BaseLLMProvider
                     RaiseOnStatusChange(StatusManager.SearchingStatus);
                 }
 
-                ToolResult? result = await RaiseOnToolCallAsync(toolCall);
+                ToolResult? result = null;
 
                 if (result == null && toolCall.Name == "web_search" && _searchService != null)
                 {

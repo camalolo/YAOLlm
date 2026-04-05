@@ -21,7 +21,12 @@ public static class ImageService
             byte[] imageBytes = Convert.FromBase64String(base64);
             using var ms = new MemoryStream(imageBytes);
             using var image = new Bitmap(ms);
-            using var resizedImage = image.Resize(640, (int)(image.Height * 640.0 / image.Width));
+            int newWidth = 640;
+            int newHeight = (int)(image.Height * 640.0 / image.Width);
+            using var resizedImage = new Bitmap(newWidth, newHeight);
+            resizedImage.SetResolution(image.HorizontalResolution, image.VerticalResolution);
+            using (var g = Graphics.FromImage(resizedImage))
+                g.DrawImage(image, new Rectangle(0, 0, newWidth, newHeight), 0, 0, image.Width, image.Height, GraphicsUnit.Pixel);
             using var outputMs = new MemoryStream();
             resizedImage.Save(outputMs, ImageFormat.Png);
             return Convert.ToBase64String(outputMs.ToArray());

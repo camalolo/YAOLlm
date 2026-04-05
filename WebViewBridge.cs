@@ -1,6 +1,5 @@
 using System.Text.Json;
 using System.Text.Encodings.Web;
-using System.Text.Json.Serialization;
 using Markdig;
 using Microsoft.Web.WebView2.Core;
 
@@ -167,10 +166,11 @@ public sealed class WebViewBridge
     /// <summary>
     /// Renders Markdown text to HTML using Markdig with advanced extensions.
     /// </summary>
+    private static readonly MarkdownPipeline MdPipeline = new MarkdownPipelineBuilder().UseAdvancedExtensions().Build();
+
     private static string RenderMarkdown(string text)
     {
-        var pipeline = new MarkdownPipelineBuilder().UseAdvancedExtensions().Build();
-        return Markdig.Markdown.ToHtml(text, pipeline);
+        return Markdig.Markdown.ToHtml(text, MdPipeline);
     }
 
     /// <summary>

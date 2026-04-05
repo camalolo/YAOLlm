@@ -49,19 +49,6 @@ public class Logger : IDisposable
         }
     }
 
-    public void Flush()
-    {
-        lock (_lock)
-        {
-            if (_repeatCount > 0)
-            {
-                WriteToAllTargets($"(last line repeated {_repeatCount} times)");
-                _repeatCount = 0;
-            }
-            _fileWriter?.Flush();
-        }
-    }
-
     private void WriteToAllTargets(string line)
     {
         Console.WriteLine(line);
