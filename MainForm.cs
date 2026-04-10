@@ -41,6 +41,7 @@ public partial class MainForm : Form
 
         _currentProvider = _presetManager.CreateProvider();
         _conversationManager = new ConversationManager(_logger);
+        _conversationManager.Initialize(_conversationManager.BuildSystemPrompt());
 
         _webView = new WebView2
         {
@@ -285,9 +286,15 @@ public partial class MainForm : Form
             _logger.Log($"Processing LLM request: {prompt}");
             _statusManager.SetStatus(Status.Sending);
 
+            if (!string.IsNullOrEmpty(activeWindowTitle))
+                _conversationManager.CurrentWindowTitle = activeWindowTitle;
+
             var provider = _currentProvider;
 
             var messages = _conversationManager.GetSnapshot();
+            var systemPrompt = messages.Count > 0 ? messages[0].Content ?? "" : "";
+            _logger.Log($"[PROMPT]\n{systemPrompt}\n[/PROMPT]");
+
             var userMessage = new ChatMessage(ChatRole.User);
 
             byte[]? imageBytes = null;
