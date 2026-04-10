@@ -32,6 +32,12 @@ public class OpenRouterProvider : OpenAIStyleProvider
         if (string.IsNullOrEmpty(_apiKey))
             throw new InvalidOperationException("OpenRouter API key not provided. Set OPENROUTER_API_KEY environment variable or pass apiKey parameter.");
 
+        if (_httpClient.DefaultRequestHeaders.Authorization == null)
+        {
+            _httpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {_apiKey}");
+            _httpClient.DefaultRequestHeaders.Add("HTTP-Referer", DefaultReferer);
+            _httpClient.DefaultRequestHeaders.Add("X-Title", DefaultTitle);
+        }
     }
 
     protected override async IAsyncEnumerable<string> ExecuteStreamAsync(
@@ -94,16 +100,11 @@ public class OpenRouterProvider : OpenAIStyleProvider
     {
         try
         {
-            using var httpClient = new HttpClient();
-            httpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {_apiKey}");
-            httpClient.DefaultRequestHeaders.Add("HTTP-Referer", DefaultReferer);
-            httpClient.DefaultRequestHeaders.Add("X-Title", DefaultTitle);
-
             var jsonPayload = JsonSerializer.Serialize(requestBody);
             using var request = new HttpRequestMessage(HttpMethod.Post, ApiUrl);
             request.Content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
 
-            var response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
 
             if (!response.IsSuccessStatusCode)
             {
@@ -206,8 +207,7 @@ public class OpenRouterProvider : OpenAIStyleProvider
                     }
 
                     ToolResult? result = null;
-
-                    if (result == null && toolCall.Name == "web_search" && _searchService != null)
+                    if (toolCall.Name == "web_search" && _searchService != null)
                     {
                         var query = toolCall.Arguments.TryGetValue("query", out var queryObj) ? queryObj?.ToString() : null;
                         int maxResults;
@@ -279,10 +279,5 @@ public class OpenRouterProvider : OpenAIStyleProvider
                 }
             }
         }
-    }
-
-    public override void Dispose()
-    {
-        base.Dispose();
     }
 }

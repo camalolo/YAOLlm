@@ -243,9 +243,4 @@ public class OpenAICompatibleProvider : OpenAIStyleProvider
             return new ToolResult(toolCall.Id, $"Error executing web search: {ex.Message}", isError: true);
         }
     }
-
-    public override void Dispose()
-    {
-        base.Dispose();
-    }
 }

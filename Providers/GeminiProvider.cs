@@ -51,7 +51,7 @@ public class GeminiProvider : BaseLLMProvider
 
         var url = $"{ApiBaseUrl}{Model}:streamGenerateContent?alt=sse&key={_apiKey}";
 
-        using var httpClient = new HttpClient();
+        ThrowIfDisposed();
 
         HttpResponseMessage response = null!;
         for (int attempt = 0; attempt <= MaxRetries; attempt++)
@@ -63,7 +63,7 @@ public class GeminiProvider : BaseLLMProvider
                 using (var request = new HttpRequestMessage(HttpMethod.Post, url))
                 {
                     request.Content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
-                    attemptResponse = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+                    attemptResponse = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
                 }
                 attemptResponse.EnsureSuccessStatusCode();
                 response = attemptResponse;
@@ -128,11 +128,9 @@ public class GeminiProvider : BaseLLMProvider
                 }
 
                 ToolResult? result = null;
-
-                if (result == null && toolCall.Name == "web_search" && _searchService != null)
+                if (toolCall.Name == "web_search" && _searchService != null)
                 {
-                    var searchResult = await ExecuteWebSearchAsync(toolCall.Arguments ?? new Dictionary<string, object?>());
-                    result = new ToolResult(toolCall.Id, searchResult);
+                    result = new ToolResult(toolCall.Id, await ExecuteWebSearchAsync(toolCall.Arguments ?? new Dictionary<string, object?>()));
                 }
 
                 RaiseOnStatusChange(null);
@@ -270,7 +268,7 @@ public class GeminiProvider : BaseLLMProvider
 
         var url = $"{ApiBaseUrl}{Model}:streamGenerateContent?alt=sse&key={_apiKey}";
 
-        using var httpClient = new HttpClient();
+        ThrowIfDisposed();
 
         HttpResponseMessage response = null!;
         for (int attempt = 0; attempt <= MaxRetries; attempt++)
@@ -282,7 +280,7 @@ public class GeminiProvider : BaseLLMProvider
                 using (var request = new HttpRequestMessage(HttpMethod.Post, url))
                 {
                     request.Content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
-                    attemptResponse = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+                    attemptResponse = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
                 }
                 attemptResponse.EnsureSuccessStatusCode();
                 response = attemptResponse;
@@ -460,8 +458,4 @@ public class GeminiProvider : BaseLLMProvider
         };
     }
 
-    public override void Dispose()
-    {
-        base.Dispose();
-    }
 }

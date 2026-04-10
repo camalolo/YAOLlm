@@ -22,11 +22,11 @@ public class OllamaProvider : BaseLLMProvider
     public override bool SupportsWebSearch => false;
 
     public OllamaProvider(string model, string? baseUrl = null, HttpClient? httpClient = null, Logger? logger = null)
-        : base(httpClient ?? new HttpClient(), null, logger)
+        : base(httpClient ?? new HttpClient { Timeout = TimeSpan.FromMinutes(5) }, null, logger)
     {
         _model = model ?? throw new ArgumentNullException(nameof(model));
-        _baseUrl = baseUrl 
-            ?? Environment.GetEnvironmentVariable("OLLAMA_BASE_URL") 
+        _baseUrl = baseUrl
+            ?? Environment.GetEnvironmentVariable("OLLAMA_BASE_URL")
             ?? "http://localhost:11434";
     }
 
@@ -98,9 +98,8 @@ public class OllamaProvider : BaseLLMProvider
         var fullContent = new StringBuilder();
         var pendingToolCalls = new List<ToolCall>();
         int chunkIndex = 0;
-        
-        using var httpClient = new HttpClient();
-        httpClient.Timeout = TimeSpan.FromMinutes(5);
+
+        ThrowIfDisposed();
 
         HttpResponseMessage response = null!;
         for (int attempt = 0; attempt <= MaxRetries; attempt++)
@@ -112,7 +111,7 @@ public class OllamaProvider : BaseLLMProvider
                 using (var request = new HttpRequestMessage(HttpMethod.Post, $"{_baseUrl}/api/chat"))
                 {
                     request.Content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
-                    attemptResponse = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+                    attemptResponse = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
                 }
                 attemptResponse.EnsureSuccessStatusCode();
                 response = attemptResponse;
@@ -218,8 +217,4 @@ public class OllamaProvider : BaseLLMProvider
         }
     }
 
-    public override void Dispose()
-    {
-        base.Dispose();
-    }
 }

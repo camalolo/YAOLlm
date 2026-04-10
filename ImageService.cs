@@ -42,12 +42,15 @@ public static class ImageService
     {
         try
         {
+            bool wasVisible = formToHide.Visible;
             formToHide.Visible = false;
             Thread.Sleep(100);
             string title = GetActiveWindowTitle();
             using var screenshot = new Bitmap(Screen.PrimaryScreen?.Bounds.Width ?? 0, Screen.PrimaryScreen?.Bounds.Height ?? 0);
             using (var g = Graphics.FromImage(screenshot)) g.CopyFromScreen(0, 0, 0, 0, screenshot.Size);
-            formToHide.Visible = true;
+            formToHide.Visible = wasVisible;
+            if (wasVisible)
+                formToHide.Activate();
             using var ms = new MemoryStream();
             screenshot.Save(ms, ImageFormat.Png);
             string base64 = Convert.ToBase64String(ms.ToArray());

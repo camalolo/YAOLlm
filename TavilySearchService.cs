@@ -5,16 +5,26 @@ using RestSharp;
 
 namespace YAOLlm;
 
-public class TavilySearchService
+public class TavilySearchService : IDisposable
 {
     private readonly string _apiKey;
     private readonly Logger _logger;
+    private readonly RestClient _client;
     private const string ApiBaseUrl = "https://api.tavily.com";
+    private bool _disposed;
 
     public TavilySearchService(string apiKey, Logger logger)
     {
         _apiKey = apiKey ?? throw new ArgumentNullException(nameof(apiKey));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        _client = new RestClient(ApiBaseUrl);
+    }
+
+    public void Dispose()
+    {
+        if (_disposed) return;
+        _disposed = true;
+        _client.Dispose();
     }
 
     public async Task<string> SearchAsync(string query, int maxResults = 5, string searchDepth = "basic")
@@ -23,7 +33,6 @@ public class TavilySearchService
         {
             _logger.Log($"Performing Tavily search: '{query}' (maxResults: {maxResults}, depth: {searchDepth})");
 
-            using var client = new RestClient(ApiBaseUrl);
             var request = new RestRequest("/search", Method.Post);
             
             request.AddHeader("Authorization", $"Bearer {_apiKey}");
@@ -40,7 +49,7 @@ public class TavilySearchService
 
             request.AddJsonBody(requestBody);
 
-            var response = await client.ExecuteAsync(request);
+            var response = await _client.ExecuteAsync(request);
 
             if (!response.IsSuccessful)
             {

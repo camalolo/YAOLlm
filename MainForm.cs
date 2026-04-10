@@ -78,7 +78,10 @@ public partial class MainForm : Form
                         _logger.Log($"[JS:{level}] {message}");
                     }
                 }
-                catch { }
+                catch (Exception ex)
+                {
+                    _logger.Log($"[JS:bridge] Failed to parse web message: {ex.Message}");
+                }
             };
 
             // Inject console log forwarder
@@ -223,6 +226,7 @@ public partial class MainForm : Form
         UnregisterHotKey(this.Handle, HOTKEY_ID);
         _trayIconManager.Dispose();
         _currentProvider?.Dispose();
+        _presetManager.Dispose();
         _sendLock.Dispose();
         _logger.Log("Hotkey unregistered, tray icon disposed, and provider disposed.");
         _logger.Dispose();

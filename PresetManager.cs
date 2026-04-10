@@ -8,7 +8,7 @@ using YAOLlm.Providers;
 
 namespace YAOLlm;
 
-public class PresetManager
+public class PresetManager : IDisposable
 {
     private readonly string _configPath;
     private readonly TavilySearchService _searchService;
@@ -218,5 +218,10 @@ public class PresetManager
             throw new InvalidOperationException("DEEPSEEK_API_KEY not set");
         }
         return new DeepSeekProvider(model, apiKey, httpClient: null, _searchService, _logger);
+    }
+
+    public void Dispose()
+    {
+        (_searchService as IDisposable)?.Dispose();
     }
 }
