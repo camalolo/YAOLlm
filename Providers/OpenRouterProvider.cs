@@ -201,15 +201,12 @@ public class OpenRouterProvider : OpenAIStyleProvider
 
                 foreach (var toolCall in completedToolCalls)
                 {
-                    if (toolCall.Name == "web_search")
-                    {
-                        RaiseOnStatusChange(StatusManager.SearchingStatus);
-                    }
-
                     ToolResult? result = null;
                     if (toolCall.Name == "web_search" && _searchService != null)
                     {
                         var query = toolCall.Arguments.TryGetValue("query", out var queryObj) ? queryObj?.ToString() : null;
+                        if (!string.IsNullOrEmpty(query))
+                            RaiseOnStatusChange($"{StatusManager.SearchingStatus}:{query}");
                         int maxResults;
                         if (toolCall.Arguments.TryGetValue("max_results", out var maxResultsObj) && maxResultsObj is long l && l >= 0)
                             maxResults = (int)l;

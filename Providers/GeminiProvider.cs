@@ -122,15 +122,14 @@ public class GeminiProvider : BaseLLMProvider
         {
             foreach (var toolCall in pendingToolCalls)
             {
-                if (toolCall.Name == "web_search")
-                {
-                    RaiseOnStatusChange(StatusManager.SearchingStatus);
-                }
-
                 ToolResult? result = null;
                 if (toolCall.Name == "web_search" && _searchService != null)
                 {
-                    result = new ToolResult(toolCall.Id, await ExecuteWebSearchAsync(toolCall.Arguments ?? new Dictionary<string, object?>()));
+                    var args = toolCall.Arguments ?? new Dictionary<string, object?>();
+                    var query = args.TryGetValue("query", out var q) ? q?.ToString() : null;
+                    if (!string.IsNullOrEmpty(query))
+                        RaiseOnStatusChange($"{StatusManager.SearchingStatus}:{query}");
+                    result = new ToolResult(toolCall.Id, await ExecuteWebSearchAsync(args));
                 }
 
                 RaiseOnStatusChange(null);
@@ -435,10 +434,8 @@ public class GeminiProvider : BaseLLMProvider
                 return "Error: Missing query parameter";
             }
 
-            RaiseOnStatusChange(StatusManager.SearchingStatus);
             LogToolExecution("web_search");
             var result = await _searchService!.SearchAsync(query, maxResults);
-            RaiseOnStatusChange(null);
             LogToolResult("web_search", result);
             return result;
         }

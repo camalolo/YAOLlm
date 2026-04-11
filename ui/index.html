@@ -308,6 +308,11 @@
                   self.streamingHtml = '';
                   break;
                 case 'chat_message':
+                  // Flush any pending streaming content before pushing a non-model message
+                  if (self.streamingHtml && msg.role !== 'model') {
+                    self.messages.push({role: 'model', html: self.streamingHtml, id: self.nextId++});
+                    self.streamingHtml = '';
+                  }
                   // Dedup: skip if last message has same role and html
                   if (self.messages.length > 0) {
                     var last = self.messages[self.messages.length - 1];

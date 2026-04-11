@@ -18,6 +18,7 @@ public partial class MainForm : Form
     private WebViewBridge? _bridge;
     private ILLMProvider _currentProvider;
     private Action<string?>? _providerStatusHandler;
+    private Action? _onSearchComplete;
     private readonly SemaphoreSlim _sendLock = new(1, 1);
 
     private static readonly MarkdownPipeline MdPipeline = new MarkdownPipelineBuilder().UseAdvancedExtensions().Build();
@@ -195,10 +196,22 @@ public partial class MainForm : Form
     {
         _providerStatusHandler = status =>
         {
-            if (status == StatusManager.SearchingStatus)
+            if (status != null && status.StartsWith(StatusManager.SearchingStatus + ":"))
+            {
+                var query = status[(StatusManager.SearchingStatus.Length + 1)..];
                 _statusManager.SetStatus(Status.Searching);
+                _bridge?.ChatMessage("system", $"<em>🔍 Searching for: {query}</em>");
+            }
+            else if (status == StatusManager.SearchingStatus)
+            {
+                _statusManager.SetStatus(Status.Searching);
+            }
             else if (status == null)
+            {
                 _statusManager.SetStatus(Status.Receiving);
+                _onSearchComplete?.Invoke();
+                _onSearchComplete = null;
+            }
         };
         _currentProvider.OnStatusChange += _providerStatusHandler;
     }
@@ -319,6 +332,7 @@ public partial class MainForm : Form
             var fullResponse = new StringBuilder();
             var lastStreamUpdate = DateTime.MinValue;
             var streamThrottleMs = 50;
+            _onSearchComplete = () => fullResponse.Clear();
 
             await foreach (var chunk in provider.StreamAsync(messages, imageBytes, tools))
             {

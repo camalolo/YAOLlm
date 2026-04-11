@@ -154,15 +154,13 @@ public class OpenAICompatibleProvider : OpenAIStyleProvider
 
                 foreach (var toolCall in completedToolCalls)
                 {
-                    if (toolCall.Name == "web_search")
-                    {
-                        RaiseOnStatusChange(StatusManager.SearchingStatus);
-                    }
-
                     ToolResult? toolResult = null;
 
-                    if (toolResult == null && toolCall.Name == "web_search" && _searchService != null)
+                    if (toolCall.Name == "web_search" && _searchService != null)
                     {
+                        var query = toolCall.Arguments.TryGetValue("query", out var queryObj) ? queryObj?.ToString() : null;
+                        if (!string.IsNullOrEmpty(query))
+                            RaiseOnStatusChange($"{StatusManager.SearchingStatus}:{query}");
                         toolResult = await ExecuteWebSearchFallbackAsync(toolCall);
                     }
 
@@ -229,10 +227,8 @@ public class OpenAICompatibleProvider : OpenAIStyleProvider
                 return new ToolResult(toolCall.Id, "Error: Missing query parameter", isError: true);
             }
 
-            RaiseOnStatusChange(StatusManager.SearchingStatus);
             LogToolExecution("web_search");
             var searchResult = await _searchService!.SearchAsync(query, maxResults);
-            RaiseOnStatusChange(null);
             LogToolResult("web_search", searchResult);
             return new ToolResult(toolCall.Id, searchResult);
         }
