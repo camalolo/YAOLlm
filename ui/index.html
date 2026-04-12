@@ -150,6 +150,13 @@
           <div class="msg-content streaming-cursor" x-html="streamingHtml"></div>
         </div>
 
+        <!-- Queued messages (shown below stream) -->
+        <template x-for="msg in pendingMessages" :key="msg.id">
+          <div class="text-left border-l-2 border-blue-400/50 pl-3" style="color: rgba(255,255,255,1)">
+            <div class="msg-content" x-html="msg.html"></div>
+          </div>
+        </template>
+
         <!-- Scroll anchor -->
         <div id="scroll-anchor"></div>
       </div>
@@ -202,6 +209,7 @@
     function chatApp() {
       return {
         messages: [],
+        pendingMessages: [],
         streamingHtml: '',
         status: 'Idle',
         provider: '',
@@ -305,9 +313,15 @@
               switch(msg.type) {
                 case 'reset':
                   self.messages = [];
+                  self.pendingMessages = [];
                   self.streamingHtml = '';
                   break;
                 case 'chat_message':
+                  // Move pending messages into main list when stream completes
+                  if (msg.role === 'model' && self.pendingMessages.length > 0) {
+                    self.messages.push(...self.pendingMessages);
+                    self.pendingMessages = [];
+                  }
                   // Flush any pending streaming content before pushing a non-model message
                   if (self.streamingHtml && msg.role !== 'model') {
                     self.messages.push({role: 'model', html: self.streamingHtml, id: self.nextId++});
@@ -323,6 +337,11 @@
                   }
                   self.messages.push({role: msg.role, html: msg.html, id: self.nextId++});
                   self.streamingHtml = '';
+                  self.$nextTick(() => { if (window.hljs) hljs.highlightAll(); });
+                  self.$nextTick(() => self.scrollToBottom());
+                  break;
+                case 'chat_queued':
+                  self.pendingMessages.push({role: 'user', html: msg.html, id: self.nextId++});
                   self.$nextTick(() => { if (window.hljs) hljs.highlightAll(); });
                   self.$nextTick(() => self.scrollToBottom());
                   break;

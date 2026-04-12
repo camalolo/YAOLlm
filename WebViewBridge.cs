@@ -92,6 +92,15 @@ public sealed class WebViewBridge
     }
 
     /// <summary>
+    /// Sends a queued user message to the JavaScript UI.
+    /// Unlike ChatMessage, this does not flush the current streaming content.
+    /// </summary>
+    public void ChatQueued(string html)
+    {
+        Post(new { type = "chat_queued", html });
+    }
+
+    /// <summary>
     /// Sends a streaming HTML chunk to the JavaScript UI.
     /// </summary>
     /// <param name="html">HTML fragment to append to the current streaming response.</param>

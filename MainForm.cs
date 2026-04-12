@@ -19,6 +19,8 @@ public partial class MainForm : Form
     private ILLMProvider _currentProvider;
     private Action<string?>? _providerStatusHandler;
     private Action? _onSearchComplete;
+    private bool _pendingPresetSwitch;
+    private readonly Queue<(string? message, string? imageBase64, string? title)> _messageQueue = new();
     private readonly SemaphoreSlim _sendLock = new(1, 1);
 
     private static readonly MarkdownPipeline MdPipeline = new MarkdownPipelineBuilder().UseAdvancedExtensions().Build();
@@ -169,24 +171,7 @@ public partial class MainForm : Form
     {
         if (keyData == Keys.Tab && this.Visible)
         {
-            if (_sendLock.CurrentCount == 0)
-            {
-                _logger.Log("Preset switch blocked: request in progress.");
-                _bridge?.Warning("Cannot switch preset while a request is active.");
-                return true;
-            }
-
-            var oldProvider = _currentProvider;
-            if (oldProvider != null && _providerStatusHandler != null)
-                oldProvider.OnStatusChange -= _providerStatusHandler;
-
-            _presetManager.CycleNext();
-            _currentProvider = _presetManager.CreateProvider();
-            SubscribeToProviderStatus();
-            _bridge?.Provider(_presetManager.ActivePreset.DisplayName ?? _presetManager.ActivePreset.ToString());
-            _presetManager.SaveConfig();
-
-            oldProvider?.Dispose();
+            ApplyPendingPresetSwitch();
             return true;
         }
         return base.ProcessCmdKey(ref msg, keyData);
@@ -257,10 +242,17 @@ public partial class MainForm : Form
 
     private void CyclePreset()
     {
+        ApplyPendingPresetSwitch();
+    }
+
+    private void ApplyPendingPresetSwitch()
+    {
         if (_sendLock.CurrentCount == 0)
         {
-            _logger.Log("Preset switch blocked: request in progress.");
-            _bridge?.Warning("Cannot switch preset while a request is active.");
+            _presetManager.CycleNext();
+            _bridge?.Provider(_presetManager.ActivePreset.DisplayName ?? _presetManager.ActivePreset.ToString());
+            _presetManager.SaveConfig();
+            _pendingPresetSwitch = true;
             return;
         }
 
@@ -277,23 +269,47 @@ public partial class MainForm : Form
         oldProvider?.Dispose();
     }
 
-    private void SendMessage(string? message = null, string? imageBase64 = null, string? title = null)
+    private void SendMessage(string? message = null, string? imageBase64 = null, string? title = null, bool alreadyShown = false)
     {
         message = (message ?? "").Trim();
         if (string.IsNullOrEmpty(message) && string.IsNullOrEmpty(imageBase64)) return;
 
         if (!_sendLock.Wait(0))
         {
-            _bridge?.Warning("A request is already in progress.");
+            _bridge?.ChatQueued(Markdig.Markdown.ToHtml(message, MdPipeline));
+            _messageQueue.Enqueue((message, imageBase64, title));
             return;
         }
 
-        _bridge?.ChatMessageFromMarkdown("user", message);
+        if (_pendingPresetSwitch)
+        {
+            _pendingPresetSwitch = false;
+            var oldProvider = _currentProvider;
+            if (oldProvider != null && _providerStatusHandler != null)
+                oldProvider.OnStatusChange -= _providerStatusHandler;
+            _currentProvider = _presetManager.CreateProvider();
+            SubscribeToProviderStatus();
+            _bridge?.Provider(_presetManager.ActivePreset.DisplayName ?? _presetManager.ActivePreset.ToString());
+            oldProvider?.Dispose();
+        }
+
+        if (!alreadyShown)
+            _bridge?.ChatMessageFromMarkdown("user", message);
         _ = Task.Run(async () =>
         {
             try { await ProcessLLMRequestAsync(message, imageBase64, title); }
-            finally { _sendLock.Release(); }
+            finally
+            {
+                _sendLock.Release();
+                SendNextQueuedMessage();
+            }
         });
+    }
+
+    private void SendNextQueuedMessage()
+    {
+        if (_messageQueue.TryDequeue(out var queued))
+            SendMessage(queued.message, queued.imageBase64, queued.title, alreadyShown: true);
     }
 
     private async Task ProcessLLMRequestAsync(string prompt, string? imageBase64 = null, string? activeWindowTitle = null)
