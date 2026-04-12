@@ -15,5 +15,3 @@ if %ERRORLEVEL% NEQ 0 (
 )
 
 cp %PUBLISH_DIR%\YAOLlm.exe E:\Apps\
-
-pause
