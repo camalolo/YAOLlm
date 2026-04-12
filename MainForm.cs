@@ -20,6 +20,7 @@ public partial class MainForm : Form
     private Action<string?>? _providerStatusHandler;
     private Action? _onSearchComplete;
     private bool _pendingPresetSwitch;
+    private IntPtr _previousWindowHandle = IntPtr.Zero;
     private readonly Queue<(string? message, string? imageBase64, string? title)> _messageQueue = new();
     private readonly SemaphoreSlim _sendLock = new(1, 1);
 
@@ -29,12 +30,24 @@ public partial class MainForm : Form
     private const int HOTKEY_ID = 1;
     private const int MOD_WIN = 0x0008;
     private const int VK_F12 = 0x7B;
+    private const int WM_ACTIVATE = 0x0006;
+    private const int WA_ACTIVE = 0x0001;
+    private const int WA_CLICKACTIVE = 0x0002;
 
     [DllImport("user32.dll")]
     private static extern bool RegisterHotKey(IntPtr hWnd, int id, int fsModifiers, int vk);
 
     [DllImport("user32.dll")]
     private static extern bool UnregisterHotKey(IntPtr hWnd, int id);
+
+    [DllImport("user32.dll")]
+    private static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int count);
+
+    [DllImport("user32.dll")]
+    private static extern bool IsWindow(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
 
     public MainForm(PresetManager presetManager, StatusManager statusManager, Logger logger)
     {
@@ -217,6 +230,12 @@ public partial class MainForm : Form
         base.WndProc(ref m);
         if (m.Msg == WM_HOTKEY && m.WParam.ToInt32() == HOTKEY_ID)
             ToggleVisibility();
+        else if (m.Msg == WM_ACTIVATE)
+        {
+            int activation = m.WParam.ToInt32() & 0xFFFF;
+            if ((activation == WA_ACTIVE || activation == WA_CLICKACTIVE) && m.LParam != IntPtr.Zero)
+                _previousWindowHandle = m.LParam;
+        }
     }
 
     private void MainForm_FormClosing(object? sender, FormClosingEventArgs e)
@@ -295,6 +314,19 @@ public partial class MainForm : Form
 
         if (!alreadyShown)
             _bridge?.ChatMessageFromMarkdown("user", message);
+
+        if (string.IsNullOrEmpty(title) && _previousWindowHandle != IntPtr.Zero && IsWindow(_previousWindowHandle) && _previousWindowHandle != this.Handle)
+        {
+            const int nChars = 256;
+            var buff = new StringBuilder(nChars);
+            if (GetWindowText(_previousWindowHandle, buff, nChars) > 0)
+            {
+                title = buff.ToString();
+                if (title == "YAOLlm")
+                    title = string.Empty;
+            }
+        }
+
         _ = Task.Run(async () =>
         {
             try { await ProcessLLMRequestAsync(message, imageBase64, title); }
@@ -456,11 +488,7 @@ public partial class MainForm : Form
     private void ToggleVisibility()
     {
         if (!this.Visible)
-        {
-            string title = ImageService.GetActiveWindowTitle();
-            if (!string.IsNullOrEmpty(title))
-                _conversationManager.CurrentWindowTitle = title;
-        }
+            _previousWindowHandle = GetForegroundWindow();
         this.Visible = !this.Visible;
 
         if (this.Visible)
