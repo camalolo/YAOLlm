@@ -62,7 +62,8 @@ public partial class MainForm : Form
         _webView = new WebView2
         {
             Dock = DockStyle.Fill,
-            BackColor = Color.Black
+            BackColor = Color.Black,
+            Visible = false
         };
 
         FormLayout.ConfigureForm(this);
@@ -74,6 +75,8 @@ public partial class MainForm : Form
         this.FormClosing += MainForm_FormClosing;
         this.Load += async (s, e) =>
         {
+            try
+            {
             var userDataFolder = Path.Combine(Path.GetTempPath(), "YAOLlm", "WebView2");
             Directory.CreateDirectory(userDataFolder);
             var env = await CoreWebView2Environment.CreateAsync(null, userDataFolder);
@@ -157,6 +160,10 @@ public partial class MainForm : Form
             {
                 if (e.IsSuccess)
                 {
+                    if (_webView.InvokeRequired)
+                        _webView.Invoke(() => _webView.Visible = true);
+                    else
+                        _webView.Visible = true;
                     _logger.Log("WebView2: Navigation completed, sending initial state.");
                     _bridge?.Provider(_presetManager.ActivePreset.DisplayName ?? _presetManager.ActivePreset.ToString());
                     _bridge?.Status("Idle");
@@ -177,6 +184,11 @@ public partial class MainForm : Form
             {
                 _bridge?.Provider(preset.DisplayName ?? preset.ToString());
             };
+            }
+            catch (Exception ex)
+            {
+                _logger.Log($"WebView2 init failed: {ex}");
+            }
         };
     }
 
