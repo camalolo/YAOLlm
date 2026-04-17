@@ -131,7 +131,7 @@
 
     <!-- Chat Area -->
     <div id="chat-area" class="flex-1 overflow-y-auto px-4 py-3 bg-black/95 backdrop-blur-xl">
-      <div class="space-y-2">
+      <div class="space-y-4">
         <template x-for="msg in messages" :key="msg.id">
           <div class="text-left" :class="{
             'border-l-2 border-blue-400/50 pl-3': msg.role === 'user',
