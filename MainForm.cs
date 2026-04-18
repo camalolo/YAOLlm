@@ -30,9 +30,6 @@ public partial class MainForm : Form
     private const int HOTKEY_ID = 1;
     private const int MOD_WIN = 0x0008;
     private const int VK_F12 = 0x7B;
-    private const int WM_ACTIVATE = 0x0006;
-    private const int WA_ACTIVE = 0x0001;
-    private const int WA_CLICKACTIVE = 0x0002;
 
     [DllImport("user32.dll")]
     private static extern bool RegisterHotKey(IntPtr hWnd, int id, int fsModifiers, int vk);
@@ -242,12 +239,6 @@ public partial class MainForm : Form
         base.WndProc(ref m);
         if (m.Msg == WM_HOTKEY && m.WParam.ToInt32() == HOTKEY_ID)
             ToggleVisibility();
-        else if (m.Msg == WM_ACTIVATE)
-        {
-            int activation = m.WParam.ToInt32() & 0xFFFF;
-            if ((activation == WA_ACTIVE || activation == WA_CLICKACTIVE) && m.LParam != IntPtr.Zero)
-                _previousWindowHandle = m.LParam;
-        }
     }
 
     private void MainForm_FormClosing(object? sender, FormClosingEventArgs e)
