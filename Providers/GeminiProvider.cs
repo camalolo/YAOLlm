@@ -65,7 +65,13 @@ public class GeminiProvider : BaseLLMProvider
                     request.Content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
                     attemptResponse = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
                 }
-                attemptResponse.EnsureSuccessStatusCode();
+                if (!attemptResponse.IsSuccessStatusCode)
+                {
+                    var statusCode = (int)attemptResponse.StatusCode;
+                    var errorBody = await attemptResponse.Content.ReadAsStringAsync(cancellationToken);
+                    attemptResponse.Dispose();
+                    throw LLMException.CreateWithStatusCode(statusCode, errorBody, Name);
+                }
                 response = attemptResponse;
                 break;
             }
@@ -281,7 +287,13 @@ public class GeminiProvider : BaseLLMProvider
                     request.Content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
                     attemptResponse = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
                 }
-                attemptResponse.EnsureSuccessStatusCode();
+                if (!attemptResponse.IsSuccessStatusCode)
+                {
+                    var statusCode = (int)attemptResponse.StatusCode;
+                    var errorBody = await attemptResponse.Content.ReadAsStringAsync(cancellationToken);
+                    attemptResponse.Dispose();
+                    throw LLMException.CreateWithStatusCode(statusCode, errorBody, Name);
+                }
                 response = attemptResponse;
                 break;
             }
