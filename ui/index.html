@@ -211,6 +211,7 @@
         messages: [],
         pendingMessages: [],
         streamingHtml: '',
+        userScrolledUp: false,
         status: 'Idle',
         provider: '',
         historyChars: 0,
@@ -303,6 +304,25 @@
             }
           });
 
+          // Track scroll position: disable auto-scroll when user scrolls up
+          const chatArea = document.getElementById('chat-area');
+          if (chatArea) {
+            chatArea.addEventListener('scroll', () => {
+              const atBottom = chatArea.scrollHeight - chatArea.scrollTop - chatArea.clientHeight < 30;
+              self.userScrolledUp = !atBottom;
+            });
+          }
+
+          // Global keyboard scrolling — capture phase to intercept before textarea
+          window.addEventListener('keydown', (e) => {
+            if (!chatArea) return;
+            const inInput = e.target && (e.target.id === 'chat-input' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT');
+            if (e.key === 'PageDown') { chatArea.scrollTop += chatArea.clientHeight * 0.9; e.preventDefault(); e.stopPropagation(); }
+            else if (e.key === 'PageUp') { chatArea.scrollTop -= chatArea.clientHeight * 0.9; e.preventDefault(); e.stopPropagation(); }
+            else if (e.key === 'Home' && e.ctrlKey) { chatArea.scrollTop = 0; e.preventDefault(); e.stopPropagation(); }
+            else if (e.key === 'End' && e.ctrlKey) { self.userScrolledUp = false; chatArea.scrollTop = chatArea.scrollHeight; e.preventDefault(); e.stopPropagation(); }
+          }, true);
+
           // Listen for WebView2 messages (guard against double registration)
           if (!window._bridgeReady) {
             window._bridgeReady = true;
@@ -350,6 +370,7 @@
                   self.$nextTick(() => { self.scrollToBottom(); if (window.hljs) hljs.highlightAll(); });
                   break;
                 case 'status':
+                  if (msg.status === 'Idle') self.userScrolledUp = false;
                   self.status = msg.status;
                   break;
                 case 'provider':
@@ -379,6 +400,7 @@
         },
 
         scrollToBottom() {
+          if (this.userScrolledUp) return;
           const chat = document.getElementById('chat-area');
           if (chat) chat.scrollTop = chat.scrollHeight;
         }
