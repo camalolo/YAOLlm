@@ -24,6 +24,10 @@
 
   <ItemGroup>
     <EmbeddedResource Include="ui\index.html" />
+    <EmbeddedResource Include="ui\vendor\tailwind.min.js" />
+    <EmbeddedResource Include="ui\vendor\alpine.min.js" />
+    <EmbeddedResource Include="ui\vendor\highlight.min.js" />
+    <EmbeddedResource Include="ui\vendor\atom-one-dark.min.css" />
   </ItemGroup>
 
   <ItemGroup>

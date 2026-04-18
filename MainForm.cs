@@ -1,3 +1,4 @@
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Drawing.Imaging;
 using System.Text;
@@ -506,18 +507,27 @@ public partial class MainForm : Form
     private static string WriteHtmlToTempFile()
     {
         var assembly = typeof(MainForm).Assembly;
-        var resourceName = "YAOLlm.ui.index.html";
+        var tempDir = Path.Combine(Path.GetTempPath(), "YAOLlm");
+        Directory.CreateDirectory(tempDir);
+
+        ExtractResource(assembly, "YAOLlm.ui.index.html", Path.Combine(tempDir, "index.html"));
+
+        var vendorDir = Path.Combine(tempDir, "vendor");
+        Directory.CreateDirectory(vendorDir);
+        ExtractResource(assembly, "YAOLlm.ui.vendor.tailwind.min.js", Path.Combine(vendorDir, "tailwind.min.js"));
+        ExtractResource(assembly, "YAOLlm.ui.vendor.alpine.min.js", Path.Combine(vendorDir, "alpine.min.js"));
+        ExtractResource(assembly, "YAOLlm.ui.vendor.highlight.min.js", Path.Combine(vendorDir, "highlight.min.js"));
+        ExtractResource(assembly, "YAOLlm.ui.vendor.atom-one-dark.min.css", Path.Combine(vendorDir, "atom-one-dark.min.css"));
+
+        return new Uri(Path.Combine(tempDir, "index.html")).AbsoluteUri;
+    }
+
+    private static void ExtractResource(Assembly assembly, string resourceName, string outputPath)
+    {
         using var stream = assembly.GetManifestResourceStream(resourceName);
         if (stream == null)
             throw new InvalidOperationException($"Embedded resource '{resourceName}' not found.");
-        
-        var tempDir = Path.Combine(Path.GetTempPath(), "YAOLlm");
-        Directory.CreateDirectory(tempDir);
-        var tempPath = Path.Combine(tempDir, "index.html");
-        
-        using var fileStream = new FileStream(tempPath, FileMode.Create, FileAccess.Write);
+        using var fileStream = new FileStream(outputPath, FileMode.Create, FileAccess.Write);
         stream.CopyTo(fileStream);
-        
-        return new Uri(tempPath).AbsoluteUri;
     }
 }
