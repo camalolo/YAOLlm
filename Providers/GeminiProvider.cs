@@ -98,6 +98,7 @@ public class GeminiProvider : BaseLLMProvider
         string? line;
         var pendingToolCalls = new List<ToolCall>();
         int chunkIndex = 0;
+        string? lastFinishReason = null;
 
         while ((line = await reader.ReadLineAsync(cancellationToken)) != null)
         {
@@ -111,7 +112,9 @@ public class GeminiProvider : BaseLLMProvider
             if (jsonPart == "[DONE]")
                 break;
 
-            var (textChunks, toolCalls) = ParseStreamChunk(jsonPart);
+            var (textChunks, toolCalls, finishReason) = ParseStreamChunk(jsonPart);
+            if (finishReason != null)
+                lastFinishReason = finishReason;
             foreach (var chunk in textChunks)
             {
                 chunkIndex++;
@@ -156,12 +159,18 @@ public class GeminiProvider : BaseLLMProvider
                 }
             }
         }
+
+        if (chunkIndex == 0 && pendingToolCalls.Count == 0 && lastFinishReason != null && lastFinishReason != "STOP")
+        {
+            throw LLMException.CreateWithMessage($"Model returned no response (finish reason: {lastFinishReason})", Name);
+        }
     }
 
-    private (List<string> textChunks, List<ToolCall> toolCalls) ParseStreamChunk(string jsonPart)
+    private (List<string> textChunks, List<ToolCall> toolCalls, string? finishReason) ParseStreamChunk(string jsonPart)
     {
         var textChunks = new List<string>();
         var toolCalls = new List<ToolCall>();
+        string? finishReason = null;
 
         try
         {
@@ -171,6 +180,9 @@ public class GeminiProvider : BaseLLMProvider
             if (root.TryGetProperty("candidates", out var candidates) && candidates.GetArrayLength() > 0)
             {
                 var candidate = candidates[0];
+
+                if (candidate.TryGetProperty("finishReason", out var fr))
+                    finishReason = fr.GetString();
 
                 if (candidate.TryGetProperty("content", out var content) &&
                     content.TryGetProperty("parts", out var parts))
@@ -218,7 +230,7 @@ public class GeminiProvider : BaseLLMProvider
             LogJsonParseError(jsonPart, ex.Message);
         }
 
-        return (textChunks, toolCalls);
+        return (textChunks, toolCalls, finishReason);
     }
 
     private async IAsyncEnumerable<string> StreamWithToolResultAsync(
@@ -317,6 +329,8 @@ public class GeminiProvider : BaseLLMProvider
         using var reader = new StreamReader(stream);
 
         string? line;
+        string? lastFinishReason = null;
+        bool hasContent = false;
         while ((line = await reader.ReadLineAsync(cancellationToken)) != null)
         {
             if (string.IsNullOrWhiteSpace(line) || !line.StartsWith("data: "))
@@ -326,11 +340,19 @@ public class GeminiProvider : BaseLLMProvider
             if (jsonPart == "[DONE]")
                 break;
 
-            var (textChunks, _) = ParseStreamChunk(jsonPart);
+            var (textChunks, _, finishReason) = ParseStreamChunk(jsonPart);
+            if (finishReason != null)
+                lastFinishReason = finishReason;
             foreach (var chunk in textChunks)
             {
+                hasContent = true;
                 yield return chunk;
             }
+        }
+
+        if (!hasContent && lastFinishReason != null && lastFinishReason != "STOP")
+        {
+            throw LLMException.CreateWithMessage($"Model returned no response (finish reason: {lastFinishReason})", Name);
         }
     }
 
