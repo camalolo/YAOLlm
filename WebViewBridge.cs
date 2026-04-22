@@ -145,6 +145,11 @@ public sealed class WebViewBridge
         Post(new { type = "warning", message });
     }
 
+    public void Error(string message)
+    {
+        Post(new { type = "error", message });
+    }
+
     /// <summary>
     /// Sends a no-provider signal to disable the chat UI.
     /// </summary>

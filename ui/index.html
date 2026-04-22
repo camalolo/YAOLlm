@@ -385,6 +385,11 @@
                   self.$nextTick(() => { if (window.hljs) hljs.highlightAll(); });
                   self.$nextTick(() => self.scrollToBottom());
                   break;
+                case 'error':
+                  self.messages.push({role: 'error', html: msg.message, id: self.nextId++});
+                  self.$nextTick(() => { if (window.hljs) hljs.highlightAll(); });
+                  self.$nextTick(() => self.scrollToBottom());
+                  break;
                 case 'focus_input':
                   self.$nextTick(() => {
                     if (self.$refs.input) self.$refs.input.focus();

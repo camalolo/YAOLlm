@@ -53,8 +53,9 @@ public class TavilySearchService : IDisposable
 
             if (!response.IsSuccessful)
             {
-                _logger.Log($"Tavily API request failed: {response.StatusCode} - {response.ErrorMessage}");
-                return $"Error: Search request failed with status {response.StatusCode}. {response.ErrorMessage}";
+                var errorDetail = response.Content ?? response.ErrorMessage ?? "No details available";
+                _logger.Log($"Tavily API request failed: {(int)response.StatusCode} - {errorDetail}");
+                throw new Exception($"Search failed ({(int)response.StatusCode}): {errorDetail}");
             }
 
             if (string.IsNullOrEmpty(response.Content))

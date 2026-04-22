@@ -422,12 +422,12 @@ public partial class MainForm : Form
         catch (LLMException ex)
         {
             _logger.Log($"LLM Error: {ex.Message}");
-            _bridge?.Warning($"{ex.UserMessage}");
+            _bridge?.Error($"{ex.UserMessage}");
         }
         catch (Exception ex)
         {
             _logger.Log($"Error in ProcessLLMRequestAsync: {ex.Message}");
-            _bridge?.Warning($"{ex.Message}");
+            _bridge?.Error($"{ex.Message}");
         }
         finally
         {
@@ -447,7 +447,7 @@ public partial class MainForm : Form
         if (!string.IsNullOrEmpty(imageBase64))
             SendMessage(message, imageBase64, title);
         else
-            _bridge?.Warning("Error: Screen capture failed.");
+            _bridge?.Error("Error: Screen capture failed.");
     }
 
     private void ClearChat()
@@ -484,7 +484,7 @@ public partial class MainForm : Form
             catch (Exception ex)
             {
                 _logger.Log($"Error loading image: {ex.Message}");
-                _bridge?.Warning($"Error: Failed to load image - {ex.Message}");
+                _bridge?.Error($"Error: Failed to load image - {ex.Message}");
             }
         }
     }
