@@ -350,6 +350,9 @@ public partial class MainForm : Form
 
     private async Task ProcessLLMRequestAsync(string prompt, string? imageBase64 = null, string? activeWindowTitle = null)
     {
+        var userMessage = new ChatMessage(ChatRole.User);
+        var fullResponse = new StringBuilder();
+
         try
         {
             _logger.Log($"Processing LLM request: {prompt}");
@@ -363,8 +366,6 @@ public partial class MainForm : Form
             var messages = _conversationManager.GetSnapshot();
             var systemPrompt = messages.Count > 0 ? messages[0].Content ?? "" : "";
             _logger.Log($"[PROMPT]\n{systemPrompt}\n[/PROMPT]");
-
-            var userMessage = new ChatMessage(ChatRole.User);
 
             byte[]? imageBytes = null;
             if (!string.IsNullOrEmpty(imageBase64))
@@ -381,7 +382,6 @@ public partial class MainForm : Form
 
             var tools = provider.SupportsWebSearch ? ToolDefinitions.GetAll() : null;
 
-            var fullResponse = new StringBuilder();
             var lastStreamUpdate = DateTime.MinValue;
             var streamThrottleMs = 50;
             _onSearchComplete = () => fullResponse.Clear();
@@ -417,22 +417,39 @@ public partial class MainForm : Form
             else
             {
                 _bridge?.Warning("The model returned no response.");
+                _conversationManager.AddExchange(userMessage, "");
+                UpdateHistoryCounter();
             }
         }
         catch (LLMException ex)
         {
             _logger.Log($"LLM Error: {ex.Message}");
             _bridge?.Error($"{ex.UserMessage}");
+            SaveOnError(userMessage, fullResponse, ex.UserMessage);
         }
         catch (Exception ex)
         {
             _logger.Log($"Error in ProcessLLMRequestAsync: {ex.Message}");
             _bridge?.Error($"{ex.Message}");
+            SaveOnError(userMessage, fullResponse, ex.Message);
         }
         finally
         {
+            _onSearchComplete = null;
             _statusManager.SetStatus(Status.Idle);
         }
+    }
+
+    private void SaveOnError(ChatMessage userMessage, StringBuilder fullResponse, string errorMessage)
+    {
+        if (string.IsNullOrEmpty(userMessage.Content))
+            return;
+
+        var response = fullResponse.Length > 0
+            ? fullResponse.ToString()
+            : $"[Error: {errorMessage}]";
+        _conversationManager.AddExchange(userMessage, response);
+        UpdateHistoryCounter();
     }
 
     private void CaptureAndSend(string text)
