@@ -423,7 +423,7 @@ public partial class MainForm : Form
         }
         catch (LLMException ex)
         {
-            _logger.Log($"LLM Error: {ex.Message}");
+            _logger.Log($"LLM Error: {ex.Message} (StatusCode={ex.StatusCode}, Details={ex.Details})");
             _bridge?.Error($"{ex.UserMessage}");
             SaveOnError(userMessage, fullResponse, ex.UserMessage);
         }

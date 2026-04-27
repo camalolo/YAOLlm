@@ -128,6 +128,7 @@ public abstract class OpenAIStyleProvider : BaseLLMProvider
     {
         public string? Error { get; set; }
         public string? Chunk { get; set; }
+        public string? ReasoningChunk { get; set; }
         public bool HasToolCallsFinish { get; set; }
         public List<ToolCallDelta> ToolCallDeltas { get; } = new();
     }
@@ -153,6 +154,12 @@ public abstract class OpenAIStyleProvider : BaseLLMProvider
 
                 if (choice.TryGetProperty("delta", out var delta))
                 {
+                    if (delta.TryGetProperty("reasoning_content", out var reasoning) &&
+                        reasoning.ValueKind != JsonValueKind.Null)
+                    {
+                        result.ReasoningChunk = reasoning.GetString() ?? "";
+                    }
+
                     if (delta.TryGetProperty("content", out var content) &&
                         content.ValueKind != JsonValueKind.Null)
                     {

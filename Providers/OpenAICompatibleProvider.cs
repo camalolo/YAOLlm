@@ -90,6 +90,7 @@ public class OpenAICompatibleProvider : OpenAIStyleProvider
             using var reader = new StreamReader(stream);
 
             var fullContent = new StringBuilder();
+            var fullReasoning = new StringBuilder();
             var toolCalls = new Dictionary<int, ToolCallBuilder>();
             bool hasToolCalls = false;
             int chunkIndex = 0;
@@ -117,6 +118,11 @@ public class OpenAICompatibleProvider : OpenAIStyleProvider
                 if (parseResult.HasToolCallsFinish)
                 {
                     hasToolCalls = true;
+                }
+
+                if (!string.IsNullOrEmpty(parseResult.ReasoningChunk))
+                {
+                    fullReasoning.Append(parseResult.ReasoningChunk);
                 }
 
                 if (!string.IsNullOrEmpty(parseResult.Chunk))
@@ -174,7 +180,8 @@ public class OpenAICompatibleProvider : OpenAIStyleProvider
                         newMessages.Add(new
                         {
                             role = "assistant",
-                            content = fullContent.Length > 0 ? fullContent.ToString() : null,
+                            content = fullContent.Length > 0 ? fullContent.ToString() : (string?)null,
+                            reasoning_content = fullReasoning.Length > 0 ? fullReasoning.ToString() : (string?)null,
                             tool_calls = completedToolCalls.Select(tc => new
                             {
                                 id = tc.Id,
