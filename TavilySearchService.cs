@@ -1,5 +1,9 @@
 using System;
+using System.Net;
+using System.Net.Http;
+using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using RestSharp;
 
@@ -12,6 +16,14 @@ public class TavilySearchService : IDisposable
     private readonly RestClient _client;
     private const string ApiBaseUrl = "https://api.tavily.com";
     private bool _disposed;
+
+    private static readonly HttpClient _ddgClient = new HttpClient(new HttpClientHandler
+    {
+        AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate
+    })
+    {
+        DefaultRequestHeaders = { { "User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" } }
+    };
 
     public TavilySearchService(string apiKey, Logger logger)
     {
@@ -55,7 +67,15 @@ public class TavilySearchService : IDisposable
             {
                 var errorDetail = response.Content ?? response.ErrorMessage ?? "No details available";
                 _logger.Log($"Tavily API request failed: {(int)response.StatusCode} - {errorDetail}");
-                throw new Exception($"Search failed ({(int)response.StatusCode}): {errorDetail}");
+
+                var statusCode = (int)response.StatusCode;
+                if (statusCode == 432 || statusCode == 433)
+                {
+                    _logger.Log($"Tavily quota exceeded ({statusCode}), falling back to DuckDuckGo");
+                    return await SearchDuckDuckGoAsync(query, maxResults);
+                }
+
+                throw new Exception($"Search failed ({statusCode}): {errorDetail}");
             }
 
             if (string.IsNullOrEmpty(response.Content))
@@ -75,6 +95,61 @@ public class TavilySearchService : IDisposable
         {
             _logger.Log($"Error in TavilySearchService.SearchAsync: {ex.Message}");
             return $"Error: Failed to perform search. {ex.Message}";
+        }
+    }
+
+    private async Task<string> SearchDuckDuckGoAsync(string query, int maxResults)
+    {
+        try
+        {
+            _logger.Log($"[DDG] Starting DuckDuckGo fallback search for: '{query}' (maxResults: {maxResults})");
+            var url = $"https://html.duckduckgo.com/html/?q={Uri.EscapeDataString(query)}";
+            _logger.Log($"[DDG] Requesting: {url}");
+
+            var html = await _ddgClient.GetStringAsync(url);
+            _logger.Log($"[DDG] Response received, length: {html.Length}");
+
+            var titleMatches = Regex.Matches(html, @"<a[^>]*class=""result__a""[^>]*href=""([^""]*)""[^>]*>([\s\S]*?)</a>");
+            var snippetMatches = Regex.Matches(html, @"<a[^>]*class=""result__snippet""[^>]*>([\s\S]*?)</a>");
+            _logger.Log($"[DDG] Regex matches - titles: {titleMatches.Count}, snippets: {snippetMatches.Count}");
+
+            var results = new StringBuilder();
+            int count = Math.Min(titleMatches.Count, maxResults);
+
+            for (int i = 0; i < count; i++)
+            {
+                var rawUrl = titleMatches[i].Groups[1].Value;
+                var title = Regex.Replace(titleMatches[i].Groups[2].Value, "<[^>]*>", "").Trim();
+
+                var uddgMatch = Regex.Match(rawUrl, @"uddg=([^&]+)");
+                var actualUrl = uddgMatch.Success ? Uri.UnescapeDataString(uddgMatch.Groups[1].Value) : rawUrl;
+
+                var snippet = "";
+                if (i < snippetMatches.Count)
+                    snippet = Regex.Replace(snippetMatches[i].Groups[1].Value, "<[^>]*>", "").Trim();
+
+                _logger.Log($"[DDG] Result {i + 1}: title='{title}', url='{actualUrl}', snippet_len={snippet.Length}");
+
+                results.AppendLine($"**{title}**");
+                results.AppendLine($"URL: {actualUrl}");
+                results.AppendLine($"Content: {snippet}");
+
+                if (i < count - 1)
+                {
+                    results.AppendLine();
+                    results.AppendLine("---");
+                    results.AppendLine();
+                }
+            }
+
+            var result = count > 0 ? results.ToString().Trim() : "No search results found";
+            _logger.Log($"[DDG] Search completed, {count} results, output length: {result.Length}");
+            return result;
+        }
+        catch (Exception ex)
+        {
+            _logger.Log($"[DDG] Fallback search failed: {ex.Message}");
+            return $"Error: DuckDuckGo fallback search failed. {ex.Message}";
         }
     }
 
