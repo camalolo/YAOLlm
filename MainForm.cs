@@ -20,6 +20,7 @@ public partial class MainForm : Form
     private ILLMProvider _currentProvider;
     private Action<string?>? _providerStatusHandler;
     private Action? _onSearchComplete;
+    private string? _preToolResponse;
     private bool _pendingPresetSwitch;
     private IntPtr _previousWindowHandle = IntPtr.Zero;
     private readonly Queue<(string? message, string? imageBase64, string? title)> _messageQueue = new();
@@ -392,7 +393,11 @@ public partial class MainForm : Form
 
             var lastStreamUpdate = DateTime.MinValue;
             var streamThrottleMs = 50;
-            _onSearchComplete = () => fullResponse.Clear();
+            _onSearchComplete = () =>
+            {
+                _preToolResponse = fullResponse.ToString();
+                fullResponse.Clear();
+            };
             _cancellationTokenSource = new CancellationTokenSource();
             var token = _cancellationTokenSource.Token;
 
@@ -434,7 +439,7 @@ public partial class MainForm : Form
         catch (OperationCanceledException)
         {
             _logger.Log("LLM request cancelled by user");
-            var partial = fullResponse.ToString();
+            var partial = (_preToolResponse ?? "") + fullResponse.ToString();
             if (!string.IsNullOrEmpty(partial))
             {
                 _conversationManager.AddExchange(userMessage, partial);
@@ -458,6 +463,7 @@ public partial class MainForm : Form
         finally
         {
             _onSearchComplete = null;
+            _preToolResponse = null;
             _cancellationTokenSource?.Dispose();
             _cancellationTokenSource = null;
             _statusManager.SetStatus(Status.Idle);
