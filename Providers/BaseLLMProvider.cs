@@ -19,6 +19,9 @@ public abstract class BaseLLMProvider : ILLMProvider
     protected readonly Logger _logger;
     protected volatile bool _isDisposed;
 
+    public string? CompletedSearchSummaries { get; protected set; }
+    public int CompletedSearchCount { get; protected set; }
+
     /// <summary>
     /// Provider name (e.g., "gemini", "openrouter", "ollama")
     /// </summary>

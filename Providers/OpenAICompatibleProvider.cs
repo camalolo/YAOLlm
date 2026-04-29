@@ -157,61 +157,71 @@ public class OpenAICompatibleProvider : OpenAIStyleProvider
             if (hasToolCalls && toolCalls.Count > 0)
             {
                 var completedToolCalls = BuildCompletedToolCalls(toolCalls);
+                var toolResults = new List<ToolResult>();
+                CompletedSearchSummaries = null;
+                CompletedSearchCount = 0;
+                var summaries = new List<string>();
 
                 foreach (var toolCall in completedToolCalls)
                 {
-                    ToolResult? toolResult = null;
-
+                    cancellationToken.ThrowIfCancellationRequested();
                     if (toolCall.Name == "web_search" && _searchService != null)
                     {
                         var query = toolCall.Arguments.TryGetValue("query", out var queryObj) ? queryObj?.ToString() : null;
                         if (!string.IsNullOrEmpty(query))
                             RaiseOnStatusChange($"{StatusManager.SearchingStatus}:{query}");
-                        toolResult = await ExecuteWebSearchFallbackAsync(toolCall);
+                        var result = await ExecuteWebSearchFallbackAsync(toolCall);
+                        toolResults.Add(result);
+                        summaries.Add($"**Search: {query}**\n{result.Content}");
+                        CompletedSearchSummaries = string.Join("\n\n---\n\n", summaries);
+                        CompletedSearchCount = toolResults.Count;
                     }
+                }
 
-                    RaiseOnStatusChange(null);
+                RaiseOnStatusChange(null);
 
-                    if (toolResult != null)
+                if (toolResults.Count > 0)
+                {
+                    var messages = (List<object>)requestBody["messages"];
+                    var newMessages = new List<object>(messages);
+
+                    newMessages.Add(new
                     {
-                        var messages = (List<object>)requestBody["messages"];
-                        var newMessages = new List<object>(messages);
-
-                        newMessages.Add(new
+                        role = "assistant",
+                        content = fullContent.Length > 0 ? fullContent.ToString() : (string?)null,
+                        reasoning_content = fullReasoning.Length > 0 ? fullReasoning.ToString() : (string?)null,
+                        tool_calls = completedToolCalls.Select(tc => new
                         {
-                            role = "assistant",
-                            content = fullContent.Length > 0 ? fullContent.ToString() : (string?)null,
-                            reasoning_content = fullReasoning.Length > 0 ? fullReasoning.ToString() : (string?)null,
-                            tool_calls = completedToolCalls.Select(tc => new
+                            id = tc.Id,
+                            type = "function",
+                            function = new
                             {
-                                id = tc.Id,
-                                type = "function",
-                                function = new
-                                {
-                                    name = tc.Name,
-                                    arguments = tc.Arguments.Count > 0
-                                        ? JsonSerializer.Serialize(tc.Arguments)
-                                        : "{}"
-                                }
-                            }).ToArray()
-                        });
+                                name = tc.Name,
+                                arguments = tc.Arguments.Count > 0
+                                    ? JsonSerializer.Serialize(tc.Arguments)
+                                    : "{}"
+                            }
+                        }).ToArray()
+                    });
 
+                    foreach (var tr in toolResults)
+                    {
                         newMessages.Add(new
                         {
                             role = "tool",
-                            tool_call_id = toolCall.Id,
-                            content = toolResult.Content
+                            tool_call_id = tr.ToolCallId,
+                            content = tr.Content
                         });
-
-                        requestBody["messages"] = newMessages;
-
-                        ThrowIfDisposed();
-                        await foreach (var chunk in ExecuteStreamAsync(requestBody, cancellationToken))
-                        {
-                            yield return chunk;
-                        }
-                        yield break;
                     }
+
+                    requestBody["messages"] = newMessages;
+
+                    ThrowIfDisposed();
+                    await foreach (var chunk in ExecuteStreamAsync(requestBody, cancellationToken))
+                    {
+                        yield return chunk;
+                    }
+                    yield break;
                 }
             }
         }

@@ -211,6 +211,8 @@ public partial class MainForm : Form
             {
                 var query = status[(StatusManager.SearchingStatus.Length + 1)..];
                 _statusManager.SetStatus(Status.Searching);
+                _onSearchComplete?.Invoke();
+                _onSearchComplete = null;
                 _bridge?.ChatMessage("system", $"<em>🔍 Searching for: {query}</em>");
             }
             else if (status == StatusManager.SearchingStatus)
@@ -220,8 +222,6 @@ public partial class MainForm : Form
             else if (status == null)
             {
                 _statusManager.SetStatus(Status.Receiving);
-                _onSearchComplete?.Invoke();
-                _onSearchComplete = null;
             }
         };
         _currentProvider.OnStatusChange += _providerStatusHandler;
@@ -440,13 +440,39 @@ public partial class MainForm : Form
         {
             _logger.Log("LLM request cancelled by user");
             var partial = (_preToolResponse ?? "") + fullResponse.ToString();
-            if (!string.IsNullOrEmpty(partial))
+            var searchSummaries = _currentProvider?.CompletedSearchSummaries;
+            var searchCount = _currentProvider?.CompletedSearchCount ?? 0;
+
+            if (!string.IsNullOrEmpty(partial) || searchCount > 0)
             {
-                _conversationManager.AddExchange(userMessage, partial);
+                var historyText = partial;
+                if (!string.IsNullOrEmpty(searchSummaries))
+                    historyText += "\n\n---\n\n*Search results received before stop:*\n\n" + searchSummaries;
+                historyText += "\n\n⏹ *[Response stopped by user]*";
+                _conversationManager.AddExchange(userMessage, historyText);
                 UpdateHistoryCounter();
-                _bridge?.ChatMessageFromMarkdown("model", partial);
+
+                if (!string.IsNullOrEmpty(_preToolResponse))
+                {
+                    if (searchCount > 0)
+                        _bridge?.Warning($"⏹ Stopped — {searchCount} search(es) completed.");
+                    else
+                        _bridge?.Warning("⏹ Stopped.");
+                }
+                else
+                {
+                    var displayText = partial;
+                    if (searchCount > 0)
+                        displayText += $"\n\n⏹ *Stopped — {searchCount} search(es) completed.*";
+                    else
+                        displayText += "\n\n⏹ *[Response stopped by user]*";
+                    _bridge?.ChatMessageFromMarkdown("model", displayText);
+                }
             }
-            _bridge?.Warning("⏹ Stopped.");
+            else
+            {
+                _bridge?.Warning("⏹ Stopped.");
+            }
         }
         catch (LLMException ex)
         {

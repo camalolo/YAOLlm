@@ -198,10 +198,14 @@ public class OpenRouterProvider : OpenAIStyleProvider
             if (hasToolCalls && toolCalls.Count > 0)
             {
                 var completedToolCalls = BuildCompletedToolCalls(toolCalls);
+                var toolResults = new List<ToolResult>();
+                CompletedSearchSummaries = null;
+                CompletedSearchCount = 0;
+                var summaries = new List<string>();
 
                 foreach (var toolCall in completedToolCalls)
                 {
-                    ToolResult? result = null;
+                    cancellationToken.ThrowIfCancellationRequested();
                     if (toolCall.Name == "web_search" && _searchService != null)
                     {
                         var query = toolCall.Arguments.TryGetValue("query", out var queryObj) ? queryObj?.ToString() : null;
@@ -216,7 +220,7 @@ public class OpenRouterProvider : OpenAIStyleProvider
                         if (string.IsNullOrEmpty(query))
                         {
                             LogError("web_search", "Missing query parameter");
-                            result = new ToolResult(toolCall.Id, "Error: Missing query parameter", isError: true);
+                            toolResults.Add(new ToolResult(toolCall.Id, "Error: Missing query parameter", isError: true));
                         }
                         else
                         {
@@ -225,54 +229,60 @@ public class OpenRouterProvider : OpenAIStyleProvider
                                 LogToolExecution("web_search");
                                 var searchResult = await _searchService.SearchAsync(query, maxResults);
                                 LogToolResult("web_search", searchResult);
-                                result = new ToolResult(toolCall.Id, searchResult);
+                                toolResults.Add(new ToolResult(toolCall.Id, searchResult));
+                                summaries.Add($"**Search: {query}**\n{searchResult}");
+                                CompletedSearchSummaries = string.Join("\n\n---\n\n", summaries);
+                                CompletedSearchCount = toolResults.Count;
                             }
                             catch (Exception ex)
                             {
                                 LogError("web_search", ex.Message);
-                                result = new ToolResult(toolCall.Id, $"Error executing web search: {ex.Message}", isError: true);
+                                toolResults.Add(new ToolResult(toolCall.Id, $"Error executing web search: {ex.Message}", isError: true));
                             }
                         }
                     }
+                }
 
-                    RaiseOnStatusChange(null);
+                RaiseOnStatusChange(null);
 
-                    if (result != null)
+                if (toolResults.Count > 0)
+                {
+                    var messages = (List<object>)requestBody["messages"];
+                    var newMessages = new List<object>(messages);
+
+                    newMessages.Add(new
                     {
-                        var messages = (List<object>)requestBody["messages"];
-                        var newMessages = new List<object>(messages);
-
-                        newMessages.Add(new
+                        role = "assistant",
+                        content = state.FullContent.Length > 0 ? state.FullContent.ToString() : null,
+                        tool_calls = completedToolCalls.Select(tc => new
                         {
-                            role = "assistant",
-                            content = state.FullContent.Length > 0 ? state.FullContent.ToString() : null,
-                            tool_calls = completedToolCalls.Select(tc => new
+                            id = tc.Id,
+                            type = "function",
+                            function = new
                             {
-                                id = tc.Id,
-                                type = "function",
-                                function = new
-                                {
-                                    name = tc.Name,
-                                    arguments = tc.Arguments.Count > 0
-                                        ? JsonSerializer.Serialize(tc.Arguments)
-                                        : "{}"
-                                }
-                            }).ToArray()
-                        });
+                                name = tc.Name,
+                                arguments = tc.Arguments.Count > 0
+                                    ? JsonSerializer.Serialize(tc.Arguments)
+                                    : "{}"
+                            }
+                        }).ToArray()
+                    });
 
+                    foreach (var tr in toolResults)
+                    {
                         newMessages.Add(new
                         {
                             role = "tool",
-                            tool_call_id = toolCall.Id,
-                            content = result.Content
+                            tool_call_id = tr.ToolCallId,
+                            content = tr.Content
                         });
-
-                        state.FollowUpRequest = new Dictionary<string, object>(requestBody)
-                        {
-                            ["messages"] = newMessages
-                        };
-                        yield break;
                     }
+
+                    state.FollowUpRequest = new Dictionary<string, object>(requestBody)
+                    {
+                        ["messages"] = newMessages
+                    };
+                    yield break;
                 }
             }
         }

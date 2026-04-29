@@ -45,6 +45,9 @@ public interface ILLMProvider : IDisposable
     /// Called when the provider status changes (e.g., "searching", "processing")
     /// </summary>
     event Action<string?>? OnStatusChange;
+
+    string? CompletedSearchSummaries { get; }
+    int CompletedSearchCount { get; }
 }
 
 /// <summary>
