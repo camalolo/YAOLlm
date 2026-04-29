@@ -24,6 +24,7 @@ public partial class MainForm : Form
     private IntPtr _previousWindowHandle = IntPtr.Zero;
     private readonly Queue<(string? message, string? imageBase64, string? title)> _messageQueue = new();
     private readonly SemaphoreSlim _sendLock = new(1, 1);
+    private CancellationTokenSource? _cancellationTokenSource;
 
     private static readonly MarkdownPipeline MdPipeline = new MarkdownPipelineBuilder().UseAdvancedExtensions().Build();
 
@@ -144,6 +145,7 @@ public partial class MainForm : Form
             _bridge.Hide += HideOverlay;
             _bridge.Exit += Application.Exit;
             _bridge.CycleProvider += CyclePreset;
+            _bridge.Stop += StopStreaming;
 
             // Check if any provider is configured
             if (!_presetManager.HasProvider)
@@ -292,6 +294,12 @@ public partial class MainForm : Form
         oldProvider?.Dispose();
     }
 
+    private void StopStreaming()
+    {
+        _logger.Log("Stop requested by user");
+        _cancellationTokenSource?.Cancel();
+    }
+
     private void SendMessage(string? message = null, string? imageBase64 = null, string? title = null, bool alreadyShown = false)
     {
         message = (message ?? "").Trim();
@@ -385,8 +393,10 @@ public partial class MainForm : Form
             var lastStreamUpdate = DateTime.MinValue;
             var streamThrottleMs = 50;
             _onSearchComplete = () => fullResponse.Clear();
+            _cancellationTokenSource = new CancellationTokenSource();
+            var token = _cancellationTokenSource.Token;
 
-            await foreach (var chunk in provider.StreamAsync(messages, imageBytes, tools))
+            await foreach (var chunk in provider.StreamAsync(messages, imageBytes, tools).WithCancellation(token))
             {
                 if (!string.IsNullOrEmpty(chunk))
                 {
@@ -421,6 +431,18 @@ public partial class MainForm : Form
                 UpdateHistoryCounter();
             }
         }
+        catch (OperationCanceledException)
+        {
+            _logger.Log("LLM request cancelled by user");
+            var partial = fullResponse.ToString();
+            if (!string.IsNullOrEmpty(partial))
+            {
+                _conversationManager.AddExchange(userMessage, partial);
+                UpdateHistoryCounter();
+                _bridge?.ChatMessageFromMarkdown("model", partial);
+            }
+            _bridge?.Warning("⏹ Stopped.");
+        }
         catch (LLMException ex)
         {
             _logger.Log($"LLM Error: {ex.Message} (StatusCode={ex.StatusCode}, Details={ex.Details})");
@@ -436,6 +458,8 @@ public partial class MainForm : Form
         finally
         {
             _onSearchComplete = null;
+            _cancellationTokenSource?.Dispose();
+            _cancellationTokenSource = null;
             _statusManager.SetStatus(Status.Idle);
         }
     }

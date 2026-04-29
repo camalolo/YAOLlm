@@ -62,6 +62,11 @@ public sealed class WebViewBridge
     public event Action? CycleProvider;
 
     /// <summary>
+    /// Fired when JavaScript requests stopping the current LLM stream: <c>{"type":"stop"}</c>.
+    /// </summary>
+    public event Action? Stop;
+
+    /// <summary>
     /// Initializes a new instance of <see cref="WebViewBridge"/> and subscribes to
     /// <see cref="CoreWebView2.WebMessageReceived"/> for inbound message handling.
     /// </summary>
@@ -250,6 +255,9 @@ public sealed class WebViewBridge
                     break;
                 case "cycle_provider":
                     CycleProvider?.Invoke();
+                    break;
+                case "stop":
+                    Stop?.Invoke();
                     break;
                 default:
                     if (type != "_console")

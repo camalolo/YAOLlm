@@ -182,6 +182,7 @@
           <!-- Left: action buttons -->
           <div class="flex items-center gap-1.5 flex-wrap">
             <button @click="sendMessage()" :disabled="!hasProvider" class="bg-white/10 hover:bg-white/20 text-white text-xs rounded-lg px-3 py-1.5 transition-all">Send</button>
+            <button @click="stopStream()" x-show="status !== 'Idle'" class="bg-red-600/80 hover:bg-red-500 text-white text-xs rounded-lg px-3 py-1.5 transition-all">⏹ Stop</button>
             <button @click="captureSend()" :disabled="!hasProvider" class="bg-white/10 hover:bg-white/20 text-white text-xs rounded-lg px-3 py-1.5 transition-all">Capture &amp; Send</button>
             <button @click="loadImage()" :disabled="!hasProvider" class="bg-white/10 hover:bg-white/20 text-white text-xs rounded-lg px-3 py-1.5 transition-all">Load Image</button>
             <button @click="proceed()" :disabled="!hasProvider" class="bg-white/10 hover:bg-white/20 text-white text-xs rounded-lg px-3 py-1.5 transition-all">Proceed</button>
@@ -243,6 +244,10 @@
               input.style.height = input.scrollHeight + 'px';
             }
           });
+        },
+
+        stopStream() {
+          window.chrome.webview.postMessage(JSON.stringify({type: 'stop'}));
         },
 
         loadImage() {
@@ -357,6 +362,7 @@
                   }
                   self.messages.push({role: msg.role, html: msg.html, id: self.nextId++});
                   self.streamingHtml = '';
+                  self.userScrolledUp = false;
                   self.$nextTick(() => { if (window.hljs) hljs.highlightAll(); });
                   self.$nextTick(() => self.scrollToBottom());
                   break;
@@ -382,6 +388,7 @@
                   break;
                 case 'warning':
                   self.messages.push({role: 'system', html: '<em>' + msg.message + '</em>', id: self.nextId++});
+                  self.userScrolledUp = false;
                   self.$nextTick(() => { if (window.hljs) hljs.highlightAll(); });
                   self.$nextTick(() => self.scrollToBottom());
                   break;
