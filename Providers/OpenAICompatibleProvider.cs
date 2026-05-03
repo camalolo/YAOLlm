@@ -31,6 +31,7 @@ public class OpenAICompatibleProvider : OpenAIStyleProvider
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         ThrowIfDisposed();
+        ResetDsmlBuffer();
         const int maxRetries = 3;
 
         HttpResponseMessage? response = null;
@@ -130,7 +131,9 @@ public class OpenAICompatibleProvider : OpenAIStyleProvider
                     fullContent.Append(parseResult.Chunk);
                     chunkIndex++;
                     LogStreamChunk(chunkIndex, parseResult.Chunk);
-                    yield return parseResult.Chunk;
+                    var filtered = FilterDsmlChunk(parseResult.Chunk);
+                    if (filtered.Length > 0)
+                        yield return filtered;
                 }
 
                 foreach (var tc in parseResult.ToolCallDeltas)
@@ -188,6 +191,7 @@ public class OpenAICompatibleProvider : OpenAIStyleProvider
 
                 if (toolResults.Count > 0)
                 {
+                    _toolRoundsThisRequest++;
                     var messages = (List<object>)requestBody["messages"];
                     var newMessages = new List<object>(messages);
 
@@ -221,7 +225,8 @@ public class OpenAICompatibleProvider : OpenAIStyleProvider
                     }
 
                     requestBody["messages"] = newMessages;
-                    requestBody.Remove("tools");
+                    if (_toolRoundsThisRequest >= MaxToolRounds)
+                        requestBody.Remove("tools");
 
                     ThrowIfDisposed();
                     await foreach (var chunk in ExecuteStreamAsync(requestBody, cancellationToken))

@@ -15,9 +15,32 @@ namespace YAOLlm.Providers;
 /// </summary>
 public abstract class OpenAIStyleProvider : BaseLLMProvider
 {
+    private string _dsmlBuffer = "";
+
     protected OpenAIStyleProvider(HttpClient httpClient, TavilySearchService? searchService = null, Logger? logger = null)
         : base(httpClient, searchService, logger)
     {
+    }
+
+    protected void ResetDsmlBuffer() => _dsmlBuffer = "";
+
+    protected string FilterDsmlChunk(string chunk)
+    {
+        chunk = _dsmlBuffer + chunk;
+        _dsmlBuffer = "";
+
+        var lastAngle = chunk.LastIndexOf('<');
+        if (lastAngle >= 0 && lastAngle >= chunk.Length - 4)
+        {
+            var tail = chunk[lastAngle..];
+            if (tail.Contains('|') && !tail.Contains('>'))
+            {
+                _dsmlBuffer = tail;
+                chunk = chunk[..lastAngle];
+            }
+        }
+
+        return StripDsmlTags(chunk);
     }
 
     // ─── Template: StreamAsync ─────────────────────────────────────────
@@ -32,6 +55,7 @@ public abstract class OpenAIStyleProvider : BaseLLMProvider
 
         LogRequest(history.Count, tools != null && tools.Count > 0);
         _totalSearchesThisRequest = 0;
+        _toolRoundsThisRequest = 0;
         CompletedSearchCount = 0;
         CompletedSearchSummaries = null;
 

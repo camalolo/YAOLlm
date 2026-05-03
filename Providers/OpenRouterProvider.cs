@@ -55,6 +55,7 @@ public class OpenRouterProvider : OpenAIStyleProvider
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         ThrowIfDisposed();
+        ResetDsmlBuffer();
         int retryCount = 0;
 
         while (true)
@@ -171,7 +172,9 @@ public class OpenRouterProvider : OpenAIStyleProvider
                     state.FullContent.Append(parseResult.Chunk);
                     chunkIndex++;
                     LogStreamChunk(chunkIndex, parseResult.Chunk);
-                    yield return parseResult.Chunk;
+                    var filtered = FilterDsmlChunk(parseResult.Chunk);
+                    if (filtered.Length > 0)
+                        yield return filtered;
                 }
 
                 foreach (var tc in parseResult.ToolCallDeltas)
@@ -254,7 +257,7 @@ public class OpenRouterProvider : OpenAIStyleProvider
                     newMessages.Add(new
                     {
                         role = "assistant",
-                        content = state.FullContent.Length > 0 ? state.FullContent.ToString() : null,
+                        content = state.FullContent.Length > 0 ? StripDsmlTags(state.FullContent.ToString()) : null,
                         tool_calls = completedToolCalls.Select(tc => new
                         {
                             id = tc.Id,
@@ -279,11 +282,13 @@ public class OpenRouterProvider : OpenAIStyleProvider
                         });
                     }
 
+                    _toolRoundsThisRequest++;
                     var followUp = new Dictionary<string, object>(requestBody)
                     {
                         ["messages"] = newMessages
                     };
-                    followUp.Remove("tools");
+                    if (_toolRoundsThisRequest >= MaxToolRounds)
+                        followUp.Remove("tools");
                     state.FollowUpRequest = followUp;
                     yield break;
                 }
