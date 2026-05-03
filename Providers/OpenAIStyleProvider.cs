@@ -166,10 +166,7 @@ public abstract class OpenAIStyleProvider : BaseLLMProvider
                     if (delta.TryGetProperty("content", out var content) &&
                         content.ValueKind != JsonValueKind.Null)
                     {
-                        var text = content.GetString() ?? "";
-                        if (text.Contains("<||DSML||"))
-                            text = System.Text.RegularExpressions.Regex.Replace(text, @"<\|\|DSML\|\|[^>]*>", "");
-                        result.Chunk = text;
+                        result.Chunk = content.GetString() ?? "";
                     }
 
                     if (delta.TryGetProperty("tool_calls", out var toolCallsDelta))
@@ -221,4 +218,10 @@ public abstract class OpenAIStyleProvider : BaseLLMProvider
             })
             .ToList();
     }
+
+    private static readonly System.Text.RegularExpressions.Regex _dsmlRegex = new(
+        @"<\|\|DSML\|\|[^>]*>",
+        System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    protected static string StripDsmlTags(string input) => _dsmlRegex.Replace(input, "");
 }

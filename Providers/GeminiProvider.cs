@@ -157,7 +157,7 @@ public class GeminiProvider : BaseLLMProvider
                         new ChatMessage(ChatRole.User, fullContent.ToString())
                     };
 
-                    await foreach (var chunk in StreamWithToolResultAsync(toolHistory, result, tools, cancellationToken))
+                    await foreach (var chunk in StreamWithToolResultAsync(toolHistory, result, null, cancellationToken))
                     {
                         yield return chunk;
                     }

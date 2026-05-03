@@ -199,7 +199,6 @@ public class OpenRouterProvider : OpenAIStyleProvider
             {
                 var completedToolCalls = BuildCompletedToolCalls(toolCalls);
                 var toolResults = new List<ToolResult>();
-                var summaries = new List<string>();
 
                 foreach (var toolCall in completedToolCalls)
                 {
@@ -238,6 +237,10 @@ public class OpenRouterProvider : OpenAIStyleProvider
                                 toolResults.Add(new ToolResult(toolCall.Id, $"Error executing web search: {ex.Message}", isError: true));
                             }
                         }
+                    }
+                    else
+                    {
+                        toolResults.Add(new ToolResult(toolCall.Id, $"Unknown tool: {toolCall.Name}", isError: true));
                     }
                 }
 

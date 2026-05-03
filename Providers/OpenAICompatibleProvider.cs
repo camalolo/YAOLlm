@@ -171,11 +171,16 @@ public class OpenAICompatibleProvider : OpenAIStyleProvider
                         toolResults.Add(result);
                         _totalSearchesThisRequest++;
                         CompletedSearchCount = _totalSearchesThisRequest;
-                        CompletedSearchSummaries = (CompletedSearchSummaries != null ? CompletedSearchSummaries + "\n\n---\n\n" : "") + $"**Search: {query}**\n{result.Content}";
+                        if (!string.IsNullOrEmpty(query))
+                            CompletedSearchSummaries = (CompletedSearchSummaries != null ? CompletedSearchSummaries + "\n\n---\n\n" : "") + $"**Search: {query}**\n{result.Content}";
                     }
                     else if (toolCall.Name == "web_search" && _totalSearchesThisRequest >= MaxSearchesPerResponse)
                     {
                         toolResults.Add(new ToolResult(toolCall.Id, "Search limit reached. Use the results you already have to answer the user.", isError: true));
+                    }
+                    else
+                    {
+                        toolResults.Add(new ToolResult(toolCall.Id, $"Unknown tool: {toolCall.Name}", isError: true));
                     }
                 }
 
@@ -189,7 +194,7 @@ public class OpenAICompatibleProvider : OpenAIStyleProvider
                     newMessages.Add(new
                     {
                         role = "assistant",
-                        content = fullContent.Length > 0 ? fullContent.ToString() : (string?)null,
+                        content = fullContent.Length > 0 ? StripDsmlTags(fullContent.ToString()) : (string?)null,
                         reasoning_content = fullReasoning.Length > 0 ? fullReasoning.ToString() : (string?)null,
                         tool_calls = completedToolCalls.Select(tc => new
                         {
