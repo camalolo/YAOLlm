@@ -31,6 +31,9 @@ public abstract class OpenAIStyleProvider : BaseLLMProvider
             throw new ArgumentException("History cannot be null or empty", nameof(history));
 
         LogRequest(history.Count, tools != null && tools.Count > 0);
+        _totalSearchesThisRequest = 0;
+        CompletedSearchCount = 0;
+        CompletedSearchSummaries = null;
 
         var messages = BuildMessages(history, image);
         var requestBody = BuildStreamingRequestBody(messages, tools);
@@ -163,7 +166,10 @@ public abstract class OpenAIStyleProvider : BaseLLMProvider
                     if (delta.TryGetProperty("content", out var content) &&
                         content.ValueKind != JsonValueKind.Null)
                     {
-                        result.Chunk = content.GetString() ?? "";
+                        var text = content.GetString() ?? "";
+                        if (text.Contains("<||DSML||"))
+                            text = System.Text.RegularExpressions.Regex.Replace(text, @"<\|\|DSML\|\|[^>]*>", "");
+                        result.Chunk = text;
                     }
 
                     if (delta.TryGetProperty("tool_calls", out var toolCallsDelta))

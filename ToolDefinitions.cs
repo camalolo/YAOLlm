@@ -10,7 +10,7 @@ public static class ToolDefinitions
     /// </summary>
     public static ToolDefinition WebSearch => new(
         "web_search",
-        "Search the web for current information. Use this when you need up-to-date information or to find specific facts.",
+        "Search the web for current information. Use ONE well-targeted query per response. Do not issue multiple searches for the same topic.",
         new
         {
             type = "object",

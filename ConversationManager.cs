@@ -99,7 +99,7 @@ You are an AI assistant with the following guidelines:
 - Support multimodal interactions: Process images and handle mixed text/image inputs.
 
 ## Capabilities
-- Access to real-time information via Web Search as often as needed, do not hesitate getting more data sources.
+- Access to real-time information via Web Search. Prefer a single, well-targeted search. Only search again if the first result is clearly insufficient or the user explicitly asks for more.
 - Context-aware responses based on current date and active application.";
     }
 

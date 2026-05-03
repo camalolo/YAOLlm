@@ -14,6 +14,7 @@ namespace YAOLlm.Providers;
 /// </summary>
 public abstract class BaseLLMProvider : ILLMProvider
 {
+    protected const int MaxSearchesPerResponse = 1;
     protected readonly HttpClient _httpClient;
     protected readonly TavilySearchService? _searchService;
     protected readonly Logger _logger;
@@ -21,6 +22,7 @@ public abstract class BaseLLMProvider : ILLMProvider
 
     public string? CompletedSearchSummaries { get; protected set; }
     public int CompletedSearchCount { get; protected set; }
+    protected int _totalSearchesThisRequest;
 
     /// <summary>
     /// Provider name (e.g., "gemini", "openrouter", "ollama")

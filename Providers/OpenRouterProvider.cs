@@ -199,14 +199,12 @@ public class OpenRouterProvider : OpenAIStyleProvider
             {
                 var completedToolCalls = BuildCompletedToolCalls(toolCalls);
                 var toolResults = new List<ToolResult>();
-                CompletedSearchSummaries = null;
-                CompletedSearchCount = 0;
                 var summaries = new List<string>();
 
                 foreach (var toolCall in completedToolCalls)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-                    if (toolCall.Name == "web_search" && _searchService != null)
+                    if (toolCall.Name == "web_search" && _searchService != null && _totalSearchesThisRequest < MaxSearchesPerResponse)
                     {
                         var query = toolCall.Arguments.TryGetValue("query", out var queryObj) ? queryObj?.ToString() : null;
                         if (!string.IsNullOrEmpty(query))
@@ -230,9 +228,9 @@ public class OpenRouterProvider : OpenAIStyleProvider
                                 var searchResult = await _searchService.SearchAsync(query, maxResults);
                                 LogToolResult("web_search", searchResult);
                                 toolResults.Add(new ToolResult(toolCall.Id, searchResult));
-                                summaries.Add($"**Search: {query}**\n{searchResult}");
-                                CompletedSearchSummaries = string.Join("\n\n---\n\n", summaries);
-                                CompletedSearchCount = toolResults.Count;
+                                _totalSearchesThisRequest++;
+                                CompletedSearchCount = _totalSearchesThisRequest;
+                                CompletedSearchSummaries = (CompletedSearchSummaries != null ? CompletedSearchSummaries + "\n\n---\n\n" : "") + $"**Search: {query}**\n{searchResult}";
                             }
                             catch (Exception ex)
                             {
@@ -278,10 +276,12 @@ public class OpenRouterProvider : OpenAIStyleProvider
                         });
                     }
 
-                    state.FollowUpRequest = new Dictionary<string, object>(requestBody)
+                    var followUp = new Dictionary<string, object>(requestBody)
                     {
                         ["messages"] = newMessages
                     };
+                    followUp.Remove("tools");
+                    state.FollowUpRequest = followUp;
                     yield break;
                 }
             }

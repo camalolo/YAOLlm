@@ -48,6 +48,9 @@ public class GeminiProvider : BaseLLMProvider
             payload["tools"] = toolsPayload;
 
         LogRequest(history.Count, tools != null && tools.Count > 0);
+        _totalSearchesThisRequest = 0;
+        CompletedSearchCount = 0;
+        CompletedSearchSummaries = null;
 
         var url = $"{ApiBaseUrl}{Model}:streamGenerateContent?alt=sse&key={_apiKey}";
 
@@ -131,6 +134,7 @@ public class GeminiProvider : BaseLLMProvider
         {
             foreach (var toolCall in pendingToolCalls)
             {
+                if (_totalSearchesThisRequest >= MaxSearchesPerResponse) break;
                 ToolResult? result = null;
                 if (toolCall.Name == "web_search" && _searchService != null)
                 {
@@ -139,6 +143,8 @@ public class GeminiProvider : BaseLLMProvider
                     if (!string.IsNullOrEmpty(query))
                         RaiseOnStatusChange($"{StatusManager.SearchingStatus}:{query}");
                     result = new ToolResult(toolCall.Id, await ExecuteWebSearchAsync(args));
+                    _totalSearchesThisRequest++;
+                    CompletedSearchCount = _totalSearchesThisRequest;
                 }
 
                 RaiseOnStatusChange(null);

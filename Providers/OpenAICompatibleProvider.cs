@@ -158,23 +158,24 @@ public class OpenAICompatibleProvider : OpenAIStyleProvider
             {
                 var completedToolCalls = BuildCompletedToolCalls(toolCalls);
                 var toolResults = new List<ToolResult>();
-                CompletedSearchSummaries = null;
-                CompletedSearchCount = 0;
-                var summaries = new List<string>();
 
                 foreach (var toolCall in completedToolCalls)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-                    if (toolCall.Name == "web_search" && _searchService != null)
+                    if (toolCall.Name == "web_search" && _searchService != null && _totalSearchesThisRequest < MaxSearchesPerResponse)
                     {
                         var query = toolCall.Arguments.TryGetValue("query", out var queryObj) ? queryObj?.ToString() : null;
                         if (!string.IsNullOrEmpty(query))
                             RaiseOnStatusChange($"{StatusManager.SearchingStatus}:{query}");
                         var result = await ExecuteWebSearchFallbackAsync(toolCall);
                         toolResults.Add(result);
-                        summaries.Add($"**Search: {query}**\n{result.Content}");
-                        CompletedSearchSummaries = string.Join("\n\n---\n\n", summaries);
-                        CompletedSearchCount = toolResults.Count;
+                        _totalSearchesThisRequest++;
+                        CompletedSearchCount = _totalSearchesThisRequest;
+                        CompletedSearchSummaries = (CompletedSearchSummaries != null ? CompletedSearchSummaries + "\n\n---\n\n" : "") + $"**Search: {query}**\n{result.Content}";
+                    }
+                    else if (toolCall.Name == "web_search" && _totalSearchesThisRequest >= MaxSearchesPerResponse)
+                    {
+                        toolResults.Add(new ToolResult(toolCall.Id, "Search limit reached. Use the results you already have to answer the user.", isError: true));
                     }
                 }
 
@@ -215,6 +216,7 @@ public class OpenAICompatibleProvider : OpenAIStyleProvider
                     }
 
                     requestBody["messages"] = newMessages;
+                    requestBody.Remove("tools");
 
                     ThrowIfDisposed();
                     await foreach (var chunk in ExecuteStreamAsync(requestBody, cancellationToken))
