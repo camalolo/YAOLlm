@@ -192,6 +192,13 @@ public class OpenAICompatibleProvider : OpenAIStyleProvider
                 if (toolResults.Count > 0)
                 {
                     _toolRoundsThisRequest++;
+                    if (_toolRoundsThisRequest > MaxToolRounds)
+                    {
+                        _logger.Log($"[WARN] Max tool rounds ({MaxToolRounds}) reached, stopping.");
+                        yield return "Tool call limit reached. Please answer with the information you already have.";
+                        yield break;
+                    }
+
                     var messages = (List<object>)requestBody["messages"];
                     var newMessages = new List<object>(messages);
 
@@ -225,8 +232,6 @@ public class OpenAICompatibleProvider : OpenAIStyleProvider
                     }
 
                     requestBody["messages"] = newMessages;
-                    if (_toolRoundsThisRequest >= MaxToolRounds)
-                        requestBody.Remove("tools");
 
                     ThrowIfDisposed();
                     await foreach (var chunk in ExecuteStreamAsync(requestBody, cancellationToken))

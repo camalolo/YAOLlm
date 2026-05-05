@@ -14,8 +14,8 @@ namespace YAOLlm.Providers;
 /// </summary>
 public abstract class BaseLLMProvider : ILLMProvider
 {
-    protected const int MaxSearchesPerResponse = 1;
-    protected const int MaxToolRounds = 3;
+    protected const int MaxSearchesPerResponse = 3;
+    protected const int MaxToolRounds = 10;
     protected readonly HttpClient _httpClient;
     protected readonly TavilySearchService? _searchService;
     protected readonly Logger _logger;
