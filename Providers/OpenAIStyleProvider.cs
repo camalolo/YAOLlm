@@ -17,7 +17,7 @@ public abstract class OpenAIStyleProvider : BaseLLMProvider
 {
     private string _dsmlBuffer = "";
 
-    protected OpenAIStyleProvider(HttpClient httpClient, TavilySearchService? searchService = null, Logger? logger = null)
+    protected OpenAIStyleProvider(HttpClient httpClient, ISearchService? searchService = null, Logger? logger = null)
         : base(httpClient, searchService, logger)
     {
     }

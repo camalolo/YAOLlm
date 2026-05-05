@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.IO;
 using System.Runtime.InteropServices;
 using dotenv.net;
@@ -30,12 +31,23 @@ static class Program
         var logger = new Logger();
         var statusManager = new StatusManager();
 
-        var tavilyService = new TavilySearchService(
-            Environment.GetEnvironmentVariable("TAVILY_API_KEY") ?? "",
-            logger
-        );
+        var searchServices = new List<ISearchService>();
 
-        var presetManager = new PresetManager(tavilyService, logger);
+        var tinyFishKey = Environment.GetEnvironmentVariable("TINYFISH_API_KEY") ?? "";
+        if (!string.IsNullOrEmpty(tinyFishKey))
+            searchServices.Add(new TinyFishSearchService(tinyFishKey, logger));
+        else
+            logger.Log("[Startup] TINYFISH_API_KEY not set, skipping TinyFish search");
+
+        var tavilyKey = Environment.GetEnvironmentVariable("TAVILY_API_KEY") ?? "";
+        if (!string.IsNullOrEmpty(tavilyKey))
+            searchServices.Add(new TavilySearchService(tavilyKey, logger));
+        else
+            logger.Log("[Startup] TAVILY_API_KEY not set, skipping Tavily search");
+
+        var searchAggregator = new SearchServiceAggregator(searchServices, logger);
+
+        var presetManager = new PresetManager(searchAggregator, logger);
         presetManager.LoadConfig();
 
         var mainForm = new MainForm(presetManager, statusManager, logger);

@@ -11,7 +11,7 @@ namespace YAOLlm;
 public class PresetManager : IDisposable
 {
     private readonly string _configPath;
-    private readonly TavilySearchService _searchService;
+    private readonly ISearchService _searchService;
     private readonly Logger _logger;
     private List<ProviderConfig> _presets;
     private int _activeIndex;
@@ -22,7 +22,7 @@ public class PresetManager : IDisposable
 
     public event Action<ProviderConfig>? PresetChanged;
 
-    public PresetManager(TavilySearchService searchService, Logger? logger = null)
+    public PresetManager(ISearchService searchService, Logger? logger = null)
     {
         _searchService = searchService;
         _logger = logger ?? new Logger();

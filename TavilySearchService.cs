@@ -9,7 +9,7 @@ using RestSharp;
 
 namespace YAOLlm;
 
-public class TavilySearchService : IDisposable
+public class TavilySearchService : ISearchService, IDisposable
 {
     private readonly string _apiKey;
     private readonly Logger _logger;

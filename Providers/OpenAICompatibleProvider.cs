@@ -19,7 +19,7 @@ public class OpenAICompatibleProvider : OpenAIStyleProvider
     public override string Model { get => _model; protected set => _model = value; }
     public override bool SupportsWebSearch => true;
 
-    public OpenAICompatibleProvider(string model, string baseUrl = "http://localhost:11434", HttpClient? httpClient = null, TavilySearchService? searchService = null, Logger? logger = null)
+    public OpenAICompatibleProvider(string model, string baseUrl = "http://localhost:11434", HttpClient? httpClient = null, ISearchService? searchService = null, Logger? logger = null)
         : base(httpClient ?? new HttpClient(), searchService, logger)
     {
         _model = model ?? throw new ArgumentNullException(nameof(model));

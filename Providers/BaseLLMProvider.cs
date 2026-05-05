@@ -6,6 +6,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
+using YAOLlm;
 
 namespace YAOLlm.Providers;
 
@@ -17,7 +18,7 @@ public abstract class BaseLLMProvider : ILLMProvider
     protected const int MaxSearchesPerResponse = 3;
     protected const int MaxToolRounds = 10;
     protected readonly HttpClient _httpClient;
-    protected readonly TavilySearchService? _searchService;
+    protected readonly ISearchService? _searchService;
     protected readonly Logger _logger;
     protected volatile bool _isDisposed;
 
@@ -52,7 +53,7 @@ public abstract class BaseLLMProvider : ILLMProvider
     /// <param name="httpClient">HTTP client for making requests</param>
     /// <param name="searchService">Optional Tavily search service for web search functionality</param>
     /// <param name="logger">Optional logger for provider operations</param>
-    protected BaseLLMProvider(HttpClient httpClient, TavilySearchService? searchService = null, Logger? logger = null)
+    protected BaseLLMProvider(HttpClient httpClient, ISearchService? searchService = null, Logger? logger = null)
     {
         _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
         _searchService = searchService;

@@ -23,7 +23,7 @@ public class OpenRouterProvider : OpenAIStyleProvider
     public override string Model { get; protected set; }
     public override bool SupportsWebSearch => true;
 
-    public OpenRouterProvider(string model, string? apiKey = null, TavilySearchService? searchService = null, Logger? logger = null)
+    public OpenRouterProvider(string model, string? apiKey = null, ISearchService? searchService = null, Logger? logger = null)
         : base(new HttpClient(), searchService, logger)
     {
         Model = model ?? throw new ArgumentNullException(nameof(model));

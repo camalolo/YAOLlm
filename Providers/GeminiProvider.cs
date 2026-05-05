@@ -21,7 +21,7 @@ public class GeminiProvider : BaseLLMProvider
     public override string Model { get; protected set; }
     public override bool SupportsWebSearch => true;
 
-    public GeminiProvider(string model, string apiKey, HttpClient? httpClient = null, TavilySearchService? searchService = null, Logger? logger = null)
+    public GeminiProvider(string model, string apiKey, HttpClient? httpClient = null, ISearchService? searchService = null, Logger? logger = null)
         : base(httpClient ?? new HttpClient(), searchService, logger)
     {
         Model = model ?? throw new ArgumentNullException(nameof(model));
