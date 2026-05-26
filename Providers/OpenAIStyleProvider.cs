@@ -54,8 +54,6 @@ public abstract class OpenAIStyleProvider : BaseLLMProvider
             throw new ArgumentException("History cannot be null or empty", nameof(history));
 
         LogRequest(history.Count, tools != null && tools.Count > 0);
-        _totalSearchesThisRequest = 0;
-        _toolRoundsThisRequest = 0;
         CompletedSearchCount = 0;
         CompletedSearchSummaries = null;
 

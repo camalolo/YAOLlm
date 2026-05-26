@@ -202,11 +202,12 @@ public class OpenRouterProvider : OpenAIStyleProvider
             {
                 var completedToolCalls = BuildCompletedToolCalls(toolCalls);
                 var toolResults = new List<ToolResult>();
+                bool searchExecuted = false;
 
                 foreach (var toolCall in completedToolCalls)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-                    if (toolCall.Name == "web_search" && _searchService != null && _totalSearchesThisRequest < MaxSearchesPerResponse)
+                    if (toolCall.Name == "web_search" && _searchService != null && !searchExecuted)
                     {
                         var query = toolCall.Arguments.TryGetValue("query", out var queryObj) ? queryObj?.ToString() : null;
                         if (!string.IsNullOrEmpty(query))
@@ -230,8 +231,8 @@ public class OpenRouterProvider : OpenAIStyleProvider
                                 var searchResult = await _searchService.SearchAsync(query, maxResults);
                                 LogToolResult("web_search", searchResult);
                                 toolResults.Add(new ToolResult(toolCall.Id, searchResult));
-                                _totalSearchesThisRequest++;
-                                CompletedSearchCount = _totalSearchesThisRequest;
+                                searchExecuted = true;
+                                CompletedSearchCount++;
                                 CompletedSearchSummaries = (CompletedSearchSummaries != null ? CompletedSearchSummaries + "\n\n---\n\n" : "") + $"**Search: {query}**\n{searchResult}";
                             }
                             catch (Exception ex)
@@ -240,6 +241,10 @@ public class OpenRouterProvider : OpenAIStyleProvider
                                 toolResults.Add(new ToolResult(toolCall.Id, $"Error executing web search: {ex.Message}", isError: true));
                             }
                         }
+                    }
+                    else if (toolCall.Name == "web_search")
+                    {
+                        toolResults.Add(new ToolResult(toolCall.Id, "Only one search per response. Use the results you already have.", isError: true));
                     }
                     else
                     {
@@ -251,14 +256,6 @@ public class OpenRouterProvider : OpenAIStyleProvider
 
                 if (toolResults.Count > 0)
                 {
-                    _toolRoundsThisRequest++;
-                    if (_toolRoundsThisRequest > MaxToolRounds)
-                    {
-                        _logger.Log($"[WARN] Max tool rounds ({MaxToolRounds}) reached, stopping.");
-                        yield return "Tool call limit reached. Please answer with the information you already have.";
-                        yield break;
-                    }
-
                     var messages = (List<object>)requestBody["messages"];
                     var newMessages = new List<object>(messages);
 

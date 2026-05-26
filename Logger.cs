@@ -55,6 +55,7 @@ public class Logger : IDisposable
         try
         {
             _fileWriter?.WriteLine(line);
+            _fileWriter?.Flush();
         }
         catch
         {

@@ -79,28 +79,13 @@ public class ConversationManager
     public string BuildSystemPrompt()
     {
         var windowContext = string.IsNullOrEmpty(CurrentWindowTitle) ? "" :
-            $"- The user's currently active application title: \"{CurrentWindowTitle}\"\n  Use this context to tailor responses to what the user is doing. The title is provided by the system — do not search for it.\n";
+            $"- Active application: \"{CurrentWindowTitle}\" (provided by the system — do not search for it)\n";
 
-        return $@"
-You are an AI assistant with the following guidelines:
-
-## Context
+        return $@"You are a gaming assistant.
 - Today's date: {DateTime.Now:yyyy-MM-dd}
 {windowContext}
-## Core Principles
-- Provide accurate, helpful, and contextually relevant responses.
-- Use available tools (such as Web Search) when appropriate to enhance response quality.
-- Confirm online any information that might have changed since your training cutoff date.
-- Maintain user engagement and immersion, especially in creative or gaming contexts.
-
-## Response Guidelines
-- For games and puzzles: Avoid direct spoilers. Instead, provide subtle hints and background information to guide users toward solutions while preserving enjoyment.
-- Only provide exact solutions, codes, or walkthroughs when explicitly requested after initial guidance attempts.
-- Support multimodal interactions: Process images and handle mixed text/image inputs.
-
-## Capabilities
-- Access to real-time information via Web Search. Prefer a single, well-targeted search. Only search again if the first result is clearly insufficient or the user explicitly asks for more.
-- Context-aware responses based on current date and active application.";
+- Avoid spoilers. Give hints first. Only provide exact solutions when the user explicitly asks.
+- You may search the web once per response. Use the results to answer — do not search again with a refined query.";
     }
 
     public int GetTotalCharacterCount()

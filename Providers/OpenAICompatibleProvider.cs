@@ -161,25 +161,26 @@ public class OpenAICompatibleProvider : OpenAIStyleProvider
             {
                 var completedToolCalls = BuildCompletedToolCalls(toolCalls);
                 var toolResults = new List<ToolResult>();
+                bool searchExecuted = false;
 
                 foreach (var toolCall in completedToolCalls)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-                    if (toolCall.Name == "web_search" && _searchService != null && _totalSearchesThisRequest < MaxSearchesPerResponse)
+                    if (toolCall.Name == "web_search" && _searchService != null && !searchExecuted)
                     {
                         var query = toolCall.Arguments.TryGetValue("query", out var queryObj) ? queryObj?.ToString() : null;
                         if (!string.IsNullOrEmpty(query))
                             RaiseOnStatusChange($"{StatusManager.SearchingStatus}:{query}");
                         var result = await ExecuteWebSearchFallbackAsync(toolCall);
                         toolResults.Add(result);
-                        _totalSearchesThisRequest++;
-                        CompletedSearchCount = _totalSearchesThisRequest;
+                        searchExecuted = true;
+                        CompletedSearchCount++;
                         if (!string.IsNullOrEmpty(query))
                             CompletedSearchSummaries = (CompletedSearchSummaries != null ? CompletedSearchSummaries + "\n\n---\n\n" : "") + $"**Search: {query}**\n{result.Content}";
                     }
-                    else if (toolCall.Name == "web_search" && _totalSearchesThisRequest >= MaxSearchesPerResponse)
+                    else if (toolCall.Name == "web_search")
                     {
-                        toolResults.Add(new ToolResult(toolCall.Id, "Search limit reached. Use the results you already have to answer the user.", isError: true));
+                        toolResults.Add(new ToolResult(toolCall.Id, "Only one search per response. Use the results you already have.", isError: true));
                     }
                     else
                     {
@@ -191,14 +192,6 @@ public class OpenAICompatibleProvider : OpenAIStyleProvider
 
                 if (toolResults.Count > 0)
                 {
-                    _toolRoundsThisRequest++;
-                    if (_toolRoundsThisRequest > MaxToolRounds)
-                    {
-                        _logger.Log($"[WARN] Max tool rounds ({MaxToolRounds}) reached, stopping.");
-                        yield return "Tool call limit reached. Please answer with the information you already have.";
-                        yield break;
-                    }
-
                     var messages = (List<object>)requestBody["messages"];
                     var newMessages = new List<object>(messages);
 
