@@ -34,7 +34,8 @@ public class TinyFishSearchService : ISearchService, IDisposable
         {
             _logger.Log($"[TinyFish] Performing search: '{query}' (maxResults: {maxResults})");
 
-            var url = $"https://api.search.tinyfish.ai?query={Uri.EscapeDataString(query)}&location=US";
+            var fetchConfig = Uri.EscapeDataString("{\"format\":\"markdown\"}");
+            var url = $"https://api.search.tinyfish.ai?query={Uri.EscapeDataString(query)}&location=US&fetch={fetchConfig}";
             var response = await _client.GetAsync(url);
 
             if (!response.IsSuccessStatusCode)
@@ -54,7 +55,7 @@ public class TinyFishSearchService : ISearchService, IDisposable
 
             _logger.Log($"[TinyFish] Response received: {jsonResponse.Substring(0, Math.Min(200, jsonResponse.Length))}...");
 
-            var formattedResults = FormatSearchResults(jsonResponse);
+            var formattedResults = FormatSearchResults(jsonResponse, maxResults);
             _logger.Log($"[TinyFish] Search completed, formatted {formattedResults.Split('\n').Length} lines");
 
             return formattedResults;
@@ -66,7 +67,7 @@ public class TinyFishSearchService : ISearchService, IDisposable
         }
     }
 
-    private string FormatSearchResults(string jsonResponse)
+    private string FormatSearchResults(string jsonResponse, int maxResults = 5)
     {
         try
         {
@@ -83,17 +84,29 @@ public class TinyFishSearchService : ISearchService, IDisposable
             var formattedResults = new StringBuilder();
 
             int resultCount = 0;
+            int maxToFormat = Math.Min(maxResults, 3);
             foreach (var result in results)
             {
+                if (resultCount >= maxToFormat) break;
                 resultCount++;
 
                 var title = result.TryGetProperty("title", out var titleElement) ? titleElement.GetString() ?? "" : "";
                 var url = result.TryGetProperty("url", out var urlElement) ? urlElement.GetString() ?? "" : "";
                 var snippet = result.TryGetProperty("snippet", out var snippetElement) ? snippetElement.GetString() ?? "" : "";
 
+                // Use fetched full-page content if available, otherwise fall back to snippet
+                var content = snippet;
+                if (result.TryGetProperty("fetch", out var fetchElement) && fetchElement.ValueKind == JsonValueKind.Object
+                    && fetchElement.TryGetProperty("text", out var textElement) && textElement.ValueKind == JsonValueKind.String)
+                {
+                    var fetched = textElement.GetString() ?? "";
+                    if (!string.IsNullOrEmpty(fetched))
+                        content = fetched;
+                }
+
                 formattedResults.AppendLine($"**{title}**");
                 formattedResults.AppendLine($"URL: {url}");
-                formattedResults.AppendLine($"Content: {snippet}");
+                formattedResults.AppendLine($"Content: {content}");
 
                 if (resultCount < resultsElement.GetArrayLength())
                 {

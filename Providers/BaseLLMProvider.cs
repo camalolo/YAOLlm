@@ -238,9 +238,9 @@ public abstract class BaseLLMProvider : ILLMProvider
         _logger.Log($"[{Name}] Tool executing: {toolName}");
     }
 
-    protected void LogToolResult(string toolName, string result, int maxLength = 200)
+    protected void LogToolResult(string toolName, string result, int maxLength = 0)
     {
-        var truncated = result.Length > maxLength ? result.Substring(0, maxLength) + "..." : result;
+        var truncated = maxLength > 0 && result.Length > maxLength ? result.Substring(0, maxLength) + "..." : result;
         _logger.Log($"[{Name}] Tool result: {toolName} -> \"{truncated}\"");
     }
 

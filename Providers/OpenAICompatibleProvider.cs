@@ -161,19 +161,17 @@ public class OpenAICompatibleProvider : OpenAIStyleProvider
             {
                 var completedToolCalls = BuildCompletedToolCalls(toolCalls);
                 var toolResults = new List<ToolResult>();
-                bool searchExecuted = false;
 
                 foreach (var toolCall in completedToolCalls)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-                    if (toolCall.Name == "web_search" && _searchService != null && !searchExecuted)
+                    if (toolCall.Name == "web_search" && _searchService != null && CompletedSearchCount == 0)
                     {
                         var query = toolCall.Arguments.TryGetValue("query", out var queryObj) ? queryObj?.ToString() : null;
                         if (!string.IsNullOrEmpty(query))
                             RaiseOnStatusChange($"{StatusManager.SearchingStatus}:{query}");
                         var result = await ExecuteWebSearchFallbackAsync(toolCall);
                         toolResults.Add(result);
-                        searchExecuted = true;
                         CompletedSearchCount++;
                         if (!string.IsNullOrEmpty(query))
                             CompletedSearchSummaries = (CompletedSearchSummaries != null ? CompletedSearchSummaries + "\n\n---\n\n" : "") + $"**Search: {query}**\n{result.Content}";
