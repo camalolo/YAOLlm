@@ -328,6 +328,8 @@ public partial class MainForm : Form
         if (!alreadyShown)
             _bridge?.ChatMessageFromMarkdown("user", message);
 
+        _statusManager.SetStatus(Status.Sending);
+
         if (string.IsNullOrEmpty(title) && _previousWindowHandle != IntPtr.Zero && IsWindow(_previousWindowHandle) && _previousWindowHandle != this.Handle)
         {
             const int nChars = 256;
@@ -365,7 +367,6 @@ public partial class MainForm : Form
         try
         {
             _logger.Log($"Processing LLM request: {prompt}");
-            _statusManager.SetStatus(Status.Sending);
 
             if (!string.IsNullOrEmpty(activeWindowTitle))
                 _conversationManager.CurrentWindowTitle = activeWindowTitle;
