@@ -176,6 +176,7 @@ public class PresetManager : IDisposable
             "ollama" => CreateOllamaProvider(model),
             "openai-compatible" => CreateOpenAICompatibleProvider(model),
             "deepseek" => CreateDeepSeekProvider(model),
+            "zai" => CreateZaiProvider(model),
             _ => throw new NotSupportedException($"Unknown provider: {providerName}")
         };
     }
@@ -220,6 +221,16 @@ public class PresetManager : IDisposable
             throw new InvalidOperationException("DEEPSEEK_API_KEY not set");
         }
         return new DeepSeekProvider(model, apiKey, httpClient: null, _searchService, _webFetchService, _logger);
+    }
+
+    private ILLMProvider CreateZaiProvider(string model)
+    {
+        var apiKey = Environment.GetEnvironmentVariable("ZAI_API_KEY");
+        if (string.IsNullOrEmpty(apiKey))
+        {
+            throw new InvalidOperationException("ZAI_API_KEY not set");
+        }
+        return new ZaiProvider(model, apiKey, httpClient: null, _searchService, _webFetchService, _logger);
     }
 
     public void Dispose()

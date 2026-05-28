@@ -19,6 +19,8 @@ public class OpenAICompatibleProvider : OpenAIStyleProvider
     public override string Model { get => _model; protected set => _model = value; }
     public override bool SupportsWebSearch => true;
 
+    protected virtual string ChatCompletionsPath => "/v1/chat/completions";
+
     public OpenAICompatibleProvider(string model, string baseUrl = "http://localhost:11434", HttpClient? httpClient = null, ISearchService? searchService = null, IWebFetchService? webFetchService = null, Logger? logger = null)
         : base(httpClient ?? new HttpClient(), searchService, webFetchService, logger)
     {
@@ -44,7 +46,7 @@ public class OpenAICompatibleProvider : OpenAIStyleProvider
             try
             {
                 var jsonPayload = JsonSerializer.Serialize(requestBody);
-                request = new HttpRequestMessage(HttpMethod.Post, $"{_baseUrl}/v1/chat/completions");
+                request = new HttpRequestMessage(HttpMethod.Post, $"{_baseUrl}{ChatCompletionsPath}");
                 request.Content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
 
                 var resp = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
