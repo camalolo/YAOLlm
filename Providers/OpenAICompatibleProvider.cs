@@ -167,7 +167,7 @@ public class OpenAICompatibleProvider : OpenAIStyleProvider
                 foreach (var toolCall in completedToolCalls)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-                    if (toolCall.Name == "web_search" && _searchService != null && CompletedSearchCount == 0)
+                    if (toolCall.Name == "web_search" && _searchService != null)
                     {
                         var query = toolCall.Arguments.TryGetValue("query", out var queryObj) ? queryObj?.ToString() : null;
                         if (!string.IsNullOrEmpty(query))
@@ -178,11 +178,7 @@ public class OpenAICompatibleProvider : OpenAIStyleProvider
                         if (!string.IsNullOrEmpty(query))
                             CompletedSearchSummaries = (CompletedSearchSummaries != null ? CompletedSearchSummaries + "\n\n---\n\n" : "") + $"**Search: {query}**\n{result.Content}";
                     }
-                    else if (toolCall.Name == "web_search")
-                    {
-                        toolResults.Add(new ToolResult(toolCall.Id, "Only one search per response. Use the results you already have.", isError: true));
-                    }
-                    else if (toolCall.Name == "web_fetch" && _webFetchService != null && CompletedFetchCount < 3)
+                    else if (toolCall.Name == "web_fetch" && _webFetchService != null)
                     {
                         var fetchUrl = toolCall.Arguments.TryGetValue("url", out var urlObj) ? urlObj?.ToString() : null;
                         if (!string.IsNullOrEmpty(fetchUrl))
@@ -190,10 +186,6 @@ public class OpenAICompatibleProvider : OpenAIStyleProvider
                         var result = await ExecuteWebFetchAsync(toolCall, cancellationToken);
                         toolResults.Add(result);
                         CompletedFetchCount++;
-                    }
-                    else if (toolCall.Name == "web_fetch")
-                    {
-                        toolResults.Add(new ToolResult(toolCall.Id, "Fetch limit reached (3 per response). Use the content you already have.", isError: true));
                     }
                     else
                     {

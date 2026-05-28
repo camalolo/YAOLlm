@@ -144,7 +144,7 @@ public class GeminiProvider : BaseLLMProvider
                     result = new ToolResult(toolCall.Id, await ExecuteWebSearchAsync(args));
                     CompletedSearchCount++;
                 }
-                else if (toolCall.Name == "web_fetch" && _webFetchService != null && CompletedFetchCount < 3)
+                else if (toolCall.Name == "web_fetch" && _webFetchService != null)
                 {
                     var args = toolCall.Arguments ?? new Dictionary<string, object?>();
                     var fetchUrl = args.TryGetValue("url", out var u) ? u?.ToString() : null;
@@ -152,10 +152,6 @@ public class GeminiProvider : BaseLLMProvider
                         RaiseOnStatusChange($"{StatusManager.FetchingStatus}:{fetchUrl}");
                     result = new ToolResult(toolCall.Id, await ExecuteWebFetchAsync(args, cancellationToken));
                     CompletedFetchCount++;
-                }
-                else if (toolCall.Name == "web_fetch")
-                {
-                    result = new ToolResult(toolCall.Id, "Fetch limit reached (3 per response). Use the content you already have.", isError: true);
                 }
 
                 RaiseOnStatusChange(null);
