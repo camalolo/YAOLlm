@@ -14,9 +14,7 @@ public class Logger : IDisposable
     {
         try
         {
-            var logDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "log");
-            Directory.CreateDirectory(logDir);
-            var logFile = Path.Combine(logDir, $"yaollm_{DateTime.Now:yyyy-MM-dd}.log");
+            var logFile = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "yaollm.log");
             _fileWriter = new StreamWriter(logFile, append: true);
         }
         catch

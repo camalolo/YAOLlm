@@ -212,7 +212,6 @@ public partial class MainForm : Form
                 var query = status[(StatusManager.SearchingStatus.Length + 1)..];
                 _statusManager.SetStatus(Status.Searching);
                 _onSearchComplete?.Invoke();
-                _onSearchComplete = null;
                 _bridge?.ChatMessage("system", $"<em>🔍 Searching for: {query}</em>");
             }
             else if (status != null && status.StartsWith(StatusManager.FetchingStatus + ":"))
@@ -220,7 +219,6 @@ public partial class MainForm : Form
                 var url = status[(StatusManager.FetchingStatus.Length + 1)..];
                 _statusManager.SetStatus(Status.Fetching);
                 _onSearchComplete?.Invoke();
-                _onSearchComplete = null;
                 _bridge?.ChatMessage("system", $"<em>📥 Fetching: {url}</em>");
             }
             else if (status == StatusManager.SearchingStatus)
@@ -233,7 +231,7 @@ public partial class MainForm : Form
             }
             else if (status == null)
             {
-                _statusManager.SetStatus(Status.Receiving);
+                _statusManager.SetStatus(Status.Sending);
             }
         };
         _currentProvider.OnStatusChange += _providerStatusHandler;
