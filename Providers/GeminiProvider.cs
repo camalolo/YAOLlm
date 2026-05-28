@@ -21,8 +21,8 @@ public class GeminiProvider : BaseLLMProvider
     public override string Model { get; protected set; }
     public override bool SupportsWebSearch => true;
 
-    public GeminiProvider(string model, string apiKey, HttpClient? httpClient = null, ISearchService? searchService = null, Logger? logger = null)
-        : base(httpClient ?? new HttpClient(), searchService, logger)
+    public GeminiProvider(string model, string apiKey, HttpClient? httpClient = null, ISearchService? searchService = null, IWebFetchService? webFetchService = null, Logger? logger = null)
+        : base(httpClient ?? new HttpClient(), searchService, webFetchService, logger)
     {
         Model = model ?? throw new ArgumentNullException(nameof(model));
         _apiKey = apiKey ?? throw new ArgumentNullException(nameof(apiKey));
@@ -49,6 +49,7 @@ public class GeminiProvider : BaseLLMProvider
 
         LogRequest(history.Count, tools != null && tools.Count > 0);
         CompletedSearchCount = 0;
+        CompletedFetchCount = 0;
         CompletedSearchSummaries = null;
 
         var url = $"{ApiBaseUrl}{Model}:streamGenerateContent?alt=sse&key={_apiKey}";
@@ -143,6 +144,19 @@ public class GeminiProvider : BaseLLMProvider
                     result = new ToolResult(toolCall.Id, await ExecuteWebSearchAsync(args));
                     CompletedSearchCount++;
                 }
+                else if (toolCall.Name == "web_fetch" && _webFetchService != null && CompletedFetchCount < 3)
+                {
+                    var args = toolCall.Arguments ?? new Dictionary<string, object?>();
+                    var fetchUrl = args.TryGetValue("url", out var u) ? u?.ToString() : null;
+                    if (!string.IsNullOrEmpty(fetchUrl))
+                        RaiseOnStatusChange($"{StatusManager.FetchingStatus}:{fetchUrl}");
+                    result = new ToolResult(toolCall.Id, await ExecuteWebFetchAsync(args, cancellationToken));
+                    CompletedFetchCount++;
+                }
+                else if (toolCall.Name == "web_fetch")
+                {
+                    result = new ToolResult(toolCall.Id, "Fetch limit reached (3 per response). Use the content you already have.", isError: true);
+                }
 
                 RaiseOnStatusChange(null);
 
@@ -154,7 +168,7 @@ public class GeminiProvider : BaseLLMProvider
                         new ChatMessage(ChatRole.User, fullContent.ToString())
                     };
 
-                    await foreach (var chunk in StreamWithToolResultAsync(toolHistory, result, null, cancellationToken))
+                    await foreach (var chunk in StreamWithToolResultAsync(toolHistory, toolCall, result, null, cancellationToken))
                     {
                         yield return chunk;
                     }
@@ -238,6 +252,7 @@ public class GeminiProvider : BaseLLMProvider
 
     private async IAsyncEnumerable<string> StreamWithToolResultAsync(
         List<ChatMessage> history,
+        ToolCall toolCall,
         ToolResult toolResult,
         List<ToolDefinition>? tools,
         [EnumeratorCancellation] CancellationToken cancellationToken)
@@ -254,8 +269,8 @@ public class GeminiProvider : BaseLLMProvider
                 {
                     functionCall = new
                     {
-                        name = "web_search",
-                        args = new Dictionary<string, object?>()
+                        name = toolCall.Name,
+                        args = toolCall.Arguments ?? new Dictionary<string, object?>()
                     }
                 }
             }
@@ -270,7 +285,7 @@ public class GeminiProvider : BaseLLMProvider
                 {
                     functionResponse = new
                     {
-                        name = "web_search",
+                        name = toolCall.Name,
                         response = new { result = toolResult.Content }
                     }
                 }
@@ -480,6 +495,30 @@ public class GeminiProvider : BaseLLMProvider
         {
             LogError("web_search", ex.Message);
             return $"Error executing web search: {ex.Message}";
+        }
+    }
+
+    private async Task<string> ExecuteWebFetchAsync(Dictionary<string, object?> args, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var url = args.TryGetValue("url", out var urlObj) ? urlObj?.ToString() : null;
+
+            if (string.IsNullOrEmpty(url))
+            {
+                LogError("web_fetch", "Missing url parameter");
+                return "Error: Missing url parameter";
+            }
+
+            LogToolExecution("web_fetch");
+            var result = await _webFetchService!.FetchAsync(url, cancellationToken: cancellationToken);
+            LogToolResult("web_fetch", result);
+            return result;
+        }
+        catch (Exception ex)
+        {
+            LogError("web_fetch", ex.Message);
+            return $"Error fetching URL: {ex.Message}";
         }
     }
 

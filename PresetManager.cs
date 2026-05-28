@@ -12,6 +12,7 @@ public class PresetManager : IDisposable
 {
     private readonly string _configPath;
     private readonly ISearchService _searchService;
+    private readonly IWebFetchService _webFetchService;
     private readonly Logger _logger;
     private List<ProviderConfig> _presets;
     private int _activeIndex;
@@ -22,9 +23,10 @@ public class PresetManager : IDisposable
 
     public event Action<ProviderConfig>? PresetChanged;
 
-    public PresetManager(ISearchService searchService, Logger? logger = null)
+    public PresetManager(ISearchService searchService, IWebFetchService webFetchService, Logger? logger = null)
     {
         _searchService = searchService;
+        _webFetchService = webFetchService;
         _logger = logger ?? new Logger();
         _presets = new List<ProviderConfig>();
         _activeIndex = 0;
@@ -185,7 +187,7 @@ public class PresetManager : IDisposable
         {
             throw new InvalidOperationException("GEMINI_API_KEY not set");
         }
-        return new GeminiProvider(model, apiKey, httpClient: null, _searchService, _logger);
+        return new GeminiProvider(model, apiKey, httpClient: null, _searchService, _webFetchService, _logger);
     }
 
     private ILLMProvider CreateOpenRouterProvider(string model)
@@ -195,7 +197,7 @@ public class PresetManager : IDisposable
         {
             throw new InvalidOperationException("OPENROUTER_API_KEY not set");
         }
-        return new OpenRouterProvider(model, apiKey, _searchService, _logger);
+        return new OpenRouterProvider(model, apiKey, _searchService, _webFetchService, _logger);
     }
 
     private ILLMProvider CreateOllamaProvider(string model)
@@ -207,7 +209,7 @@ public class PresetManager : IDisposable
     private ILLMProvider CreateOpenAICompatibleProvider(string model)
     {
         var baseUrl = Environment.GetEnvironmentVariable("OPENAI_COMPATIBLE_BASE_URL") ?? "http://localhost:11434";
-        return new OpenAICompatibleProvider(model, baseUrl, httpClient: null, _searchService, _logger);
+        return new OpenAICompatibleProvider(model, baseUrl, httpClient: null, _searchService, _webFetchService, _logger);
     }
 
     private ILLMProvider CreateDeepSeekProvider(string model)
@@ -217,7 +219,7 @@ public class PresetManager : IDisposable
         {
             throw new InvalidOperationException("DEEPSEEK_API_KEY not set");
         }
-        return new DeepSeekProvider(model, apiKey, httpClient: null, _searchService, _logger);
+        return new DeepSeekProvider(model, apiKey, httpClient: null, _searchService, _webFetchService, _logger);
     }
 
     public void Dispose()

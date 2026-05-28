@@ -23,8 +23,8 @@ public class OpenRouterProvider : OpenAIStyleProvider
     public override string Model { get; protected set; }
     public override bool SupportsWebSearch => true;
 
-    public OpenRouterProvider(string model, string? apiKey = null, ISearchService? searchService = null, Logger? logger = null)
-        : base(new HttpClient(), searchService, logger)
+    public OpenRouterProvider(string model, string? apiKey = null, ISearchService? searchService = null, IWebFetchService? webFetchService = null, Logger? logger = null)
+        : base(new HttpClient(), searchService, webFetchService, logger)
     {
         Model = model ?? throw new ArgumentNullException(nameof(model));
         _apiKey = apiKey ?? Environment.GetEnvironmentVariable("OPENROUTER_API_KEY");
@@ -243,6 +243,30 @@ public class OpenRouterProvider : OpenAIStyleProvider
                     else if (toolCall.Name == "web_search")
                     {
                         toolResults.Add(new ToolResult(toolCall.Id, "Only one search per response. Use the results you already have.", isError: true));
+                    }
+                    else if (toolCall.Name == "web_fetch" && _webFetchService != null && CompletedFetchCount < 3)
+                    {
+                        var fetchUrl = toolCall.Arguments.TryGetValue("url", out var urlObj) ? urlObj?.ToString() : null;
+                        if (!string.IsNullOrEmpty(fetchUrl))
+                            RaiseOnStatusChange($"{StatusManager.FetchingStatus}:{fetchUrl}");
+
+                        try
+                        {
+                            LogToolExecution("web_fetch");
+                            var fetchResult = await _webFetchService.FetchAsync(fetchUrl ?? "", cancellationToken: cancellationToken);
+                            LogToolResult("web_fetch", fetchResult);
+                            toolResults.Add(new ToolResult(toolCall.Id, fetchResult));
+                            CompletedFetchCount++;
+                        }
+                        catch (Exception ex)
+                        {
+                            LogError("web_fetch", ex.Message);
+                            toolResults.Add(new ToolResult(toolCall.Id, $"Error fetching URL: {ex.Message}", isError: true));
+                        }
+                    }
+                    else if (toolCall.Name == "web_fetch")
+                    {
+                        toolResults.Add(new ToolResult(toolCall.Id, "Fetch limit reached (3 per response). Use the content you already have.", isError: true));
                     }
                     else
                     {

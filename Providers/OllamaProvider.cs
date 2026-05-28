@@ -22,7 +22,7 @@ public class OllamaProvider : BaseLLMProvider
     public override bool SupportsWebSearch => false;
 
     public OllamaProvider(string model, string? baseUrl = null, HttpClient? httpClient = null, Logger? logger = null)
-        : base(httpClient ?? new HttpClient { Timeout = TimeSpan.FromMinutes(5) }, null, logger)
+        : base(httpClient ?? new HttpClient { Timeout = TimeSpan.FromMinutes(5) }, null, null, logger)
     {
         _model = model ?? throw new ArgumentNullException(nameof(model));
         _baseUrl = baseUrl

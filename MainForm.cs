@@ -215,9 +215,21 @@ public partial class MainForm : Form
                 _onSearchComplete = null;
                 _bridge?.ChatMessage("system", $"<em>🔍 Searching for: {query}</em>");
             }
+            else if (status != null && status.StartsWith(StatusManager.FetchingStatus + ":"))
+            {
+                var url = status[(StatusManager.FetchingStatus.Length + 1)..];
+                _statusManager.SetStatus(Status.Fetching);
+                _onSearchComplete?.Invoke();
+                _onSearchComplete = null;
+                _bridge?.ChatMessage("system", $"<em>📥 Fetching: {url}</em>");
+            }
             else if (status == StatusManager.SearchingStatus)
             {
                 _statusManager.SetStatus(Status.Searching);
+            }
+            else if (status == StatusManager.FetchingStatus)
+            {
+                _statusManager.SetStatus(Status.Fetching);
             }
             else if (status == null)
             {

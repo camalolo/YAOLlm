@@ -46,8 +46,9 @@ static class Program
             logger.Log("[Startup] TAVILY_API_KEY not set, skipping Tavily search");
 
         var searchAggregator = new SearchServiceAggregator(searchServices, logger);
+        var webFetchService = new WebFetchService(logger: logger);
 
-        var presetManager = new PresetManager(searchAggregator, logger);
+        var presetManager = new PresetManager(searchAggregator, webFetchService, logger);
         presetManager.LoadConfig();
 
         var mainForm = new MainForm(presetManager, statusManager, logger);

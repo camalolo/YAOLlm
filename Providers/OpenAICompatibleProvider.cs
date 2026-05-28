@@ -19,8 +19,8 @@ public class OpenAICompatibleProvider : OpenAIStyleProvider
     public override string Model { get => _model; protected set => _model = value; }
     public override bool SupportsWebSearch => true;
 
-    public OpenAICompatibleProvider(string model, string baseUrl = "http://localhost:11434", HttpClient? httpClient = null, ISearchService? searchService = null, Logger? logger = null)
-        : base(httpClient ?? new HttpClient(), searchService, logger)
+    public OpenAICompatibleProvider(string model, string baseUrl = "http://localhost:11434", HttpClient? httpClient = null, ISearchService? searchService = null, IWebFetchService? webFetchService = null, Logger? logger = null)
+        : base(httpClient ?? new HttpClient(), searchService, webFetchService, logger)
     {
         _model = model ?? throw new ArgumentNullException(nameof(model));
         _baseUrl = baseUrl.TrimEnd('/');
@@ -180,6 +180,19 @@ public class OpenAICompatibleProvider : OpenAIStyleProvider
                     {
                         toolResults.Add(new ToolResult(toolCall.Id, "Only one search per response. Use the results you already have.", isError: true));
                     }
+                    else if (toolCall.Name == "web_fetch" && _webFetchService != null && CompletedFetchCount < 3)
+                    {
+                        var fetchUrl = toolCall.Arguments.TryGetValue("url", out var urlObj) ? urlObj?.ToString() : null;
+                        if (!string.IsNullOrEmpty(fetchUrl))
+                            RaiseOnStatusChange($"{StatusManager.FetchingStatus}:{fetchUrl}");
+                        var result = await ExecuteWebFetchAsync(toolCall, cancellationToken);
+                        toolResults.Add(result);
+                        CompletedFetchCount++;
+                    }
+                    else if (toolCall.Name == "web_fetch")
+                    {
+                        toolResults.Add(new ToolResult(toolCall.Id, "Fetch limit reached (3 per response). Use the content you already have.", isError: true));
+                    }
                     else
                     {
                         toolResults.Add(new ToolResult(toolCall.Id, $"Unknown tool: {toolCall.Name}", isError: true));
@@ -262,6 +275,31 @@ public class OpenAICompatibleProvider : OpenAIStyleProvider
             RaiseOnStatusChange(null);
             LogError("web_search", ex.Message);
             return new ToolResult(toolCall.Id, $"Error executing web search: {ex.Message}", isError: true);
+        }
+    }
+
+    private async Task<ToolResult> ExecuteWebFetchAsync(ToolCall toolCall, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var url = toolCall.Arguments.TryGetValue("url", out var urlObj) ? urlObj?.ToString() : null;
+
+            if (string.IsNullOrEmpty(url))
+            {
+                LogError("web_fetch", "Missing url parameter");
+                return new ToolResult(toolCall.Id, "Error: Missing url parameter", isError: true);
+            }
+
+            LogToolExecution("web_fetch");
+            var fetchResult = await _webFetchService!.FetchAsync(url, cancellationToken: cancellationToken);
+            LogToolResult("web_fetch", fetchResult);
+            return new ToolResult(toolCall.Id, fetchResult);
+        }
+        catch (Exception ex)
+        {
+            RaiseOnStatusChange(null);
+            LogError("web_fetch", ex.Message);
+            return new ToolResult(toolCall.Id, $"Error fetching URL: {ex.Message}", isError: true);
         }
     }
 }

@@ -17,8 +17,8 @@ public abstract class OpenAIStyleProvider : BaseLLMProvider
 {
     private string _dsmlBuffer = "";
 
-    protected OpenAIStyleProvider(HttpClient httpClient, ISearchService? searchService = null, Logger? logger = null)
-        : base(httpClient, searchService, logger)
+    protected OpenAIStyleProvider(HttpClient httpClient, ISearchService? searchService = null, IWebFetchService? webFetchService = null, Logger? logger = null)
+        : base(httpClient, searchService, webFetchService, logger)
     {
     }
 
@@ -55,6 +55,7 @@ public abstract class OpenAIStyleProvider : BaseLLMProvider
 
         LogRequest(history.Count, tools != null && tools.Count > 0);
         CompletedSearchCount = 0;
+        CompletedFetchCount = 0;
         CompletedSearchSummaries = null;
 
         var messages = BuildMessages(history, image);

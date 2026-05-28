@@ -9,8 +9,8 @@ public class DeepSeekProvider : OpenAICompatibleProvider
 
     public override string Name => "deepseek";
 
-    public DeepSeekProvider(string model, string apiKey, HttpClient? httpClient = null, ISearchService? searchService = null, Logger? logger = null)
-        : base(model, BaseUrl, CreateHttpClient(apiKey, httpClient), searchService, logger)
+    public DeepSeekProvider(string model, string apiKey, HttpClient? httpClient = null, ISearchService? searchService = null, IWebFetchService? webFetchService = null, Logger? logger = null)
+        : base(model, BaseUrl, CreateHttpClient(apiKey, httpClient), searchService, webFetchService, logger)
     {
     }
 

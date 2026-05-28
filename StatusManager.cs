@@ -5,12 +5,14 @@ public enum Status
     Idle = 0,
     Sending,
     Receiving,
-    Searching
+    Searching,
+    Fetching
 }
 
 public class StatusManager
 {
     public const string SearchingStatus = "searching";
+    public const string FetchingStatus = "fetching";
 
     public event Action<Status>? StatusChanged;
 

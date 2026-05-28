@@ -17,11 +17,13 @@ public abstract class BaseLLMProvider : ILLMProvider
 {
     protected readonly HttpClient _httpClient;
     protected readonly ISearchService? _searchService;
+    protected readonly IWebFetchService? _webFetchService;
     protected readonly Logger _logger;
     protected volatile bool _isDisposed;
 
     public string? CompletedSearchSummaries { get; protected set; }
     public int CompletedSearchCount { get; protected set; }
+    public int CompletedFetchCount { get; protected set; }
 
     /// <summary>
     /// Provider name (e.g., "gemini", "openrouter", "ollama")
@@ -49,10 +51,11 @@ public abstract class BaseLLMProvider : ILLMProvider
     /// <param name="httpClient">HTTP client for making requests</param>
     /// <param name="searchService">Optional Tavily search service for web search functionality</param>
     /// <param name="logger">Optional logger for provider operations</param>
-    protected BaseLLMProvider(HttpClient httpClient, ISearchService? searchService = null, Logger? logger = null)
+    protected BaseLLMProvider(HttpClient httpClient, ISearchService? searchService = null, IWebFetchService? webFetchService = null, Logger? logger = null)
     {
         _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
         _searchService = searchService;
+        _webFetchService = webFetchService;
         _logger = logger ?? new Logger();
     }
 
