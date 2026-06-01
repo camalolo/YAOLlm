@@ -422,7 +422,12 @@ public partial class MainForm : Form
             var streamThrottleMs = 50;
             _onSearchComplete = () =>
             {
-                _preToolResponse = fullResponse.ToString();
+                var preToolText = fullResponse.ToString();
+                if (!string.IsNullOrEmpty(preToolText))
+                {
+                    _bridge?.ChatMessageFromMarkdown("model", preToolText);
+                }
+                _preToolResponse = preToolText;
                 fullResponse.Clear();
             };
             _cancellationTokenSource = new CancellationTokenSource();
@@ -449,12 +454,18 @@ public partial class MainForm : Form
             }
 
             var response = fullResponse.ToString();
+            var combinedResponse = (_preToolResponse ?? "") + response;
 
-            if (!string.IsNullOrEmpty(response))
+            if (!string.IsNullOrEmpty(combinedResponse))
             {
-                _conversationManager.AddExchange(userMessage, response);
+                _conversationManager.AddExchange(userMessage, combinedResponse);
                 UpdateHistoryCounter();
-                _bridge?.ChatMessageFromMarkdown("model", response);
+                // Only send a chat_message for the post-tool portion;
+                // pre-tool text was already committed as a chat_message in _onSearchComplete
+                if (!string.IsNullOrEmpty(response))
+                {
+                    _bridge?.ChatMessageFromMarkdown("model", response);
+                }
             }
             else
             {

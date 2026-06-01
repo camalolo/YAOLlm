@@ -348,7 +348,7 @@
                     self.pendingMessages = [];
                   }
                   // Clear any pending streaming content before pushing a non-model message
-                  // (partial text before tool calls is not useful — the model will produce a complete response)
+                  // (pre-tool text is committed as a model chat_message before search notifications)
                   if (msg.role !== 'model') {
                     self.streamingHtml = '';
                   }
