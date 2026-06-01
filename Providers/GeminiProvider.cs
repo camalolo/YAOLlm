@@ -121,7 +121,7 @@ public class GeminiProvider : BaseLLMProvider
             foreach (var chunk in textChunks)
             {
                 chunkIndex++;
-                LogStreamChunk(chunkIndex, chunk);
+                LogStreamChunk(chunkIndex);
                 fullContent.Append(chunk);
                 yield return chunk;
             }

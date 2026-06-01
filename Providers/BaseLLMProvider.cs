@@ -263,10 +263,12 @@ public abstract class BaseLLMProvider : ILLMProvider
         _logger.Log($"[{Name}] JSON parse error: {error} in content: {truncated}");
     }
 
-    protected void LogStreamChunk(int chunkIndex, string content, int maxLength = 50)
+    protected void LogStreamChunk(int chunkIndex)
     {
-        var truncated = content.Length > maxLength ? content.Substring(0, maxLength) + "..." : content;
-        _logger.Log($"[{Name}] Stream chunk #{chunkIndex}: \"{truncated}\"");
+        if (chunkIndex == 1)
+            _logger.Log($"[{Name}] Stream started");
+        else if (chunkIndex % 50 == 0)
+            _logger.Log($"[{Name}] Stream chunk #{chunkIndex}");
     }
 
     protected void LogStreamComplete(int totalChunks, int toolCallCount)

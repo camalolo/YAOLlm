@@ -146,7 +146,7 @@ public class OllamaProvider : BaseLLMProvider
             if (chunk != null)
             {
                 chunkIndex++;
-                LogStreamChunk(chunkIndex, chunk);
+                LogStreamChunk(chunkIndex);
                 yield return chunk;
             }
         }

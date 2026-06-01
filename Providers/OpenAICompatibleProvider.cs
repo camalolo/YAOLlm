@@ -132,7 +132,7 @@ public class OpenAICompatibleProvider : OpenAIStyleProvider
                 {
                     fullContent.Append(parseResult.Chunk);
                     chunkIndex++;
-                    LogStreamChunk(chunkIndex, parseResult.Chunk);
+                    LogStreamChunk(chunkIndex);
                     var filtered = FilterDsmlChunk(parseResult.Chunk);
                     if (filtered.Length > 0)
                         yield return filtered;
