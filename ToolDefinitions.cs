@@ -48,7 +48,36 @@ public static class ToolDefinitions
     );
 
     /// <summary>
-    /// Get all available tools
+    /// TTS summary tool definition — LLM provides a concise spoken summary of its response
+    /// </summary>
+    public static ToolDefinition TtsSummary => new(
+        "tts_summary",
+        "Provide a concise spoken summary of your response for text-to-speech playback. " +
+        "Use conversational language, as if briefly telling a friend what you found. " +
+        "Omit tables, lists, code blocks, URLs, and detailed data — just the key takeaway in 1-3 sentences. " +
+        "Always call this tool once per response, even if the answer is short.",
+        new
+        {
+            type = "object",
+            properties = new
+            {
+                text = new
+                {
+                    type = "string",
+                    description = "The text to speak aloud — concise, conversational summary"
+                }
+            },
+            required = new[] { "text" }
+        }
+    );
+
+    /// <summary>
+    /// Get all web tools (search + fetch)
     /// </summary>
     public static List<ToolDefinition> GetAll() => new() { WebSearch, WebFetch };
+
+    /// <summary>
+    /// Get all web tools plus the TTS summary tool
+    /// </summary>
+    public static List<ToolDefinition> GetAllWithTts() => new() { WebSearch, WebFetch, TtsSummary };
 }

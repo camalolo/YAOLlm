@@ -132,7 +132,29 @@ public class GeminiProvider : BaseLLMProvider
 
         if (pendingToolCalls.Count > 0)
         {
+            // Extract TTS summary first
+            string? ttsText = null;
+            var otherToolCalls = new List<ToolCall>();
             foreach (var toolCall in pendingToolCalls)
+            {
+                if (toolCall.Name == "tts_summary")
+                {
+                    var args = toolCall.Arguments ?? new Dictionary<string, object?>();
+                    ttsText = args.TryGetValue("text", out var textObj) ? textObj?.ToString() : null;
+                }
+                else
+                {
+                    otherToolCalls.Add(toolCall);
+                }
+            }
+
+            // Only raise TTS if tts_summary is the sole tool call (final response)
+            // Skip TTS if it came alongside search/fetch to avoid premature playback
+            if (!string.IsNullOrEmpty(ttsText) && otherToolCalls.Count == 0)
+                RaiseOnStatusChange($"{StatusManager.TtsStatus}:{ttsText}");
+
+            // Process remaining (non-TTS) tool calls
+            foreach (var toolCall in otherToolCalls)
             {
                 ToolResult? result = null;
                 if (toolCall.Name == "web_search" && _searchService != null)

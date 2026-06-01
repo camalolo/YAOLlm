@@ -26,6 +26,7 @@ public partial class MainForm : Form
     private readonly Queue<(string? message, string? imageBase64, string? title)> _messageQueue = new();
     private readonly SemaphoreSlim _sendLock = new(1, 1);
     private CancellationTokenSource? _cancellationTokenSource;
+    private readonly TtsService _ttsService;
 
     private static readonly MarkdownPipeline MdPipeline = new MarkdownPipelineBuilder().UseAdvancedExtensions().Build();
 
@@ -71,6 +72,9 @@ public partial class MainForm : Form
 
         _trayIconManager = new TrayIconManager(ToggleVisibility);
         RegisterGlobalHotkey();
+
+        var ttsVoice = Environment.GetEnvironmentVariable("TTS_VOICE");
+        _ttsService = new TtsService(ttsVoice, _logger);
 
         this.FormClosing += MainForm_FormClosing;
         this.Load += async (s, e) =>
@@ -207,7 +211,15 @@ public partial class MainForm : Form
     {
         _providerStatusHandler = status =>
         {
-            if (status != null && status.StartsWith(StatusManager.SearchingStatus + ":"))
+            if (status != null && status.StartsWith(StatusManager.TtsStatus + ":"))
+            {
+                var ttsText = status[(StatusManager.TtsStatus.Length + 1)..];
+                if (!string.IsNullOrEmpty(ttsText))
+                {
+                    _ = _ttsService.SpeakAsync(ttsText, CancellationToken.None);
+                }
+            }
+            else if (status != null && status.StartsWith(StatusManager.SearchingStatus + ":"))
             {
                 var query = status[(StatusManager.SearchingStatus.Length + 1)..];
                 _statusManager.SetStatus(Status.Searching);
@@ -259,6 +271,7 @@ public partial class MainForm : Form
     {
         UnregisterHotKey(this.Handle, HOTKEY_ID);
         _trayIconManager.Dispose();
+        _ttsService.Dispose();
         _currentProvider?.Dispose();
         _presetManager.Dispose();
         _sendLock.Dispose();
@@ -308,6 +321,7 @@ public partial class MainForm : Form
     private void StopStreaming()
     {
         _logger.Log("Stop requested by user");
+        _ttsService.Stop();
         _cancellationTokenSource?.Cancel();
     }
 
@@ -400,7 +414,9 @@ public partial class MainForm : Form
 
             messages.Add(userMessage);
 
-            var tools = provider.SupportsWebSearch ? ToolDefinitions.GetAll() : null;
+            var tools = provider.SupportsWebSearch
+                ? ToolDefinitions.GetAllWithTts()
+                : new List<ToolDefinition> { ToolDefinitions.TtsSummary };
 
             var lastStreamUpdate = DateTime.MinValue;
             var streamThrottleMs = 50;

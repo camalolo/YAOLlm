@@ -85,7 +85,8 @@ public class ConversationManager
 - Today's date: {DateTime.Now:yyyy-MM-dd}
 {windowContext}
 - Avoid spoilers. Give hints first. Only provide exact solutions when the user explicitly asks.
-- You may search the web once per response. Use the results to answer — do not search again with a refined query.";
+- You may search the web once per response. Use the results to answer — do not search again with a refined query.
+- Always include a tts_summary tool call in your final response, after all search/fetch tool results have been processed. Do not call it in the same turn as other tools. Provide a concise, conversational summary suitable for text-to-speech. Omit tables, code, lists, URLs, and detailed data — just the key takeaway in 1-3 sentences.";
     }
 
     public int GetTotalCharacterCount()

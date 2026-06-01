@@ -202,8 +202,29 @@ public class OpenRouterProvider : OpenAIStyleProvider
             {
                 var completedToolCalls = BuildCompletedToolCalls(toolCalls);
                 var toolResults = new List<ToolResult>();
+                var ttsText = (string?)null;
 
+                // Separate tts_summary from other tool calls
+                var otherToolCalls = new List<ToolCall>();
                 foreach (var toolCall in completedToolCalls)
+                {
+                    if (toolCall.Name == "tts_summary")
+                    {
+                        ttsText = toolCall.Arguments.TryGetValue("text", out var textObj) ? textObj?.ToString() : null;
+                    }
+                    else
+                    {
+                        otherToolCalls.Add(toolCall);
+                    }
+                }
+
+                // Only raise TTS if tts_summary is the sole tool call (final response)
+                // Skip TTS if it came alongside search/fetch to avoid premature playback
+                if (!string.IsNullOrEmpty(ttsText) && otherToolCalls.Count == 0)
+                    RaiseOnStatusChange($"{StatusManager.TtsStatus}:{ttsText}");
+
+                // Process remaining (non-TTS) tool calls
+                foreach (var toolCall in otherToolCalls)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     if (toolCall.Name == "web_search" && _searchService != null)
@@ -266,7 +287,8 @@ public class OpenRouterProvider : OpenAIStyleProvider
                     }
                 }
 
-                RaiseOnStatusChange(null);
+                if (otherToolCalls.Count > 0)
+                    RaiseOnStatusChange(null);
 
                 if (toolResults.Count > 0)
                 {
@@ -277,7 +299,7 @@ public class OpenRouterProvider : OpenAIStyleProvider
                     {
                         role = "assistant",
                         content = state.FullContent.Length > 0 ? StripDsmlTags(state.FullContent.ToString()) : null,
-                        tool_calls = completedToolCalls.Select(tc => new
+                        tool_calls = otherToolCalls.Select(tc => new
                         {
                             id = tc.Id,
                             type = "function",
