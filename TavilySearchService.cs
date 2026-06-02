@@ -200,7 +200,7 @@ public class TavilySearchService : ISearchService, IDisposable
         catch (Exception ex)
         {
             _logger.Log($"Error formatting search results: {ex.Message}");
-            return $"Error formatting search results: {ex.Message}";
+            return $"Error: Formatting search results failed: {ex.Message}";
         }
     }
 }

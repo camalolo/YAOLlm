@@ -80,11 +80,24 @@ DEEPSEEK_API_KEY=...
 OLLAMA_BASE_URL=http://localhost:11434
 OPENAI_COMPATIBLE_BASE_URL=http://localhost:11434
 TAVILY_API_KEY=...
+EXA_API_KEY=...
+SERPER_API_KEY=...
+TINYFISH_API_KEY=...
+
+SEARCH_SERVICES=exa,tavily,tinyfish,serper
 
 PRESET_1=gemini:gemini-2.0-flash:My Gemini
 PRESET_2=openrouter:openrouter/...:OpenRouter
 ACTIVE_PRESET=1
 ```
+
+`SEARCH_SERVICES` — comma-separated list of search service names in priority order. Supported names: `exa`, `tavily`, `tinyfish`, `serper`. Each name maps to its API key env var:
+- `exa` → `EXA_API_KEY`
+- `serper` → `SERPER_API_KEY`
+- `tavily` → `TAVILY_API_KEY`
+- `tinyfish` → `TINYFISH_API_KEY`
+
+Services are tried in the order listed. If `SEARCH_SERVICES` is not set, falls back to `tinyfish` first, then `tavily`.
 
 Preset format: `provider:model[:display_name]`. Provider names are case-insensitive.
 

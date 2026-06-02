@@ -6,19 +6,19 @@ using System.Threading.Tasks;
 
 namespace YAOLlm;
 
-public class TinyFishSearchService : ISearchService, IDisposable
+public class ExaSearchService : ISearchService, IDisposable
 {
     private readonly string _apiKey;
     private readonly Logger _logger;
     private readonly HttpClient _client;
     private bool _disposed;
 
-    public TinyFishSearchService(string apiKey, Logger logger)
+    public ExaSearchService(string apiKey, Logger logger)
     {
         _apiKey = apiKey ?? throw new ArgumentNullException(nameof(apiKey));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _client = new HttpClient();
-        _client.DefaultRequestHeaders.Add("X-API-Key", _apiKey);
+        _client.DefaultRequestHeaders.Add("x-api-key", _apiKey);
     }
 
     public void Dispose()
@@ -32,16 +32,24 @@ public class TinyFishSearchService : ISearchService, IDisposable
     {
         try
         {
-            _logger.Log($"[TinyFish] Performing search: '{query}' (maxResults: {maxResults})");
+            _logger.Log($"[Exa] Performing search: '{query}' (maxResults: {maxResults})");
 
-            var fetchConfig = Uri.EscapeDataString("{\"format\":\"markdown\"}");
-            var url = $"https://api.search.tinyfish.ai?query={Uri.EscapeDataString(query)}&location=US&fetch={fetchConfig}";
-            var response = await _client.GetAsync(url);
+            var requestBody = new
+            {
+                query = query,
+                numResults = maxResults,
+                contents = new { text = true }
+            };
+
+            var json = JsonSerializer.Serialize(requestBody);
+            var content = new StringContent(json, Encoding.UTF8, "application/json");
+
+            var response = await _client.PostAsync("https://api.exa.ai/search", content);
 
             if (!response.IsSuccessStatusCode)
             {
                 var errorDetail = await response.Content.ReadAsStringAsync();
-                _logger.Log($"[TinyFish] API request failed: {(int)response.StatusCode} - {errorDetail}");
+                _logger.Log($"[Exa] API request failed: {(int)response.StatusCode} - {errorDetail}");
                 throw new Exception($"Search failed ({(int)response.StatusCode}): {errorDetail}");
             }
 
@@ -49,20 +57,20 @@ public class TinyFishSearchService : ISearchService, IDisposable
 
             if (string.IsNullOrEmpty(jsonResponse))
             {
-                _logger.Log("[TinyFish] API returned empty response");
+                _logger.Log("[Exa] API returned empty response");
                 return "Error: Received empty response from search API";
             }
 
-            _logger.Log($"[TinyFish] Response received: {jsonResponse.Substring(0, Math.Min(200, jsonResponse.Length))}...");
+            _logger.Log($"[Exa] Response received: {jsonResponse.Substring(0, Math.Min(200, jsonResponse.Length))}...");
 
             var formattedResults = FormatSearchResults(jsonResponse, maxResults);
-            _logger.Log($"[TinyFish] Search completed, formatted {formattedResults.Split('\n').Length} lines");
+            _logger.Log($"[Exa] Search completed, formatted {formattedResults.Split('\n').Length} lines");
 
             return formattedResults;
         }
         catch (Exception ex)
         {
-            _logger.Log($"[TinyFish] Error in SearchAsync: {ex.Message}");
+            _logger.Log($"[Exa] Error in SearchAsync: {ex.Message}");
             return $"Error: Failed to perform search. {ex.Message}";
         }
     }
@@ -76,7 +84,7 @@ public class TinyFishSearchService : ISearchService, IDisposable
 
             if (!root.TryGetProperty("results", out var resultsElement))
             {
-                _logger.Log("[TinyFish] No 'results' property found in response");
+                _logger.Log("[Exa] No 'results' property found in response");
                 return "No search results found";
             }
 
@@ -84,29 +92,18 @@ public class TinyFishSearchService : ISearchService, IDisposable
             var formattedResults = new StringBuilder();
 
             int resultCount = 0;
-            int maxToFormat = Math.Min(maxResults, 3);
             foreach (var result in results)
             {
-                if (resultCount >= maxToFormat) break;
+                if (resultCount >= maxResults) break;
                 resultCount++;
 
                 var title = result.TryGetProperty("title", out var titleElement) ? titleElement.GetString() ?? "" : "";
                 var url = result.TryGetProperty("url", out var urlElement) ? urlElement.GetString() ?? "" : "";
-                var snippet = result.TryGetProperty("snippet", out var snippetElement) ? snippetElement.GetString() ?? "" : "";
-
-                // Use fetched full-page content if available, otherwise fall back to snippet
-                var content = snippet;
-                if (result.TryGetProperty("fetch", out var fetchElement) && fetchElement.ValueKind == JsonValueKind.Object
-                    && fetchElement.TryGetProperty("text", out var textElement) && textElement.ValueKind == JsonValueKind.String)
-                {
-                    var fetched = textElement.GetString() ?? "";
-                    if (!string.IsNullOrEmpty(fetched))
-                        content = fetched;
-                }
+                var text = result.TryGetProperty("text", out var textElement) ? textElement.GetString() ?? "" : "";
 
                 formattedResults.AppendLine($"**{title}**");
                 formattedResults.AppendLine($"URL: {url}");
-                formattedResults.AppendLine($"Content: {content}");
+                formattedResults.AppendLine($"Content: {text}");
 
                 if (resultCount < resultsElement.GetArrayLength())
                 {
@@ -125,7 +122,7 @@ public class TinyFishSearchService : ISearchService, IDisposable
         }
         catch (Exception ex)
         {
-            _logger.Log($"[TinyFish] Error formatting search results: {ex.Message}");
+            _logger.Log($"[Exa] Error formatting search results: {ex.Message}");
             return $"Error: Formatting search results failed: {ex.Message}";
         }
     }
