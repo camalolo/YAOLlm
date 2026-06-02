@@ -192,7 +192,7 @@ public class OpenAICompatibleProvider : OpenAIStyleProvider
                     {
                         var query = toolCall.Arguments.TryGetValue("query", out var queryObj) ? queryObj?.ToString() : null;
                         if (!string.IsNullOrEmpty(query))
-                            RaiseOnStatusChange($"{StatusManager.SearchingStatus}:{query}");
+                            RaiseOnStatusChange($"{StatusManager.SearchingStatus}:{_searchService.Name}:{query}");
                         var result = await ExecuteWebSearchFallbackAsync(toolCall);
                         toolResults.Add(result);
                         CompletedSearchCount++;

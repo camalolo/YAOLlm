@@ -8,6 +8,7 @@ namespace YAOLlm;
 
 public class ExaSearchService : ISearchService, IDisposable
 {
+    public string Name => "Exa";
     private readonly string _apiKey;
     private readonly Logger _logger;
     private readonly HttpClient _client;

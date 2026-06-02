@@ -8,6 +8,7 @@ namespace YAOLlm;
 
 public class TinyFishSearchService : ISearchService, IDisposable
 {
+    public string Name => "TinyFish";
     private readonly string _apiKey;
     private readonly Logger _logger;
     private readonly HttpClient _client;

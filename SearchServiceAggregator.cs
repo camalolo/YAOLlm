@@ -9,6 +9,8 @@ public class SearchServiceAggregator : ISearchService, IDisposable
     private readonly List<ISearchService> _services;
     private readonly Logger _logger;
 
+    public string Name => _services.Count > 0 ? _services[0].Name : "None";
+
     public SearchServiceAggregator(List<ISearchService> services, Logger? logger = null)
     {
         _services = services ?? throw new ArgumentNullException(nameof(services));

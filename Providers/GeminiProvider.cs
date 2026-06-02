@@ -162,7 +162,7 @@ public class GeminiProvider : BaseLLMProvider
                     var args = toolCall.Arguments ?? new Dictionary<string, object?>();
                     var query = args.TryGetValue("query", out var q) ? q?.ToString() : null;
                     if (!string.IsNullOrEmpty(query))
-                        RaiseOnStatusChange($"{StatusManager.SearchingStatus}:{query}");
+                        RaiseOnStatusChange($"{StatusManager.SearchingStatus}:{_searchService.Name}:{query}");
                     result = new ToolResult(toolCall.Id, await ExecuteWebSearchAsync(args));
                     CompletedSearchCount++;
                 }

@@ -221,10 +221,14 @@ public partial class MainForm : Form
             }
             else if (status != null && status.StartsWith(StatusManager.SearchingStatus + ":"))
             {
-                var query = status[(StatusManager.SearchingStatus.Length + 1)..];
+                var payload = status[(StatusManager.SearchingStatus.Length + 1)..];
+                var colonIdx = payload.IndexOf(':');
+                var searchName = colonIdx > 0 ? payload[..colonIdx] : null;
+                var query = colonIdx > 0 ? payload[(colonIdx + 1)..] : payload;
                 _statusManager.SetStatus(Status.Searching);
                 _onSearchComplete?.Invoke();
-                _bridge?.ChatMessage("system", $"<em>🔍 Searching for: {query}</em>");
+                var label = searchName != null ? $"🔍 Searching {searchName} for: {query}" : $"🔍 Searching for: {query}";
+                _bridge?.ChatMessage("system", $"<em>{label}</em>");
             }
             else if (status != null && status.StartsWith(StatusManager.FetchingStatus + ":"))
             {

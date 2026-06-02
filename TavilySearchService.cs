@@ -11,6 +11,7 @@ namespace YAOLlm;
 
 public class TavilySearchService : ISearchService, IDisposable
 {
+    public string Name => "Tavily";
     private readonly string _apiKey;
     private readonly Logger _logger;
     private readonly RestClient _client;

@@ -8,6 +8,7 @@ namespace YAOLlm;
 
 public class SerperSearchService : ISearchService, IDisposable
 {
+    public string Name => "Serper";
     private readonly string _apiKey;
     private readonly Logger _logger;
     private readonly HttpClient _client;

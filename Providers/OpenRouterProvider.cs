@@ -231,7 +231,7 @@ public class OpenRouterProvider : OpenAIStyleProvider
                     {
                         var query = toolCall.Arguments.TryGetValue("query", out var queryObj) ? queryObj?.ToString() : null;
                         if (!string.IsNullOrEmpty(query))
-                            RaiseOnStatusChange($"{StatusManager.SearchingStatus}:{query}");
+                            RaiseOnStatusChange($"{StatusManager.SearchingStatus}:{_searchService.Name}:{query}");
                         int maxResults;
                         if (toolCall.Arguments.TryGetValue("max_results", out var maxResultsObj) && maxResultsObj is long l && l >= 0)
                             maxResults = (int)l;
