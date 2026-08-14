@@ -21,6 +21,7 @@ public partial class MainForm : Form
     private Action<string?>? _providerStatusHandler;
     private Action? _onSearchComplete;
     private string? _preToolResponse;
+    private string? _lastTtsText;
     private bool _pendingPresetSwitch;
     private IntPtr _previousWindowHandle = IntPtr.Zero;
     private readonly Queue<(string? message, string? imageBase64, string? title)> _messageQueue = new();
@@ -216,6 +217,7 @@ public partial class MainForm : Form
                 var ttsText = status[(StatusManager.TtsStatus.Length + 1)..];
                 if (!string.IsNullOrEmpty(ttsText))
                 {
+                    _lastTtsText = ttsText;
                     _ = _ttsService.SpeakAsync(ttsText, CancellationToken.None);
                 }
             }
@@ -422,6 +424,8 @@ public partial class MainForm : Form
                 ? ToolDefinitions.GetAllWithTts()
                 : new List<ToolDefinition> { ToolDefinitions.TtsSummary };
 
+            _preToolResponse = null;
+            _lastTtsText = null;
             var lastStreamUpdate = DateTime.MinValue;
             var streamThrottleMs = 50;
             _onSearchComplete = () =>
@@ -470,6 +474,13 @@ public partial class MainForm : Form
                 {
                     _bridge?.ChatMessageFromMarkdown("model", response);
                 }
+            }
+            else if (!string.IsNullOrEmpty(_lastTtsText))
+            {
+                var ttsMessage = $"🔊 The model used TTS to say: {_lastTtsText}";
+                _bridge?.ChatMessageFromMarkdown("model", ttsMessage);
+                _conversationManager.AddExchange(userMessage, ttsMessage);
+                UpdateHistoryCounter();
             }
             else
             {
