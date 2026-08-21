@@ -16,6 +16,8 @@
 
   <ItemGroup>
     <None Remove="icon.ico" />
+    <!-- Exclude the test project's sources from the app compilation glob -->
+    <Compile Remove="tests\**" />
   </ItemGroup>
 
   <ItemGroup>
@@ -35,7 +37,6 @@
     <PackageReference Include="Markdig" Version="0.40.0" />
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.2277.86" />
     <PackageReference Include="NAudio" Version="2.2.1" />
-    <PackageReference Include="RestSharp" Version="112.1.0" />
     <PackageReference Include="System.Drawing.Common" Version="9.0.2" />
   </ItemGroup>
 
