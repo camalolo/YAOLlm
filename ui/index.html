@@ -279,8 +279,18 @@
             'Idle': 'bg-gray-500',
             'Sending': 'bg-blue-400',
             'Receiving': 'bg-green-400',
-            'Searching': 'bg-yellow-400'
+            'Searching': 'bg-yellow-400',
+            'Fetching': 'bg-orange-400'
           }[this.status] || 'bg-gray-500';
+        },
+
+        // Highlight only code blocks that haven't been highlighted yet
+        // (hljs.highlightAll() would re-scan the entire chat every call).
+        highlightNew() {
+          if (!window.hljs) return;
+          document.querySelectorAll('#chat-area pre code:not(.hljs)').forEach((block) => {
+            try { window.hljs.highlightElement(block); } catch (e) { /* partial markdown while streaming */ }
+          });
         },
 
         init() {
@@ -363,17 +373,19 @@
                   self.messages.push({role: msg.role, html: msg.html, id: self.nextId++});
                   self.streamingHtml = '';
                   self.userScrolledUp = false;
-                  self.$nextTick(() => { if (window.hljs) hljs.highlightAll(); });
+                  self.$nextTick(() => self.highlightNew());
                   self.$nextTick(() => self.scrollToBottom());
                   break;
                 case 'chat_queued':
                   self.pendingMessages.push({role: 'user', html: msg.html, id: self.nextId++});
-                  self.$nextTick(() => { if (window.hljs) hljs.highlightAll(); });
+                  self.$nextTick(() => self.highlightNew());
                   self.$nextTick(() => self.scrollToBottom());
                   break;
                 case 'chat_stream':
+                  // No syntax highlighting while streaming — code blocks are usually
+                  // incomplete and the final chat_message will highlight them.
                   self.streamingHtml = msg.html;
-                  self.$nextTick(() => { self.scrollToBottom(); if (window.hljs) hljs.highlightAll(); });
+                  self.$nextTick(() => self.scrollToBottom());
                   break;
                 case 'status':
                   if (msg.status === 'Idle') self.userScrolledUp = false;
@@ -389,12 +401,13 @@
                 case 'warning':
                   self.messages.push({role: 'system', html: '<em>' + msg.message + '</em>', id: self.nextId++});
                   self.userScrolledUp = false;
-                  self.$nextTick(() => { if (window.hljs) hljs.highlightAll(); });
+                  self.$nextTick(() => self.highlightNew());
                   self.$nextTick(() => self.scrollToBottom());
                   break;
                 case 'error':
                   self.messages.push({role: 'error', html: msg.message, id: self.nextId++});
-                  self.$nextTick(() => { if (window.hljs) hljs.highlightAll(); });
+                  self.userScrolledUp = false;
+                  self.$nextTick(() => self.highlightNew());
                   self.$nextTick(() => self.scrollToBottom());
                   break;
                 case 'focus_input':

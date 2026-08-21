@@ -1,7 +1,10 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Net.Http;
+using System.Runtime.CompilerServices;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Threading;
@@ -11,14 +14,18 @@ using YAOLlm;
 namespace YAOLlm.Providers;
 
 /// <summary>
-/// Base class for LLM provider implementations with shared utility methods.
+/// Base class for LLM provider implementations with shared utility methods,
+/// retrying POST transport, SSE reading, and tool execution.
 /// </summary>
 public abstract class BaseLLMProvider : ILLMProvider
 {
+    protected const int MaxRetries = 3;
+
     protected readonly HttpClient _httpClient;
     protected readonly ISearchService? _searchService;
     protected readonly IWebFetchService? _webFetchService;
     protected readonly Logger _logger;
+    private readonly bool _ownsHttpClient;
     protected volatile bool _isDisposed;
 
     public string? CompletedSearchSummaries { get; protected set; }
@@ -36,24 +43,23 @@ public abstract class BaseLLMProvider : ILLMProvider
     public abstract string Model { get; protected set; }
 
     /// <summary>
-    /// Whether this provider supports custom web search tool
+    /// Whether this provider supports web search/fetch tool calling
     /// </summary>
     public abstract bool SupportsWebSearch { get; }
 
     /// <summary>
-    /// Called when the provider status changes (e.g., "searching", "processing")
+    /// Called when the provider status changes (searching, fetching, tts, ...)
     /// </summary>
-    public event Action<string?>? OnStatusChange;
+    public event Action<ProviderStatus>? OnStatusChange;
 
     /// <summary>
     /// Initializes a new instance of the BaseLLMProvider class.
+    /// A shared HttpClient can be supplied; the provider only disposes a client it created itself.
     /// </summary>
-    /// <param name="httpClient">HTTP client for making requests</param>
-    /// <param name="searchService">Optional Tavily search service for web search functionality</param>
-    /// <param name="logger">Optional logger for provider operations</param>
-    protected BaseLLMProvider(HttpClient httpClient, ISearchService? searchService = null, IWebFetchService? webFetchService = null, Logger? logger = null)
+    protected BaseLLMProvider(HttpClient? httpClient = null, ISearchService? searchService = null, IWebFetchService? webFetchService = null, Logger? logger = null)
     {
-        _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
+        _httpClient = httpClient ?? new HttpClient { Timeout = TimeSpan.FromMinutes(5) };
+        _ownsHttpClient = httpClient == null;
         _searchService = searchService;
         _webFetchService = webFetchService;
         _logger = logger ?? new Logger();
@@ -71,17 +77,181 @@ public abstract class BaseLLMProvider : ILLMProvider
     /// <summary>
     /// Raises the OnStatusChange event.
     /// </summary>
-    /// <param name="status">The new status, or null to clear</param>
-    protected virtual void RaiseOnStatusChange(string? status)
+    protected virtual void RaiseOnStatusChange(ProviderStatus status)
     {
         OnStatusChange?.Invoke(status);
     }
 
+    // ─── Shared HTTP transport ────────────────────────────────────────
+
+    /// <summary>
+    /// Override to add provider-specific headers (auth, referer, ...) to each request.
+    /// </summary>
+    protected virtual void CustomizeRequest(HttpRequestMessage request) { }
+
+    /// <summary>
+    /// POSTs a JSON payload with exponential-backoff retries on transient errors
+    /// (429/503, network failures, timeouts). Returns a successful response
+    /// (caller must dispose) or throws <see cref="LLMException"/>.
+    /// </summary>
+    protected async Task<HttpResponseMessage> PostWithRetryAsync(string url, string jsonPayload, CancellationToken cancellationToken)
+    {
+        int attempt = 0;
+        while (true)
+        {
+            try
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Post, url);
+                request.Content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
+                CustomizeRequest(request);
+
+                var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    var statusCode = (int)response.StatusCode;
+                    var errorBody = await response.Content.ReadAsStringAsync(cancellationToken);
+                    response.Dispose();
+                    throw LLMException.CreateWithStatusCode(statusCode, errorBody, Name);
+                }
+
+                return response;
+            }
+            catch (OperationCanceledException)
+            {
+                LogCancelled();
+                throw;
+            }
+            catch (Exception ex) when (ShouldRetry(ex, attempt))
+            {
+                var delay = GetRetryDelay(attempt);
+                LogRetry(attempt + 1, MaxRetries, (int)delay.TotalMilliseconds);
+                await Task.Delay(delay, cancellationToken);
+                attempt++;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Reads an SSE stream ("data: ..." lines) from a response, yielding each data
+    /// payload. Stops at "[DONE]". Caller owns (disposes) the response.
+    /// </summary>
+    protected static async IAsyncEnumerable<string> ReadSseDataLinesAsync(
+        HttpResponseMessage response,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        using var reader = new StreamReader(stream);
+
+        string? line;
+        while ((line = await reader.ReadLineAsync(cancellationToken)) != null)
+        {
+            if (!line.StartsWith("data: ", StringComparison.Ordinal))
+                continue;
+
+            var data = line["data: ".Length..];
+            if (data == "[DONE]")
+                yield break;
+            yield return data;
+        }
+    }
+
+    // ─── Shared tool execution ────────────────────────────────────────
+
+    /// <summary>
+    /// Executes a web_search tool call and updates the Completed* counters/summaries.
+    /// </summary>
+    protected async Task<ToolResult> ExecuteWebSearchToolAsync(ToolCall toolCall, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var query = toolCall.Arguments.TryGetValue("query", out var q) ? q?.ToString() : null;
+            if (string.IsNullOrEmpty(query))
+            {
+                LogError("web_search", "Missing query parameter");
+                return new ToolResult(toolCall.Id, "Error: Missing query parameter", isError: true);
+            }
+
+            var maxResults = GetIntArg(toolCall.Arguments, "max_results", 5);
+
+            LogToolExecution("web_search");
+            var searchResult = await _searchService!.SearchAsync(query, maxResults);
+            LogToolResult("web_search", searchResult);
+
+            CompletedSearchCount++;
+            CompletedSearchSummaries = (CompletedSearchSummaries != null ? CompletedSearchSummaries + "\n\n---\n\n" : "")
+                + $"**Search: {query}**\n{searchResult}";
+
+            return new ToolResult(toolCall.Id, searchResult);
+        }
+        catch (Exception ex)
+        {
+            LogError("web_search", ex.Message);
+            return new ToolResult(toolCall.Id, $"Error executing web search: {ex.Message}", isError: true);
+        }
+    }
+
+    /// <summary>
+    /// Executes a web_fetch tool call and updates the Completed* counters.
+    /// </summary>
+    protected async Task<ToolResult> ExecuteWebFetchToolAsync(ToolCall toolCall, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var url = toolCall.Arguments.TryGetValue("url", out var u) ? u?.ToString() : null;
+            if (string.IsNullOrEmpty(url))
+            {
+                LogError("web_fetch", "Missing url parameter");
+                return new ToolResult(toolCall.Id, "Error: Missing url parameter", isError: true);
+            }
+
+            LogToolExecution("web_fetch");
+            var fetchResult = await _webFetchService!.FetchAsync(url, cancellationToken: cancellationToken);
+            LogToolResult("web_fetch", fetchResult);
+
+            CompletedFetchCount++;
+
+            return new ToolResult(toolCall.Id, fetchResult);
+        }
+        catch (Exception ex)
+        {
+            LogError("web_fetch", ex.Message);
+            return new ToolResult(toolCall.Id, $"Error fetching URL: {ex.Message}", isError: true);
+        }
+    }
+
+    /// <summary>
+    /// Returns the TTS text if this tool call is a tts_summary call, otherwise null.
+    /// </summary>
+    protected static string? ExtractTtsText(ToolCall toolCall)
+    {
+        if (toolCall.Name != "tts_summary")
+            return null;
+        return toolCall.Arguments.TryGetValue("text", out var textObj) ? textObj?.ToString() : null;
+    }
+
+    /// <summary>
+    /// Reads an integer tool argument robustly across boxed numeric types
+    /// (int/long/double/JsonElement).
+    /// </summary>
+    protected static int GetIntArg(Dictionary<string, object?> args, string key, int defaultValue)
+    {
+        if (!args.TryGetValue(key, out var value) || value is null)
+            return defaultValue;
+
+        // JsonValue.TryGetValue boxes JSON numbers as JsonElement
+        if (value is JsonElement { ValueKind: JsonValueKind.Number } element && element.TryGetInt32(out var number))
+            return number;
+
+        try { return Convert.ToInt32(value, CultureInfo.InvariantCulture); }
+        catch { return defaultValue; }
+    }
+
+    // ─── Shared conversion helpers ────────────────────────────────────
+
     /// <summary>
     /// Detects the MIME type of image data based on byte patterns.
     /// </summary>
-    /// <param name="imageData">The image byte data</param>
-    /// <returns>The detected MIME type string</returns>
     protected static string DetectImageMimeType(byte[] imageData)
     {
         if (imageData.Length < 4)
@@ -105,8 +275,6 @@ public abstract class BaseLLMProvider : ILLMProvider
     /// <summary>
     /// Maps role names to OpenAI-compatible format.
     /// </summary>
-    /// <param name="role">The role to map</param>
-    /// <returns>The OpenAI-compatible role name</returns>
     protected static string MapRoleToOpenAI(ChatRole role)
     {
         return role switch
@@ -119,8 +287,6 @@ public abstract class BaseLLMProvider : ILLMProvider
     /// <summary>
     /// Deserializes JSON arguments string to a dictionary.
     /// </summary>
-    /// <param name="argsJson">JSON string containing arguments</param>
-    /// <returns>Dictionary of argument names to values</returns>
     protected static Dictionary<string, object?> DeserializeArguments(string argsJson)
     {
         try
@@ -147,8 +313,6 @@ public abstract class BaseLLMProvider : ILLMProvider
     /// <summary>
     /// Converts a JsonNode to the appropriate C# type.
     /// </summary>
-    /// <param name="node">The JSON node to convert</param>
-    /// <returns>The converted object</returns>
     protected static object ConvertJsonNodeToObject(JsonNode? node)
     {
         return node switch
@@ -164,8 +328,6 @@ public abstract class BaseLLMProvider : ILLMProvider
     /// Formats a list of tool definitions into the OpenAI-compatible structure
     /// required by OpenAI-style API endpoints.
     /// </summary>
-    /// <param name="tools">The tool definitions to format</param>
-    /// <returns>List of formatted tool objects</returns>
     protected static List<object> FormatToolDefinitions(List<ToolDefinition> tools)
     {
         return tools.Select(t => (object)new
@@ -184,7 +346,8 @@ public abstract class BaseLLMProvider : ILLMProvider
     {
         if (_isDisposed) return;
         _isDisposed = true;
-        _httpClient.Dispose();
+        if (_ownsHttpClient)
+            _httpClient.Dispose();
     }
 
     protected void ThrowIfDisposed()
@@ -212,7 +375,7 @@ public abstract class BaseLLMProvider : ILLMProvider
         _logger.Log($"[{Name}] Retry: attempt {attempt}/{maxAttempts}, waiting {delayMs}ms");
     }
 
-    protected static bool ShouldRetry(Exception ex, int attempt, int maxRetries = 3)
+    protected static bool ShouldRetry(Exception ex, int attempt, int maxRetries = MaxRetries)
     {
         if (attempt >= maxRetries) return false;
         return ex switch

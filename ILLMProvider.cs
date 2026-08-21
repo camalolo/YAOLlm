@@ -22,8 +22,8 @@ public interface ILLMProvider : IDisposable
     string Model { get; }
 
     /// <summary>
-    /// Whether this provider supports custom web search tool
-    /// (Some providers like Gemini have built-in grounding and don't need our tool)
+    /// Whether this provider supports web search / fetch tool calling.
+    /// When false, tool definitions are omitted from requests (e.g. Ollama).
     /// </summary>
     bool SupportsWebSearch { get; }
 
@@ -42,9 +42,9 @@ public interface ILLMProvider : IDisposable
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Called when the provider status changes (e.g., "searching", "processing")
+    /// Called when the provider status changes (e.g. searching, fetching, tts)
     /// </summary>
-    event Action<string?>? OnStatusChange;
+    event Action<ProviderStatus>? OnStatusChange;
 
     string? CompletedSearchSummaries { get; }
     int CompletedSearchCount { get; }

@@ -2,7 +2,6 @@ using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Drawing.Imaging;
 using System.Text;
-using Markdig;
 using Microsoft.Web.WebView2.WinForms;
 using Microsoft.Web.WebView2.Core;
 
@@ -18,7 +17,7 @@ public partial class MainForm : Form
     private readonly WebView2 _webView;
     private WebViewBridge? _bridge;
     private ILLMProvider _currentProvider;
-    private Action<string?>? _providerStatusHandler;
+    private Action<ProviderStatus>? _providerStatusHandler;
     private Action? _onSearchComplete;
     private string? _preToolResponse;
     private string? _lastTtsText;
@@ -28,8 +27,6 @@ public partial class MainForm : Form
     private readonly SemaphoreSlim _sendLock = new(1, 1);
     private CancellationTokenSource? _cancellationTokenSource;
     private readonly TtsService _ttsService;
-
-    private static readonly MarkdownPipeline MdPipeline = new MarkdownPipelineBuilder().UseAdvancedExtensions().Build();
 
     private const int WM_HOTKEY = 0x0312;
     private const int HOTKEY_ID = 1;
@@ -72,7 +69,6 @@ public partial class MainForm : Form
         this.Controls.Add(_webView);
 
         _trayIconManager = new TrayIconManager(ToggleVisibility);
-        RegisterGlobalHotkey();
 
         var ttsVoice = Environment.GetEnvironmentVariable("TTS_VOICE");
         _ttsService = new TtsService(ttsVoice, _logger);
@@ -87,26 +83,6 @@ public partial class MainForm : Form
             var env = await CoreWebView2Environment.CreateAsync(null, userDataFolder);
             await _webView.EnsureCoreWebView2Async(env);
             _webView.DefaultBackgroundColor = Color.FromArgb(0, 0, 0, 0);
-
-            // Log JS console messages for debugging
-            _webView.CoreWebView2.WebMessageReceived += (s, e) =>
-            {
-                try
-                {
-                    var json = e.TryGetWebMessageAsString();
-                    if (json.Contains("\"_console\""))
-                    {
-                        var element = System.Text.Json.JsonSerializer.Deserialize<System.Text.Json.JsonElement>(json);
-                        var level = element.GetProperty("level").GetString() ?? "log";
-                        var message = element.GetProperty("message").GetString() ?? "";
-                        _logger.Log($"[JS:{level}] {message}");
-                    }
-                }
-                catch (Exception ex)
-                {
-                    _logger.Log($"[JS:bridge] Failed to parse web message: {ex.Message}");
-                }
-            };
 
             // Inject console log forwarder
             await _webView.CoreWebView2.AddScriptToExecuteOnDocumentCreatedAsync(@"
@@ -178,6 +154,9 @@ public partial class MainForm : Form
 
             _webView.CoreWebView2.Navigate(htmlPath);
 
+            // Register hotkey after the bridge exists so a failure warning reaches the UI
+            RegisterGlobalHotkey();
+
             _statusManager.StatusChanged += status =>
             {
                 _logger.Log($"StatusChanged event fired: {status}");
@@ -212,44 +191,34 @@ public partial class MainForm : Form
     {
         _providerStatusHandler = status =>
         {
-            if (status != null && status.StartsWith(StatusManager.TtsStatus + ":"))
+            switch (status.Kind)
             {
-                var ttsText = status[(StatusManager.TtsStatus.Length + 1)..];
-                if (!string.IsNullOrEmpty(ttsText))
-                {
-                    _lastTtsText = ttsText;
-                    _ = _ttsService.SpeakAsync(ttsText, CancellationToken.None);
-                }
-            }
-            else if (status != null && status.StartsWith(StatusManager.SearchingStatus + ":"))
-            {
-                var payload = status[(StatusManager.SearchingStatus.Length + 1)..];
-                var colonIdx = payload.IndexOf(':');
-                var searchName = colonIdx > 0 ? payload[..colonIdx] : null;
-                var query = colonIdx > 0 ? payload[(colonIdx + 1)..] : payload;
-                _statusManager.SetStatus(Status.Searching);
-                _onSearchComplete?.Invoke();
-                var label = searchName != null ? $"🔍 Searching {searchName} for: {query}" : $"🔍 Searching for: {query}";
-                _bridge?.ChatMessage("system", $"<em>{label}</em>");
-            }
-            else if (status != null && status.StartsWith(StatusManager.FetchingStatus + ":"))
-            {
-                var url = status[(StatusManager.FetchingStatus.Length + 1)..];
-                _statusManager.SetStatus(Status.Fetching);
-                _onSearchComplete?.Invoke();
-                _bridge?.ChatMessage("system", $"<em>📥 Fetching: {url}</em>");
-            }
-            else if (status == StatusManager.SearchingStatus)
-            {
-                _statusManager.SetStatus(Status.Searching);
-            }
-            else if (status == StatusManager.FetchingStatus)
-            {
-                _statusManager.SetStatus(Status.Fetching);
-            }
-            else if (status == null)
-            {
-                _statusManager.SetStatus(Status.Sending);
+                case ProviderStatusKind.Tts:
+                    if (!string.IsNullOrEmpty(status.Detail))
+                    {
+                        _lastTtsText = status.Detail;
+                        _ = _ttsService.SpeakAsync(status.Detail, CancellationToken.None);
+                    }
+                    break;
+
+                case ProviderStatusKind.Searching:
+                    _statusManager.SetStatus(Status.Searching);
+                    _onSearchComplete?.Invoke();
+                    var searchLabel = status.ServiceName != null
+                        ? $"🔍 Searching {status.ServiceName} for: {status.Detail}"
+                        : $"🔍 Searching for: {status.Detail}";
+                    _bridge?.ChatMessage("system", $"<em>{searchLabel}</em>");
+                    break;
+
+                case ProviderStatusKind.Fetching:
+                    _statusManager.SetStatus(Status.Fetching);
+                    _onSearchComplete?.Invoke();
+                    _bridge?.ChatMessage("system", $"<em>📥 Fetching: {status.Detail}</em>");
+                    break;
+
+                case ProviderStatusKind.Sending:
+                    _statusManager.SetStatus(Status.Sending);
+                    break;
             }
         };
         _currentProvider.OnStatusChange += _providerStatusHandler;
@@ -328,7 +297,14 @@ public partial class MainForm : Form
     {
         _logger.Log("Stop requested by user");
         _ttsService.Stop();
-        _cancellationTokenSource?.Cancel();
+        try
+        {
+            _cancellationTokenSource?.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+            // Request already finished and disposed between our read and cancel — nothing to stop.
+        }
     }
 
     private void SendMessage(string? message = null, string? imageBase64 = null, string? title = null, bool alreadyShown = false)
@@ -338,7 +314,10 @@ public partial class MainForm : Form
 
         if (!_sendLock.Wait(0))
         {
-            _bridge?.ChatQueued(Markdig.Markdown.ToHtml(message, MdPipeline));
+            // Only show the queued bubble the first time; re-queued messages
+            // (e.g. lost a race re-acquiring the lock) are already displayed.
+            if (!alreadyShown)
+                _bridge?.ChatQueued(MarkdownHelper.ToHtml(message));
             _messageQueue.Enqueue((message, imageBase64, title));
             return;
         }
@@ -427,7 +406,6 @@ public partial class MainForm : Form
             _preToolResponse = null;
             _lastTtsText = null;
             var lastStreamUpdate = DateTime.MinValue;
-            var streamThrottleMs = 50;
             _onSearchComplete = () =>
             {
                 var preToolText = fullResponse.ToString();
@@ -452,10 +430,15 @@ public partial class MainForm : Form
                         _statusManager.SetStatus(Status.Receiving);
                     }
 
+                    // Back off the re-render cadence as the accumulated response grows,
+                    // so we don't re-render the whole transcript through Markdig every 50ms.
+                    var streamThrottleMs = fullResponse.Length > 20_000 ? 250
+                        : fullResponse.Length > 5_000 ? 100
+                        : 50;
                     var now = DateTime.UtcNow;
                     if ((now - lastStreamUpdate).TotalMilliseconds >= streamThrottleMs)
                     {
-                        _bridge?.ChatStream(Markdig.Markdown.ToHtml(fullResponse.ToString(), MdPipeline));
+                        _bridge?.ChatStream(MarkdownHelper.ToHtml(fullResponse.ToString()));
                         lastStreamUpdate = now;
                     }
                 }
@@ -485,8 +468,7 @@ public partial class MainForm : Form
             else
             {
                 _bridge?.Warning("The model returned no response.");
-                _conversationManager.AddExchange(userMessage, "");
-                UpdateHistoryCounter();
+                // Empty exchanges are not persisted — keeps history clean for a retry.
             }
         }
         catch (OperationCanceledException)
@@ -531,49 +513,58 @@ public partial class MainForm : Form
         {
             _logger.Log($"LLM Error: {ex.Message} (StatusCode={ex.StatusCode}, Details={ex.Details})");
             _bridge?.Error($"{ex.UserMessage}");
-            SaveOnError(userMessage, fullResponse, ex.UserMessage);
+            // Failed exchanges are not persisted — keeps history clean for a retry.
         }
         catch (Exception ex)
         {
             _logger.Log($"Error in ProcessLLMRequestAsync: {ex.Message}");
             _bridge?.Error($"{ex.Message}");
-            SaveOnError(userMessage, fullResponse, ex.Message);
         }
         finally
         {
             _onSearchComplete = null;
             _preToolResponse = null;
-            _cancellationTokenSource?.Dispose();
+            var cts = _cancellationTokenSource;
             _cancellationTokenSource = null;
+            cts?.Dispose();
             _statusManager.SetStatus(Status.Idle);
         }
     }
 
-    private void SaveOnError(ChatMessage userMessage, StringBuilder fullResponse, string errorMessage)
-    {
-        if (string.IsNullOrEmpty(userMessage.Content))
-            return;
-
-        var response = fullResponse.Length > 0
-            ? fullResponse.ToString()
-            : $"[Error: {errorMessage}]";
-        _conversationManager.AddExchange(userMessage, response);
-        UpdateHistoryCounter();
-    }
-
-    private void CaptureAndSend(string text)
+    private async void CaptureAndSend(string text)
     {
         if (!_presetManager.HasProvider)
         {
             _bridge?.Warning("No provider configured. Add presets to ~/.yaollm.conf");
             return;
         }
+
         string message = string.IsNullOrEmpty(text.Trim()) ? "[Screenshot Taken]" : text.Trim();
-        var (imageBase64, title) = ImageService.CaptureScreen(_logger, this);
-        if (!string.IsNullOrEmpty(imageBase64))
-            SendMessage(message, imageBase64, title);
-        else
-            _bridge?.Error("Error: Screen capture failed.");
+
+        // Hide the overlay, wait for it to disappear from screen, then capture
+        // on a background thread so encoding/resizing doesn't freeze the UI.
+        bool wasVisible = this.Visible;
+        this.Visible = false;
+        try
+        {
+            await Task.Delay(100);
+            string title = ImageService.GetActiveWindowTitle();
+            string imageBase64 = await Task.Run(() => ImageService.CapturePrimaryScreen(_logger));
+
+            if (!string.IsNullOrEmpty(imageBase64))
+                SendMessage(message, imageBase64, title);
+            else
+                _bridge?.Error("Error: Screen capture failed.");
+        }
+        finally
+        {
+            this.Visible = wasVisible;
+            if (wasVisible)
+            {
+                this.Activate();
+                _bridge?.FocusInput();
+            }
+        }
     }
 
     private void ClearChat()
@@ -653,7 +644,27 @@ public partial class MainForm : Form
         using var stream = assembly.GetManifestResourceStream(resourceName);
         if (stream == null)
             throw new InvalidOperationException($"Embedded resource '{resourceName}' not found.");
+        using var ms = new MemoryStream();
+        stream.CopyTo(ms);
+        var bytes = ms.ToArray();
+
+        // Skip the write when the file on disk is already identical — avoids
+        // pointless disk churn (and WebView2 cache invalidation) on every start.
+        try
+        {
+            if (File.Exists(outputPath))
+            {
+                var existing = File.ReadAllBytes(outputPath);
+                if (existing.Length == bytes.Length && existing.AsSpan().SequenceEqual(bytes))
+                    return;
+            }
+        }
+        catch
+        {
+            // Fall through and rewrite
+        }
+
         using var fileStream = new FileStream(outputPath, FileMode.Create, FileAccess.Write);
-        stream.CopyTo(fileStream);
+        fileStream.Write(bytes, 0, bytes.Length);
     }
 }

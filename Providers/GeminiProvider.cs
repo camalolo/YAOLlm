@@ -1,19 +1,17 @@
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using System.Net.Http;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Threading;
-using System.Threading.Tasks;
 
 namespace YAOLlm.Providers;
 
 public class GeminiProvider : BaseLLMProvider
 {
     private const string ApiBaseUrl = "https://generativelanguage.googleapis.com/v1beta/models/";
-    private const int MaxRetries = 3;
 
     private readonly string _apiKey;
 
@@ -21,12 +19,17 @@ public class GeminiProvider : BaseLLMProvider
     public override string Model { get; protected set; }
     public override bool SupportsWebSearch => true;
 
+    private string StreamUrl => $"{ApiBaseUrl}{Model}:streamGenerateContent?alt=sse";
+
     public GeminiProvider(string model, string apiKey, HttpClient? httpClient = null, ISearchService? searchService = null, IWebFetchService? webFetchService = null, Logger? logger = null)
-        : base(httpClient ?? new HttpClient(), searchService, webFetchService, logger)
+        : base(httpClient, searchService, webFetchService, logger)
     {
         Model = model ?? throw new ArgumentNullException(nameof(model));
         _apiKey = apiKey ?? throw new ArgumentNullException(nameof(apiKey));
     }
+
+    protected override void CustomizeRequest(HttpRequestMessage request)
+        => request.Headers.Add("x-goog-api-key", _apiKey);
 
     public override async IAsyncEnumerable<string> StreamAsync(
         List<ChatMessage> history,
@@ -37,167 +40,135 @@ public class GeminiProvider : BaseLLMProvider
         if (history == null || history.Count == 0)
             throw new ArgumentException("History cannot be null or empty", nameof(history));
 
-        var contents = BuildContents(history, image);
+        var contentsArr = BuildContentsArray(history, image);
         var toolsPayload = BuildToolsPayload(tools);
-        var payload = new Dictionary<string, object>
-        {
-            ["contents"] = contents,
-            ["generationConfig"] = new { }
-        };
-        if (toolsPayload != null)
-            payload["tools"] = toolsPayload;
 
         LogRequest(history.Count, tools != null && tools.Count > 0);
         CompletedSearchCount = 0;
         CompletedFetchCount = 0;
         CompletedSearchSummaries = null;
 
-        var url = $"{ApiBaseUrl}{Model}:streamGenerateContent?alt=sse&key={_apiKey}";
-
         ThrowIfDisposed();
 
-        HttpResponseMessage response = null!;
-        for (int attempt = 0; attempt <= MaxRetries; attempt++)
+        int totalChunks = 0;
+
+        while (true)
         {
-            HttpResponseMessage? attemptResponse = null;
-            try
+            var payload = new Dictionary<string, object> { ["contents"] = contentsArr };
+            if (toolsPayload != null)
+                payload["tools"] = toolsPayload;
+
+            var jsonPayload = JsonSerializer.Serialize(payload);
+            using var response = await PostWithRetryAsync(StreamUrl, jsonPayload, cancellationToken);
+
+            var roundContent = new StringBuilder();
+            var roundToolCalls = new List<ToolCall>();
+            int roundChunks = 0;
+            string? lastFinishReason = null;
+
+            await foreach (var jsonPart in ReadSseDataLinesAsync(response, cancellationToken))
             {
-                var jsonPayload = JsonSerializer.Serialize(payload);
-                using (var request = new HttpRequestMessage(HttpMethod.Post, url))
+                var (textChunks, toolCalls, finishReason) = ParseStreamChunk(jsonPart);
+                if (finishReason != null)
+                    lastFinishReason = finishReason;
+                foreach (var chunk in textChunks)
                 {
-                    request.Content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
-                    attemptResponse = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+                    totalChunks++;
+                    roundChunks++;
+                    LogStreamChunk(totalChunks);
+                    roundContent.Append(chunk);
+                    yield return chunk;
                 }
-                if (!attemptResponse.IsSuccessStatusCode)
-                {
-                    var statusCode = (int)attemptResponse.StatusCode;
-                    var errorBody = await attemptResponse.Content.ReadAsStringAsync(cancellationToken);
-                    attemptResponse.Dispose();
-                    throw LLMException.CreateWithStatusCode(statusCode, errorBody, Name);
-                }
-                response = attemptResponse;
-                break;
+                roundToolCalls.AddRange(toolCalls);
             }
-            catch (Exception ex)
+
+            LogStreamComplete(roundChunks, roundToolCalls.Count);
+
+            if (roundToolCalls.Count == 0)
             {
-                attemptResponse?.Dispose();
-                if (ShouldRetry(ex, attempt, MaxRetries))
-                {
-                    var delay = GetRetryDelay(attempt);
-                    LogRetry(attempt + 1, MaxRetries, (int)delay.TotalMilliseconds);
-                    await Task.Delay(delay, cancellationToken);
-                }
-                else
-                {
-                    throw;
-                }
+                if (roundChunks == 0 && totalChunks == 0 && lastFinishReason != null && lastFinishReason != "STOP")
+                    throw LLMException.CreateWithMessage($"Model returned no response (finish reason: {lastFinishReason})", Name);
+                yield break;
             }
-        }
 
-        using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
-        using var reader = new StreamReader(stream);
-
-        var fullContent = new StringBuilder();
-        string? line;
-        var pendingToolCalls = new List<ToolCall>();
-        int chunkIndex = 0;
-        string? lastFinishReason = null;
-
-        while ((line = await reader.ReadLineAsync(cancellationToken)) != null)
-        {
-            if (string.IsNullOrWhiteSpace(line))
-                continue;
-            if (!line.StartsWith("data: "))
-                continue;
-
-            var jsonPart = line.Substring(6);
-            
-            if (jsonPart == "[DONE]")
-                break;
-
-            var (textChunks, toolCalls, finishReason) = ParseStreamChunk(jsonPart);
-            if (finishReason != null)
-                lastFinishReason = finishReason;
-            foreach (var chunk in textChunks)
-            {
-                chunkIndex++;
-                LogStreamChunk(chunkIndex);
-                fullContent.Append(chunk);
-                yield return chunk;
-            }
-            pendingToolCalls.AddRange(toolCalls);
-        }
-        
-        LogStreamComplete(chunkIndex, pendingToolCalls.Count);
-
-        if (pendingToolCalls.Count > 0)
-        {
-            // Extract TTS summary first
+            // Separate tts_summary from other tool calls
             string? ttsText = null;
             var otherToolCalls = new List<ToolCall>();
-            foreach (var toolCall in pendingToolCalls)
+            foreach (var toolCall in roundToolCalls)
             {
-                if (toolCall.Name == "tts_summary")
-                {
-                    var args = toolCall.Arguments ?? new Dictionary<string, object?>();
-                    ttsText = args.TryGetValue("text", out var textObj) ? textObj?.ToString() : null;
-                }
+                var tts = ExtractTtsText(toolCall);
+                if (tts != null)
+                    ttsText = tts;
                 else
-                {
                     otherToolCalls.Add(toolCall);
-                }
             }
 
             // Only raise TTS if tts_summary is the sole tool call (final response)
             // Skip TTS if it came alongside search/fetch to avoid premature playback
             if (!string.IsNullOrEmpty(ttsText) && otherToolCalls.Count == 0)
-                RaiseOnStatusChange($"{StatusManager.TtsStatus}:{ttsText}");
+                RaiseOnStatusChange(new ProviderStatus(ProviderStatusKind.Tts, ttsText));
 
-            // Process remaining (non-TTS) tool calls
+            if (otherToolCalls.Count == 0)
+                yield break;
+
+            // Append the model turn: optional pre-tool text + function calls
+            var modelParts = new JsonArray();
+            if (roundContent.Length > 0)
+                modelParts.Add(new JsonObject { ["text"] = roundContent.ToString() });
             foreach (var toolCall in otherToolCalls)
             {
-                ToolResult? result = null;
+                modelParts.Add(new JsonObject
+                {
+                    ["functionCall"] = new JsonObject
+                    {
+                        ["name"] = toolCall.Name,
+                        ["args"] = JsonSerializer.SerializeToNode(toolCall.Arguments)
+                    }
+                });
+            }
+            contentsArr.Add(new JsonObject { ["role"] = "model", ["parts"] = modelParts });
+
+            // Execute each tool call and append its function response
+            foreach (var toolCall in otherToolCalls)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                ThrowIfDisposed();
+
+                ToolResult result;
                 if (toolCall.Name == "web_search" && _searchService != null)
                 {
-                    var args = toolCall.Arguments ?? new Dictionary<string, object?>();
-                    var query = args.TryGetValue("query", out var q) ? q?.ToString() : null;
+                    var query = toolCall.Arguments.TryGetValue("query", out var q) ? q?.ToString() : null;
                     if (!string.IsNullOrEmpty(query))
-                        RaiseOnStatusChange($"{StatusManager.SearchingStatus}:{_searchService.Name}:{query}");
-                    result = new ToolResult(toolCall.Id, await ExecuteWebSearchAsync(args));
-                    CompletedSearchCount++;
+                        RaiseOnStatusChange(new ProviderStatus(ProviderStatusKind.Searching, query, _searchService.Name));
+                    result = await ExecuteWebSearchToolAsync(toolCall, cancellationToken);
                 }
                 else if (toolCall.Name == "web_fetch" && _webFetchService != null)
                 {
-                    var args = toolCall.Arguments ?? new Dictionary<string, object?>();
-                    var fetchUrl = args.TryGetValue("url", out var u) ? u?.ToString() : null;
+                    var fetchUrl = toolCall.Arguments.TryGetValue("url", out var u) ? u?.ToString() : null;
                     if (!string.IsNullOrEmpty(fetchUrl))
-                        RaiseOnStatusChange($"{StatusManager.FetchingStatus}:{fetchUrl}");
-                    result = new ToolResult(toolCall.Id, await ExecuteWebFetchAsync(args, cancellationToken));
-                    CompletedFetchCount++;
+                        RaiseOnStatusChange(new ProviderStatus(ProviderStatusKind.Fetching, fetchUrl));
+                    result = await ExecuteWebFetchToolAsync(toolCall, cancellationToken);
                 }
-
-                RaiseOnStatusChange(null);
-
-                if (result != null)
+                else
                 {
-                    ThrowIfDisposed();
-                    var toolHistory = new List<ChatMessage>(history)
-                    {
-                        new ChatMessage(ChatRole.User, fullContent.ToString())
-                    };
-
-                    await foreach (var chunk in StreamWithToolResultAsync(toolHistory, toolCall, result, null, cancellationToken))
-                    {
-                        yield return chunk;
-                    }
-                    yield break;
+                    result = new ToolResult(toolCall.Id, $"Unknown tool: {toolCall.Name}", isError: true);
                 }
-            }
-        }
 
-        if (chunkIndex == 0 && pendingToolCalls.Count == 0 && lastFinishReason != null && lastFinishReason != "STOP")
-        {
-            throw LLMException.CreateWithMessage($"Model returned no response (finish reason: {lastFinishReason})", Name);
+                contentsArr.Add(new JsonObject
+                {
+                    ["role"] = "function",
+                    ["parts"] = new JsonArray(new JsonObject
+                    {
+                        ["functionResponse"] = new JsonObject
+                        {
+                            ["name"] = toolCall.Name,
+                            ["response"] = new JsonObject { ["result"] = result.Content }
+                        }
+                    })
+                });
+            }
+
+            RaiseOnStatusChange(ProviderStatus.Sending);
         }
     }
 
@@ -268,177 +239,46 @@ public class GeminiProvider : BaseLLMProvider
         return (textChunks, toolCalls, finishReason);
     }
 
-    private async IAsyncEnumerable<string> StreamWithToolResultAsync(
-        List<ChatMessage> history,
-        ToolCall toolCall,
-        ToolResult toolResult,
-        List<ToolDefinition>? tools,
-        [EnumeratorCancellation] CancellationToken cancellationToken)
+    // ─── Contents building (no reflection) ────────────────────────────
+
+    private static JsonArray BuildContentsArray(List<ChatMessage> history, byte[]? image)
     {
-        var toolContents = BuildContents(history, null);
-        var toolContentsList = toolContents.ToList();
-
-        toolContentsList.Add(new
-        {
-            role = "model",
-            parts = new object[]
-            {
-                new
-                {
-                    functionCall = new
-                    {
-                        name = toolCall.Name,
-                        args = toolCall.Arguments ?? new Dictionary<string, object?>()
-                    }
-                }
-            }
-        });
-
-        toolContentsList.Add(new
-        {
-            role = "function",
-            parts = new object[]
-            {
-                new
-                {
-                    functionResponse = new
-                    {
-                        name = toolCall.Name,
-                        response = new { result = toolResult.Content }
-                    }
-                }
-            }
-        });
-
-        var payload = new Dictionary<string, object>
-        {
-            ["contents"] = toolContentsList.ToArray()
-        };
-
-        var toolsPayload = BuildToolsPayload(tools);
-        if (toolsPayload != null)
-            payload["tools"] = toolsPayload;
-
-        var url = $"{ApiBaseUrl}{Model}:streamGenerateContent?alt=sse&key={_apiKey}";
-
-        ThrowIfDisposed();
-
-        HttpResponseMessage response = null!;
-        for (int attempt = 0; attempt <= MaxRetries; attempt++)
-        {
-            HttpResponseMessage? attemptResponse = null;
-            try
-            {
-                var jsonPayload = JsonSerializer.Serialize(payload);
-                using (var request = new HttpRequestMessage(HttpMethod.Post, url))
-                {
-                    request.Content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
-                    attemptResponse = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-                }
-                if (!attemptResponse.IsSuccessStatusCode)
-                {
-                    var statusCode = (int)attemptResponse.StatusCode;
-                    var errorBody = await attemptResponse.Content.ReadAsStringAsync(cancellationToken);
-                    attemptResponse.Dispose();
-                    throw LLMException.CreateWithStatusCode(statusCode, errorBody, Name);
-                }
-                response = attemptResponse;
-                break;
-            }
-            catch (Exception ex)
-            {
-                attemptResponse?.Dispose();
-                if (ShouldRetry(ex, attempt, MaxRetries))
-                {
-                    var delay = GetRetryDelay(attempt);
-                    LogRetry(attempt + 1, MaxRetries, (int)delay.TotalMilliseconds);
-                    await Task.Delay(delay, cancellationToken);
-                }
-                else
-                {
-                    throw;
-                }
-            }
-        }
-
-        using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
-        using var reader = new StreamReader(stream);
-
-        string? line;
-        string? lastFinishReason = null;
-        bool hasContent = false;
-        while ((line = await reader.ReadLineAsync(cancellationToken)) != null)
-        {
-            if (string.IsNullOrWhiteSpace(line) || !line.StartsWith("data: "))
-                continue;
-
-            var jsonPart = line.Substring(6);
-            if (jsonPart == "[DONE]")
-                break;
-
-            var (textChunks, _, finishReason) = ParseStreamChunk(jsonPart);
-            if (finishReason != null)
-                lastFinishReason = finishReason;
-            foreach (var chunk in textChunks)
-            {
-                hasContent = true;
-                yield return chunk;
-            }
-        }
-
-        if (!hasContent && lastFinishReason != null && lastFinishReason != "STOP")
-        {
-            throw LLMException.CreateWithMessage($"Model returned no response (finish reason: {lastFinishReason})", Name);
-        }
-    }
-
-    private object[] BuildContents(List<ChatMessage> history, byte[]? image)
-    {
-        var contents = new List<object>();
+        var contents = new JsonArray();
 
         foreach (var message in history)
         {
-            var role = message.Role;
-
-            var parts = new List<object>();
+            var parts = new JsonArray();
 
             if (!string.IsNullOrEmpty(message.Content))
-            {
-                parts.Add(new { text = message.Content });
-            }
+                parts.Add(new JsonObject { ["text"] = message.Content });
 
             if (message.Image != null)
             {
-                (string? mimeType, string? base64Data) = GetImageInfo(message.Image);
-
+                var (mimeType, base64Data) = GetImageInfo(message.Image);
                 if (mimeType != null && base64Data != null)
-                {
-                    parts.Add(new { inlineData = new { mimeType, data = base64Data } });
-                }
+                    parts.Add(BuildInlineDataPart(mimeType, base64Data));
             }
 
             if (parts.Count > 0)
-                contents.Add(new { role = MapRoleToGemini(role), parts = parts.ToArray() });
+                contents.Add(new JsonObject { ["role"] = MapRoleToGemini(message.Role), ["parts"] = parts });
         }
 
+        // Attach the new image to the last (user) message
         if (image != null && contents.Count > 0)
         {
-            (string? mimeType, string? base64Data) = GetImageInfo(image);
+            var (mimeType, base64Data) = GetImageInfo(image);
             if (mimeType != null && base64Data != null)
             {
-                var lastContent = contents[^1];
-                if (lastContent is { } obj)
-                {
-                    var existingParts = GetPartsFromContent(obj);
-                    var newParts = existingParts.ToList();
-                    newParts.Add(new { inlineData = new { mimeType, data = base64Data } });
-                    contents[^1] = new { role = GetRoleFromContent(obj), parts = newParts.ToArray() };
-                }
+                var lastParts = (JsonArray)contents[^1]!["parts"]!;
+                lastParts.Add(BuildInlineDataPart(mimeType, base64Data));
             }
         }
 
-        return contents.ToArray();
+        return contents;
     }
+
+    private static JsonObject BuildInlineDataPart(string mimeType, string base64Data)
+        => new() { ["inlineData"] = new JsonObject { ["mimeType"] = mimeType, ["data"] = base64Data } };
 
     private static (string? mimeType, string? base64Data) GetImageInfo(byte[] imageBytes)
     {
@@ -450,94 +290,23 @@ public class GeminiProvider : BaseLLMProvider
         return (mimeType, base64);
     }
 
-    private static IEnumerable<object> GetPartsFromContent(object content)
-    {
-        var contentDict = content.GetType().GetProperties()
-            .ToDictionary(p => p.Name, p => p.GetValue(content));
-
-        if (contentDict.TryGetValue("parts", out var parts) && parts is object[] partsArray)
-            return partsArray;
-
-        return Array.Empty<object>();
-    }
-
-    private static string GetRoleFromContent(object content)
-    {
-        var contentDict = content.GetType().GetProperties()
-            .ToDictionary(p => p.Name, p => p.GetValue(content));
-
-        if (contentDict.TryGetValue("role", out var role) && role is string roleStr)
-            return roleStr;
-
-        return "user";
-    }
-
-    private object[]? BuildToolsPayload(List<ToolDefinition>? tools)
+    private static JsonNode? BuildToolsPayload(List<ToolDefinition>? tools)
     {
         if (tools == null || tools.Count == 0)
             return null;
 
-        var functionDeclarations = tools.Select(t => new
+        var functionDeclarations = new JsonArray();
+        foreach (var t in tools)
         {
-            name = t.Name,
-            description = t.Description,
-            parameters = t.Parameters
-        }).ToArray();
-
-        return new[] { new { functionDeclarations } };
-    }
-
-    private async Task<string> ExecuteWebSearchAsync(Dictionary<string, object?> args)
-    {
-        try
-        {
-            var query = args.TryGetValue("query", out var queryObj) ? queryObj?.ToString() : null;
-            int maxResults;
-            if (args.TryGetValue("max_results", out var maxResultsObj) && maxResultsObj is long l && l >= 0)
-                maxResults = (int)l;
-            else
-                maxResults = 5;
-
-            if (string.IsNullOrEmpty(query))
+            functionDeclarations.Add(new JsonObject
             {
-                LogError("web_search", "Missing query parameter");
-                return "Error: Missing query parameter";
-            }
-
-            LogToolExecution("web_search");
-            var result = await _searchService!.SearchAsync(query, maxResults);
-            LogToolResult("web_search", result);
-            return result;
+                ["name"] = t.Name,
+                ["description"] = t.Description,
+                ["parameters"] = JsonSerializer.SerializeToNode(t.Parameters)
+            });
         }
-        catch (Exception ex)
-        {
-            LogError("web_search", ex.Message);
-            return $"Error executing web search: {ex.Message}";
-        }
-    }
 
-    private async Task<string> ExecuteWebFetchAsync(Dictionary<string, object?> args, CancellationToken cancellationToken)
-    {
-        try
-        {
-            var url = args.TryGetValue("url", out var urlObj) ? urlObj?.ToString() : null;
-
-            if (string.IsNullOrEmpty(url))
-            {
-                LogError("web_fetch", "Missing url parameter");
-                return "Error: Missing url parameter";
-            }
-
-            LogToolExecution("web_fetch");
-            var result = await _webFetchService!.FetchAsync(url, cancellationToken: cancellationToken);
-            LogToolResult("web_fetch", result);
-            return result;
-        }
-        catch (Exception ex)
-        {
-            LogError("web_fetch", ex.Message);
-            return $"Error fetching URL: {ex.Message}";
-        }
+        return new JsonObject { ["functionDeclarations"] = functionDeclarations };
     }
 
     private static string MapRoleToGemini(ChatRole role)
@@ -548,5 +317,4 @@ public class GeminiProvider : BaseLLMProvider
             _ => role.ToApiString()
         };
     }
-
 }

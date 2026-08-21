@@ -1,9 +1,7 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
-using System.IO;
 using System.Linq;
-using dotenv.net;
-using dotenv.net.Utilities;
 using YAOLlm.Providers;
 
 namespace YAOLlm;
@@ -14,6 +12,7 @@ public class PresetManager : IDisposable
     private readonly ISearchService _searchService;
     private readonly IWebFetchService _webFetchService;
     private readonly Logger _logger;
+    private readonly HttpClient _httpClient;
     private List<ProviderConfig> _presets;
     private int _activeIndex;
 
@@ -31,37 +30,41 @@ public class PresetManager : IDisposable
         _presets = new List<ProviderConfig>();
         _activeIndex = 0;
 
+        // Shared across all providers (auth is per-request, so it can be reused
+        // safely when switching presets). Long timeout for streaming responses.
+        _httpClient = new HttpClient { Timeout = TimeSpan.FromMinutes(5) };
+
         var homeDir = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         _configPath = Path.Combine(homeDir, ".yaollm.conf");
     }
 
+    /// <summary>
+    /// Loads presets from PRESET_* / ACTIVE_PRESET environment variables.
+    /// Program.cs loads ~/.yaollm.conf into the process environment at startup
+    /// (DotEnv.Load), so the config is parsed exactly once.
+    /// </summary>
     public void LoadConfig()
     {
-        if (!File.Exists(_configPath))
-        {
-            _logger.Log("Config file not found, no presets configured");
-            _presets = new List<ProviderConfig>();
-            _activeIndex = 0;
-            return;
-        }
+        _presets = new List<ProviderConfig>();
+        _activeIndex = 0;
 
         try
         {
-            var envVars = DotEnv.Read(options: new DotEnvOptions(envFilePaths: new[] { _configPath }, probeForEnv: false, probeLevelsToSearch: 0));
-            _presets = new List<ProviderConfig>();
+            var presetEntries = new List<(int order, string value)>();
 
-            var presetEntries = envVars
-                .Where(kv => kv.Key.StartsWith("PRESET_", StringComparison.OrdinalIgnoreCase))
-                .OrderBy(kv =>
-                {
-                    var numPart = kv.Key.Substring(7);
-                    return int.TryParse(numPart, out var num) ? num : int.MaxValue;
-                })
-                .ToList();
-
-            foreach (var entry in presetEntries)
+            foreach (DictionaryEntry entry in Environment.GetEnvironmentVariables())
             {
-                var config = ProviderConfig.Parse(entry.Value);
+                var key = entry.Key?.ToString();
+                if (key == null || !key.StartsWith("PRESET_", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                var numPart = key["PRESET_".Length..];
+                presetEntries.Add((int.TryParse(numPart, out var num) ? num : int.MaxValue, entry.Value?.ToString() ?? ""));
+            }
+
+            foreach (var entry in presetEntries.OrderBy(e => e.order))
+            {
+                var config = ProviderConfig.Parse(entry.value);
                 if (config != null)
                 {
                     _presets.Add(config);
@@ -71,16 +74,12 @@ public class PresetManager : IDisposable
             if (_presets.Count == 0)
             {
                 _logger.Log("No valid presets found, no provider configured");
-                _presets = new List<ProviderConfig>();
             }
 
-            if (envVars.TryGetValue("ACTIVE_PRESET", out var activeStr) && int.TryParse(activeStr, out var activeNum))
+            var activeStr = Environment.GetEnvironmentVariable("ACTIVE_PRESET");
+            if (int.TryParse(activeStr, out var activeNum))
             {
-                _activeIndex = Math.Clamp(activeNum - 1, 0, _presets.Count - 1);
-            }
-            else
-            {
-                _activeIndex = 0;
+                _activeIndex = _presets.Count > 0 ? Math.Clamp(activeNum - 1, 0, _presets.Count - 1) : 0;
             }
 
             _logger.Log($"Loaded {_presets.Count} presets, active: {_activeIndex + 1}");
@@ -98,7 +97,6 @@ public class PresetManager : IDisposable
         try
         {
             var lines = new List<string>();
-            var existingKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
             if (File.Exists(_configPath))
             {
@@ -116,7 +114,6 @@ public class PresetManager : IDisposable
                     if (eqIndex > 0)
                     {
                         var key = trimmed.Substring(0, eqIndex).Trim();
-                        existingKeys.Add(key);
 
                         if (key.StartsWith("PRESET_", StringComparison.OrdinalIgnoreCase) ||
                             key.Equals("ACTIVE_PRESET", StringComparison.OrdinalIgnoreCase))
@@ -188,7 +185,7 @@ public class PresetManager : IDisposable
         {
             throw new InvalidOperationException("GEMINI_API_KEY not set");
         }
-        return new GeminiProvider(model, apiKey, httpClient: null, _searchService, _webFetchService, _logger);
+        return new GeminiProvider(model, apiKey, _httpClient, _searchService, _webFetchService, _logger);
     }
 
     private ILLMProvider CreateOpenRouterProvider(string model)
@@ -198,19 +195,19 @@ public class PresetManager : IDisposable
         {
             throw new InvalidOperationException("OPENROUTER_API_KEY not set");
         }
-        return new OpenRouterProvider(model, apiKey, _searchService, _webFetchService, _logger);
+        return new OpenRouterProvider(model, apiKey, _httpClient, _searchService, _webFetchService, _logger);
     }
 
     private ILLMProvider CreateOllamaProvider(string model)
     {
         var baseUrl = Environment.GetEnvironmentVariable("OLLAMA_BASE_URL") ?? "http://localhost:11434";
-        return new OllamaProvider(model, baseUrl, httpClient: null, _logger);
+        return new OllamaProvider(model, baseUrl, _httpClient, _logger);
     }
 
     private ILLMProvider CreateOpenAICompatibleProvider(string model)
     {
         var baseUrl = Environment.GetEnvironmentVariable("OPENAI_COMPATIBLE_BASE_URL") ?? "http://localhost:11434";
-        return new OpenAICompatibleProvider(model, baseUrl, httpClient: null, _searchService, _webFetchService, _logger);
+        return new OpenAICompatibleProvider(model, baseUrl, _httpClient, _searchService, _webFetchService, _logger);
     }
 
     private ILLMProvider CreateDeepSeekProvider(string model)
@@ -220,7 +217,7 @@ public class PresetManager : IDisposable
         {
             throw new InvalidOperationException("DEEPSEEK_API_KEY not set");
         }
-        return new DeepSeekProvider(model, apiKey, httpClient: null, _searchService, _webFetchService, _logger);
+        return new DeepSeekProvider(model, apiKey, _httpClient, _searchService, _webFetchService, _logger);
     }
 
     private ILLMProvider CreateZaiProvider(string model)
@@ -230,11 +227,12 @@ public class PresetManager : IDisposable
         {
             throw new InvalidOperationException("ZAI_API_KEY not set");
         }
-        return new ZaiProvider(model, apiKey, httpClient: null, _searchService, _webFetchService, _logger);
+        return new ZaiProvider(model, apiKey, _httpClient, _searchService, _webFetchService, _logger);
     }
 
     public void Dispose()
     {
         (_searchService as IDisposable)?.Dispose();
+        _httpClient.Dispose();
     }
 }

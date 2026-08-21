@@ -1,6 +1,5 @@
 using System.Text.Json;
 using System.Text.Encodings.Web;
-using Markdig;
 using Microsoft.Web.WebView2.Core;
 
 namespace YAOLlm;
@@ -183,13 +182,11 @@ public sealed class WebViewBridge
     }
 
     /// <summary>
-    /// Renders Markdown text to HTML using Markdig with advanced extensions.
+    /// Renders Markdown text to HTML using the shared Markdig pipeline.
     /// </summary>
-    private static readonly MarkdownPipeline MdPipeline = new MarkdownPipelineBuilder().UseAdvancedExtensions().Build();
-
     private static string RenderMarkdown(string text)
     {
-        return Markdig.Markdown.ToHtml(text, MdPipeline);
+        return MarkdownHelper.ToHtml(text);
     }
 
     /// <summary>
@@ -259,9 +256,14 @@ public sealed class WebViewBridge
                 case "stop":
                     Stop?.Invoke();
                     break;
+                case "_console":
+                    // JS console forwarder (injected by MainForm) — log and don't dispatch
+                    var level = element.TryGetProperty("level", out var levelProp) ? levelProp.GetString() ?? "log" : "log";
+                    var consoleMessage = element.TryGetProperty("message", out var msgProp) ? msgProp.GetString() ?? "" : "";
+                    _logger.Log($"[JS:{level}] {consoleMessage}");
+                    break;
                 default:
-                    if (type != "_console")
-                        _logger.Log($"WebViewBridge: unknown message type '{type}'");
+                    _logger.Log($"WebViewBridge: unknown message type '{type}'");
                     break;
             }
         }

@@ -1,3 +1,4 @@
+using System;
 using System.Net.Http;
 using System.Net.Http.Headers;
 
@@ -7,17 +8,16 @@ public class DeepSeekProvider : OpenAICompatibleProvider
 {
     private const string BaseUrl = "https://api.deepseek.com";
 
+    private readonly string _apiKey;
+
     public override string Name => "deepseek";
 
     public DeepSeekProvider(string model, string apiKey, HttpClient? httpClient = null, ISearchService? searchService = null, IWebFetchService? webFetchService = null, Logger? logger = null)
-        : base(model, BaseUrl, CreateHttpClient(apiKey, httpClient), searchService, webFetchService, logger)
+        : base(model, BaseUrl, httpClient, searchService, webFetchService, logger)
     {
+        _apiKey = apiKey ?? throw new ArgumentNullException(nameof(apiKey));
     }
 
-    private static HttpClient CreateHttpClient(string apiKey, HttpClient? existing)
-    {
-        var client = existing ?? new HttpClient();
-        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
-        return client;
-    }
+    protected override void CustomizeRequest(HttpRequestMessage request)
+        => request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _apiKey);
 }

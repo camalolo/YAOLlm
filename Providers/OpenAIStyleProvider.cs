@@ -1,54 +1,40 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Net.Http;
+using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
-using System.Threading.Tasks;
 
 namespace YAOLlm.Providers;
 
 /// <summary>
-/// Abstract base class for OpenAI-compatible API providers.
-/// Encapsulates shared message building, request body construction, response processing,
-/// and streaming chunk parsing logic used by providers with OpenAI-style chat completions APIs.
+/// Base class for OpenAI-compatible chat-completions providers.
+/// Implements the full streaming template: request building, SSE parsing,
+/// DSML filtering, tool-call handling with follow-up rounds, and TTS extraction.
+/// Subclasses only supply the endpoint URL and (optionally) auth headers.
 /// </summary>
 public abstract class OpenAIStyleProvider : BaseLLMProvider
 {
     private string _dsmlBuffer = "";
 
-    protected OpenAIStyleProvider(HttpClient httpClient, ISearchService? searchService = null, IWebFetchService? webFetchService = null, Logger? logger = null)
+    protected OpenAIStyleProvider(HttpClient? httpClient = null, ISearchService? searchService = null, IWebFetchService? webFetchService = null, Logger? logger = null)
         : base(httpClient, searchService, webFetchService, logger)
     {
     }
 
-    protected void ResetDsmlBuffer() => _dsmlBuffer = "";
-
-    protected string FilterDsmlChunk(string chunk)
-    {
-        chunk = _dsmlBuffer + chunk;
-        _dsmlBuffer = "";
-
-        var lastAngle = chunk.LastIndexOf('<');
-        if (lastAngle >= 0 && lastAngle >= chunk.Length - 4)
-        {
-            var tail = chunk[lastAngle..];
-            if (tail.Contains('|') && !tail.Contains('>'))
-            {
-                _dsmlBuffer = tail;
-                chunk = chunk[..lastAngle];
-            }
-        }
-
-        return StripDsmlTags(chunk);
-    }
+    /// <summary>
+    /// Full URL of the streaming chat-completions endpoint.
+    /// </summary>
+    protected abstract string StreamUrl { get; }
 
     // ─── Template: StreamAsync ─────────────────────────────────────────
     public override async IAsyncEnumerable<string> StreamAsync(
         List<ChatMessage> history,
         byte[]? image = null,
         List<ToolDefinition>? tools = null,
-        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         if (history == null || history.Count == 0)
             throw new ArgumentException("History cannot be null or empty", nameof(history));
@@ -61,16 +47,29 @@ public abstract class OpenAIStyleProvider : BaseLLMProvider
         var messages = BuildMessages(history, image);
         var requestBody = BuildStreamingRequestBody(messages, tools);
 
-        await foreach (var chunk in ExecuteStreamAsync(requestBody, cancellationToken))
+        ResetDsmlBuffer();
+
+        while (true)
         {
-            yield return chunk;
+            ThrowIfDisposed();
+
+            var jsonPayload = JsonSerializer.Serialize(requestBody);
+            using var response = await PostWithRetryAsync(StreamUrl, jsonPayload, cancellationToken);
+
+            var state = new StreamingState();
+            await foreach (var chunk in StreamFromResponseAsync(response, requestBody, state, cancellationToken))
+            {
+                yield return chunk;
+            }
+
+            if (state.FollowUpRequest == null)
+                yield break;
+
+            // Tool results were appended — re-issue the request with the extended history.
+            requestBody = state.FollowUpRequest;
+            RaiseOnStatusChange(ProviderStatus.Sending);
         }
     }
-
-    // ─── Abstract: Subclass implements actual HTTP stream ───────────────
-    protected abstract IAsyncEnumerable<string> ExecuteStreamAsync(
-        Dictionary<string, object> requestBody,
-        CancellationToken cancellationToken);
 
     // ─── Shared: Message Building ──────────────────────────────────────
     protected List<object> BuildMessages(List<ChatMessage> history, byte[]? image)
@@ -240,6 +239,198 @@ public abstract class OpenAIStyleProvider : BaseLLMProvider
                     : DeserializeArguments(kv.Value.Arguments)
             })
             .ToList();
+    }
+
+    // ─── Shared: SSE response processing + tool rounds ────────────────
+    private async IAsyncEnumerable<string> StreamFromResponseAsync(
+        HttpResponseMessage response,
+        Dictionary<string, object> requestBody,
+        StreamingState state,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        var toolCalls = new Dictionary<int, ToolCallBuilder>();
+        var fullReasoning = new StringBuilder();
+        bool hasToolCalls = false;
+        int chunkIndex = 0;
+
+        await foreach (var jsonPart in ReadSseDataLinesAsync(response, cancellationToken))
+        {
+            var parseResult = TryParseStreamChunk(jsonPart);
+            if (parseResult.Error != null)
+            {
+                LogJsonParseError(jsonPart, parseResult.Error);
+                continue;
+            }
+
+            if (parseResult.HasToolCallsFinish)
+            {
+                hasToolCalls = true;
+            }
+
+            if (!string.IsNullOrEmpty(parseResult.ReasoningChunk))
+            {
+                fullReasoning.Append(parseResult.ReasoningChunk);
+            }
+
+            if (!string.IsNullOrEmpty(parseResult.Chunk))
+            {
+                state.FullContent.Append(parseResult.Chunk);
+                chunkIndex++;
+                LogStreamChunk(chunkIndex);
+                var filtered = FilterDsmlChunk(parseResult.Chunk);
+                if (filtered.Length > 0)
+                    yield return filtered;
+            }
+
+            foreach (var tc in parseResult.ToolCallDeltas)
+            {
+                if (!toolCalls.TryGetValue(tc.Index, out var builder))
+                {
+                    builder = new ToolCallBuilder();
+                    toolCalls[tc.Index] = builder;
+                }
+
+                if (!string.IsNullOrEmpty(tc.Id))
+                    builder.Id = tc.Id;
+
+                if (!string.IsNullOrEmpty(tc.Name))
+                    builder.Name = tc.Name;
+
+                if (!string.IsNullOrEmpty(tc.Arguments))
+                    builder.Arguments += tc.Arguments;
+            }
+        }
+
+        LogStreamComplete(chunkIndex, toolCalls.Count);
+
+        if (hasToolCalls && toolCalls.Count > 0)
+        {
+            var followUp = await ProcessToolCallsAsync(requestBody, state, fullReasoning, BuildCompletedToolCalls(toolCalls), cancellationToken);
+            if (followUp != null)
+                state.FollowUpRequest = followUp;
+        }
+    }
+
+    /// <summary>
+    /// Executes completed tool calls and builds the follow-up request body,
+    /// or returns null when no tool results need to be sent back.
+    /// </summary>
+    private async Task<Dictionary<string, object>?> ProcessToolCallsAsync(
+        Dictionary<string, object> requestBody,
+        StreamingState state,
+        StringBuilder fullReasoning,
+        List<ToolCall> completedToolCalls,
+        CancellationToken cancellationToken)
+    {
+        var toolResults = new List<ToolResult>();
+        string? ttsText = null;
+        var otherToolCalls = new List<ToolCall>();
+
+        foreach (var toolCall in completedToolCalls)
+        {
+            var tts = ExtractTtsText(toolCall);
+            if (tts != null)
+                ttsText = tts;
+            else
+                otherToolCalls.Add(toolCall);
+        }
+
+        // Only raise TTS if tts_summary is the sole tool call (final response)
+        // Skip TTS if it came alongside search/fetch to avoid premature playback
+        if (!string.IsNullOrEmpty(ttsText) && otherToolCalls.Count == 0)
+            RaiseOnStatusChange(new ProviderStatus(ProviderStatusKind.Tts, ttsText));
+
+        foreach (var toolCall in otherToolCalls)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (toolCall.Name == "web_search" && _searchService != null)
+            {
+                var query = toolCall.Arguments.TryGetValue("query", out var q) ? q?.ToString() : null;
+                if (!string.IsNullOrEmpty(query))
+                    RaiseOnStatusChange(new ProviderStatus(ProviderStatusKind.Searching, query, _searchService.Name));
+                toolResults.Add(await ExecuteWebSearchToolAsync(toolCall, cancellationToken));
+            }
+            else if (toolCall.Name == "web_fetch" && _webFetchService != null)
+            {
+                var fetchUrl = toolCall.Arguments.TryGetValue("url", out var u) ? u?.ToString() : null;
+                if (!string.IsNullOrEmpty(fetchUrl))
+                    RaiseOnStatusChange(new ProviderStatus(ProviderStatusKind.Fetching, fetchUrl));
+                toolResults.Add(await ExecuteWebFetchToolAsync(toolCall, cancellationToken));
+            }
+            else
+            {
+                toolResults.Add(new ToolResult(toolCall.Id, $"Unknown tool: {toolCall.Name}", isError: true));
+            }
+        }
+
+        if (otherToolCalls.Count > 0)
+            RaiseOnStatusChange(ProviderStatus.Sending);
+
+        if (toolResults.Count == 0)
+            return null;
+
+        var messages = (List<object>)requestBody["messages"];
+        var newMessages = new List<object>(messages);
+
+        var assistantMessage = new Dictionary<string, object?>
+        {
+            ["role"] = "assistant",
+            ["content"] = state.FullContent.Length > 0 ? StripDsmlTags(state.FullContent.ToString()) : null,
+            ["tool_calls"] = otherToolCalls.Select(tc => new
+            {
+                id = tc.Id,
+                type = "function",
+                function = new
+                {
+                    name = tc.Name,
+                    arguments = tc.Arguments.Count > 0
+                        ? JsonSerializer.Serialize(tc.Arguments)
+                        : "{}"
+                }
+            }).ToArray()
+        };
+        if (fullReasoning.Length > 0)
+            assistantMessage["reasoning_content"] = fullReasoning.ToString();
+
+        newMessages.Add(assistantMessage);
+
+        foreach (var tr in toolResults)
+        {
+            newMessages.Add(new
+            {
+                role = "tool",
+                tool_call_id = tr.ToolCallId,
+                content = tr.Content
+            });
+        }
+
+        return new Dictionary<string, object>(requestBody)
+        {
+            ["messages"] = newMessages
+        };
+    }
+
+    // ─── DSML filtering ────────────────────────────────────────────────
+    protected void ResetDsmlBuffer() => _dsmlBuffer = "";
+
+    protected string FilterDsmlChunk(string chunk)
+    {
+        chunk = _dsmlBuffer + chunk;
+        _dsmlBuffer = "";
+
+        var lastAngle = chunk.LastIndexOf('<');
+        if (lastAngle >= 0 && lastAngle >= chunk.Length - 4)
+        {
+            var tail = chunk[lastAngle..];
+            if (tail.Contains('|') && !tail.Contains('>'))
+            {
+                _dsmlBuffer = tail;
+                chunk = chunk[..lastAngle];
+            }
+        }
+
+        return StripDsmlTags(chunk);
     }
 
     private static readonly System.Text.RegularExpressions.Regex _dsmlRegex = new(

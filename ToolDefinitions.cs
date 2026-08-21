@@ -72,11 +72,6 @@ public static class ToolDefinitions
     );
 
     /// <summary>
-    /// Get all web tools (search + fetch)
-    /// </summary>
-    public static List<ToolDefinition> GetAll() => new() { WebSearch, WebFetch };
-
-    /// <summary>
     /// Get all web tools plus the TTS summary tool
     /// </summary>
     public static List<ToolDefinition> GetAllWithTts() => new() { WebSearch, WebFetch, TtsSummary };

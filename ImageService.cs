@@ -1,4 +1,5 @@
 using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -21,12 +22,25 @@ public static class ImageService
             byte[] imageBytes = Convert.FromBase64String(base64);
             using var ms = new MemoryStream(imageBytes);
             using var image = new Bitmap(ms);
-            int newWidth = 640;
-            int newHeight = (int)(image.Height * 640.0 / image.Width);
+
+            if (image.Width <= 0 || image.Height <= 0)
+                return base64;
+
+            // Only downscale — small images are sent as-is
+            const int maxWidth = 640;
+            if (image.Width <= maxWidth)
+                return base64;
+
+            int newWidth = maxWidth;
+            int newHeight = Math.Max(1, (int)Math.Round(image.Height * (double)maxWidth / image.Width));
+
             using var resizedImage = new Bitmap(newWidth, newHeight);
             resizedImage.SetResolution(image.HorizontalResolution, image.VerticalResolution);
             using (var g = Graphics.FromImage(resizedImage))
+            {
+                g.InterpolationMode = InterpolationMode.HighQualityBicubic;
                 g.DrawImage(image, new Rectangle(0, 0, newWidth, newHeight), 0, 0, image.Width, image.Height, GraphicsUnit.Pixel);
+            }
             using var outputMs = new MemoryStream();
             resizedImage.Save(outputMs, ImageFormat.Png);
             return Convert.ToBase64String(outputMs.ToArray());
@@ -38,29 +52,38 @@ public static class ImageService
         }
     }
 
-    public static (string base64, string title) CaptureScreen(Logger logger, Form formToHide)
+    /// <summary>
+    /// Captures the entire virtual screen (all monitors) and returns a
+    /// downscaled base64 PNG. Call from a background thread — this blocks.
+    /// The caller is responsible for hiding the overlay before calling.
+    /// </summary>
+    public static string CapturePrimaryScreen(Logger logger)
     {
         try
         {
-            bool wasVisible = formToHide.Visible;
-            formToHide.Visible = false;
-            Thread.Sleep(100);
-            string title = GetActiveWindowTitle();
-            using var screenshot = new Bitmap(Screen.PrimaryScreen?.Bounds.Width ?? 0, Screen.PrimaryScreen?.Bounds.Height ?? 0);
-            using (var g = Graphics.FromImage(screenshot)) g.CopyFromScreen(0, 0, 0, 0, screenshot.Size);
-            formToHide.Visible = wasVisible;
-            if (wasVisible)
-                formToHide.Activate();
+            var bounds = SystemInformation.VirtualScreen;
+            if (bounds.Width <= 0 || bounds.Height <= 0)
+                bounds = Screen.PrimaryScreen?.Bounds ?? Rectangle.Empty;
+
+            if (bounds.Width <= 0 || bounds.Height <= 0)
+            {
+                logger.Log("Screen capture error: no screen bounds available");
+                return string.Empty;
+            }
+
+            using var screenshot = new Bitmap(bounds.Width, bounds.Height);
+            using (var g = Graphics.FromImage(screenshot))
+                g.CopyFromScreen(bounds.Left, bounds.Top, 0, 0, bounds.Size);
+
             using var ms = new MemoryStream();
             screenshot.Save(ms, ImageFormat.Png);
             string base64 = Convert.ToBase64String(ms.ToArray());
-            string resizedBase64 = ResizeImageBase64(logger, base64);
-            return (resizedBase64, title);
+            return ResizeImageBase64(logger, base64);
         }
         catch (Exception ex)
         {
             logger.Log($"Screen capture error: {ex.Message}");
-            return (string.Empty, string.Empty);
+            return string.Empty;
         }
     }
 

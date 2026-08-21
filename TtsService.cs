@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Net.WebSockets;
@@ -13,7 +14,7 @@ namespace YAOLlm;
 
 /// <summary>
 /// Text-to-speech service using Microsoft Edge TTS (free) via direct WebSocket.
-/// Streams audio progressively — starts playing as soon as MP3 frames arrive.
+/// Buffers the MP3 audio, then plays it once the turn completes.
 /// </summary>
 public class TtsService : IDisposable
 {
@@ -95,9 +96,11 @@ public class TtsService : IDisposable
 
             await ws.SendAsync(Encoding.UTF8.GetBytes(ssmlMsg), WebSocketMessageType.Text, true, linkedCts.Token);
 
-            // Receive audio chunks and play progressively
+            // Receive audio chunks and accumulate; a single audio message may be
+            // split across multiple WebSocket frames, so buffer until EndOfMessage.
             var ms = new MemoryStream();
             var buffer = new byte[16384];
+            var messageBuffer = new MemoryStream();
             var receiving = true;
 
             while (receiving && ws.State == WebSocketState.Open)
@@ -109,33 +112,33 @@ public class TtsService : IDisposable
                 if (result.MessageType == WebSocketMessageType.Close)
                     break;
 
-                if (result.MessageType == WebSocketMessageType.Binary && result.Count > 2)
+                messageBuffer.Write(buffer, 0, result.Count);
+                if (!result.EndOfMessage)
+                    continue;
+
+                var message = messageBuffer.ToArray();
+                messageBuffer.SetLength(0);
+
+                if (result.MessageType == WebSocketMessageType.Binary && message.Length > 2)
                 {
                     // Binary message: first 2 bytes = header length (big-endian uint16)
-                    var headerLength = (buffer[0] << 8) | buffer[1];
+                    var headerLength = (message[0] << 8) | message[1];
 
-                    if (headerLength > 0 && result.Count > headerLength + 2)
+                    if (headerLength > 0 && message.Length > headerLength + 2)
                     {
                         // Parse headers to find Path
-                        var headerBytes = new byte[headerLength];
-                        Array.Copy(buffer, 2, headerBytes, 0, headerLength);
-                        var headerStr = Encoding.UTF8.GetString(headerBytes);
+                        var headerStr = Encoding.UTF8.GetString(message, 2, headerLength);
 
                         if (!headerStr.Contains("Path:audio"))
                             continue;
 
                         // Audio data follows headers
-                        var dataOffset = 2 + headerLength;
-                        var dataLength = result.Count - dataOffset;
-                        if (dataLength > 0)
-                        {
-                            ms.Write(buffer, dataOffset, dataLength);
-                        }
+                        ms.Write(message, 2 + headerLength, message.Length - 2 - headerLength);
                     }
                 }
-                else if (result.MessageType == WebSocketMessageType.Text && result.Count > 0)
+                else if (result.MessageType == WebSocketMessageType.Text && message.Length > 0)
                 {
-                    var textMsg = Encoding.UTF8.GetString(buffer, 0, result.Count);
+                    var textMsg = Encoding.UTF8.GetString(message);
                     if (textMsg.Contains("Path:turn.end"))
                         receiving = false;
                 }
@@ -232,7 +235,8 @@ public class TtsService : IDisposable
 
     private static string FormatTimestamp()
     {
-        return DateTime.UtcNow.ToString("ddd MMM dd yyyy HH:mm:ss") + " GMT+0000 (Coordinated Universal Time)";
+        return DateTime.UtcNow.ToString("ddd MMM dd yyyy HH:mm:ss", CultureInfo.InvariantCulture)
+            + " GMT+0000 (Coordinated Universal Time)";
     }
 
     private static string EscapeXml(string text)

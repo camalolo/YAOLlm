@@ -1,4 +1,3 @@
-using System.Collections.Generic;
 using System.IO;
 using System.Runtime.InteropServices;
 using dotenv.net;
@@ -13,6 +12,12 @@ static class Program
     [STAThread]
     static void Main(string[] args)
     {
+        // Single instance guard — a second launch would fail the hotkey
+        // registration and produce a duplicate tray icon.
+        using var mutex = new Mutex(true, "YAOLlm_SingleInstance", out bool createdNew);
+        if (!createdNew)
+            return;
+
         if (args.Contains("--console"))
             AllocConsole();
 
@@ -25,7 +30,8 @@ static class Program
         );
         DotEnv.Load(options: new DotEnvOptions(
             envFilePaths: new[] { configPath },
-            ignoreExceptions: true
+            ignoreExceptions: true,
+            probeForEnv: false
         ));
 
         var logger = new Logger();
@@ -34,82 +40,45 @@ static class Program
         var searchServices = new List<ISearchService>();
         var enabledNames = new List<string>();
 
-        var searchServicesConfig = Environment.GetEnvironmentVariable("SEARCH_SERVICES");
+        var searchFactories = new (string Name, string EnvVar, Func<string, Logger, ISearchService> Create)[]
+        {
+            ("exa", "EXA_API_KEY", (key, log) => new ExaSearchService(key, log)),
+            ("serper", "SERPER_API_KEY", (key, log) => new SerperSearchService(key, log)),
+            ("tavily", "TAVILY_API_KEY", (key, log) => new TavilySearchService(key, log)),
+            ("tinyfish", "TINYFISH_API_KEY", (key, log) => new TinyFishSearchService(key, log)),
+        };
 
+        void AddSearchService(string name)
+        {
+            var entry = Array.Find(searchFactories, f => f.Name == name);
+            if (entry.Name == null)
+            {
+                logger.Log($"[Startup] Unknown search service: '{name}'");
+                return;
+            }
+
+            var apiKey = Environment.GetEnvironmentVariable(entry.EnvVar) ?? "";
+            if (string.IsNullOrEmpty(apiKey))
+            {
+                logger.Log($"[Startup] {entry.EnvVar} not set, skipping {entry.Name} search");
+                return;
+            }
+
+            searchServices.Add(entry.Create(apiKey, logger));
+            enabledNames.Add(entry.Name);
+        }
+
+        var searchServicesConfig = Environment.GetEnvironmentVariable("SEARCH_SERVICES");
         if (!string.IsNullOrEmpty(searchServicesConfig))
         {
-            var serviceNames = searchServicesConfig.Split(',', StringSplitOptions.RemoveEmptyEntries);
-            foreach (var name in serviceNames)
-            {
-                var trimmed = name.Trim().ToLowerInvariant();
-                switch (trimmed)
-                {
-                    case "exa":
-                        var exaKey = Environment.GetEnvironmentVariable("EXA_API_KEY") ?? "";
-                        if (!string.IsNullOrEmpty(exaKey))
-                        {
-                            searchServices.Add(new ExaSearchService(exaKey, logger));
-                            enabledNames.Add("exa");
-                        }
-                        else
-                            logger.Log("[Startup] EXA_API_KEY not set, skipping Exa search");
-                        break;
-                    case "serper":
-                        var serperKey = Environment.GetEnvironmentVariable("SERPER_API_KEY") ?? "";
-                        if (!string.IsNullOrEmpty(serperKey))
-                        {
-                            searchServices.Add(new SerperSearchService(serperKey, logger));
-                            enabledNames.Add("serper");
-                        }
-                        else
-                            logger.Log("[Startup] SERPER_API_KEY not set, skipping Serper search");
-                        break;
-                    case "tavily":
-                        var tavilyKey = Environment.GetEnvironmentVariable("TAVILY_API_KEY") ?? "";
-                        if (!string.IsNullOrEmpty(tavilyKey))
-                        {
-                            searchServices.Add(new TavilySearchService(tavilyKey, logger));
-                            enabledNames.Add("tavily");
-                        }
-                        else
-                            logger.Log("[Startup] TAVILY_API_KEY not set, skipping Tavily search");
-                        break;
-                    case "tinyfish":
-                        var tinyFishKey = Environment.GetEnvironmentVariable("TINYFISH_API_KEY") ?? "";
-                        if (!string.IsNullOrEmpty(tinyFishKey))
-                        {
-                            searchServices.Add(new TinyFishSearchService(tinyFishKey, logger));
-                            enabledNames.Add("tinyfish");
-                        }
-                        else
-                            logger.Log("[Startup] TINYFISH_API_KEY not set, skipping TinyFish search");
-                        break;
-                    default:
-                        logger.Log($"[Startup] Unknown search service: '{trimmed}'");
-                        break;
-                }
-            }
+            foreach (var name in searchServicesConfig.Split(',', StringSplitOptions.RemoveEmptyEntries))
+                AddSearchService(name.Trim().ToLowerInvariant());
         }
         else
         {
             // Fallback: TinyFish first, Tavily second
-            var tinyFishKey = Environment.GetEnvironmentVariable("TINYFISH_API_KEY") ?? "";
-            if (!string.IsNullOrEmpty(tinyFishKey))
-            {
-                searchServices.Add(new TinyFishSearchService(tinyFishKey, logger));
-                enabledNames.Add("tinyfish");
-            }
-            else
-                logger.Log("[Startup] TINYFISH_API_KEY not set, skipping TinyFish search");
-
-            var tavilyKey = Environment.GetEnvironmentVariable("TAVILY_API_KEY") ?? "";
-            if (!string.IsNullOrEmpty(tavilyKey))
-            {
-                searchServices.Add(new TavilySearchService(tavilyKey, logger));
-                enabledNames.Add("tavily");
-            }
-            else
-                logger.Log("[Startup] TAVILY_API_KEY not set, skipping Tavily search");
+            AddSearchService("tinyfish");
+            AddSearchService("tavily");
         }
 
         logger.Log($"[Startup] Search services: {string.Join(", ", enabledNames)} ({enabledNames.Count} services)");
