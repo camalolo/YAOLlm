@@ -74,8 +74,18 @@ public partial class MainForm : Form
         _ttsService = new TtsService(ttsVoice, _logger);
 
         this.FormClosing += MainForm_FormClosing;
-        this.Load += async (s, e) =>
-        {
+
+        // The overlay starts hidden in the tray, so the Form Load event can
+        // stay unfired for the whole session (it waits for first visibility) —
+        // never hang startup work off it. The hotkey is plain Win32 on the
+        // form handle (no WebView2 dependency), and WebView2 initializes in
+        // the background while the app sits in the tray.
+        RegisterGlobalHotkey();
+        _ = InitializeOverlayAsync();
+    }
+
+    private async Task InitializeOverlayAsync()
+    {
             try
             {
             var userDataFolder = Path.Combine(Path.GetTempPath(), "YAOLlm", "WebView2");
@@ -119,6 +129,10 @@ public partial class MainForm : Form
             // Create bridge
             _bridge = new WebViewBridge(_webView.CoreWebView2!, _logger);
 
+            // Surface a deferred hotkey-failure warning now that the UI exists
+            if (_hotkeyRegistrationFailed)
+                _bridge.Warning("Warning: hotkey registration failed.");
+
             _bridge.SendMessage += OnSendMessage;
             _bridge.CaptureSend += CaptureAndSend;
             _bridge.LoadImage += LoadAndSendImage;
@@ -154,9 +168,6 @@ public partial class MainForm : Form
 
             _webView.CoreWebView2.Navigate(htmlPath);
 
-            // Register hotkey after the bridge exists so a failure warning reaches the UI
-            RegisterGlobalHotkey();
-
             _statusManager.StatusChanged += status =>
             {
                 _logger.Log($"StatusChanged event fired: {status}");
@@ -174,7 +185,6 @@ public partial class MainForm : Form
             {
                 _logger.Log($"WebView2 init failed: {ex}");
             }
-        };
     }
 
     protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
@@ -224,14 +234,16 @@ public partial class MainForm : Form
         _currentProvider.OnStatusChange += _providerStatusHandler;
     }
 
+    private bool _hotkeyRegistrationFailed;
+
     private void RegisterGlobalHotkey()
     {
         if (RegisterHotKey(this.Handle, HOTKEY_ID, MOD_WIN, VK_F12))
             _logger.Log("Global hotkey registered.");
         else
         {
+            _hotkeyRegistrationFailed = true;
             _logger.Log("Failed to register hotkey.");
-            _bridge?.Warning("Warning: hotkey registration failed.");
         }
     }
 
