@@ -66,6 +66,11 @@ public sealed class WebViewBridge
     public event Action? Stop;
 
     /// <summary>
+    /// Fired when JavaScript requests toggling TTS on/off: <c>{"type":"toggle_tts"}</c>.
+    /// </summary>
+    public event Action? ToggleTts;
+
+    /// <summary>
     /// Initializes a new instance of <see cref="WebViewBridge"/> and subscribes to
     /// <see cref="CoreWebView2.WebMessageReceived"/> for inbound message handling.
     /// </summary>
@@ -152,6 +157,14 @@ public sealed class WebViewBridge
     public void Error(string message)
     {
         Post(new { type = "error", message });
+    }
+
+    /// <summary>
+    /// Sends the current TTS enabled state to the JavaScript UI.
+    /// </summary>
+    public void TtsState(bool enabled)
+    {
+        Post(new { type = "tts_state", enabled });
     }
 
     /// <summary>
@@ -255,6 +268,9 @@ public sealed class WebViewBridge
                     break;
                 case "stop":
                     Stop?.Invoke();
+                    break;
+                case "toggle_tts":
+                    ToggleTts?.Invoke();
                     break;
                 case "_console":
                     // JS console forwarder (injected by MainForm) — log and don't dispatch

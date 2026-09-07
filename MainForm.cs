@@ -21,6 +21,9 @@ public partial class MainForm : Form
     private Action? _onSearchComplete;
     private string? _preToolResponse;
     private string? _lastTtsText;
+
+    /// <summary>TTS output toggle — disabled on startup; the UI button turns it on.</summary>
+    private bool _ttsEnabled;
     private bool _pendingPresetSwitch;
     private IntPtr _previousWindowHandle = IntPtr.Zero;
     private readonly Queue<(string? message, string? imageBase64, string? title)> _messageQueue = new();
@@ -142,6 +145,14 @@ public partial class MainForm : Form
             _bridge.Exit += Application.Exit;
             _bridge.CycleProvider += CyclePreset;
             _bridge.Stop += StopStreaming;
+            _bridge.ToggleTts += () =>
+            {
+                _ttsEnabled = !_ttsEnabled;
+                _logger.Log($"TTS toggled {(_ttsEnabled ? "ON" : "OFF")} via UI button.");
+                _bridge.TtsState(_ttsEnabled);
+                if (!_ttsEnabled)
+                    _ttsService.Stop();
+            };
 
             // Check if any provider is configured
             if (!_presetManager.HasProvider)
@@ -163,6 +174,7 @@ public partial class MainForm : Form
                     _logger.Log("WebView2: Navigation completed, sending initial state.");
                     _bridge?.Provider(_presetManager.ActivePreset.DisplayName ?? _presetManager.ActivePreset.ToString());
                     _bridge?.Status("Idle");
+                    _bridge?.TtsState(_ttsEnabled);
                 }
             };
 
@@ -207,7 +219,8 @@ public partial class MainForm : Form
                     if (!string.IsNullOrEmpty(status.Detail))
                     {
                         _lastTtsText = status.Detail;
-                        _ = _ttsService.SpeakAsync(status.Detail, CancellationToken.None);
+                        if (_ttsEnabled)
+                            _ = _ttsService.SpeakAsync(status.Detail, CancellationToken.None);
                     }
                     break;
 
