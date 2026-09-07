@@ -26,6 +26,12 @@ internal class TestOpenAIStyleProvider : OpenAIStyleProvider
     public static int IntArg(Dictionary<string, object?> args, string key, int fallback) => GetIntArg(args, key, fallback);
     public static string DetectMime(byte[] data) => DetectImageMimeType(data);
 
+    // TryParseStreamChunk returns a protected nested type, so expose the
+    // pieces the tests need as primitives.
+    public string? ParseChunkError(string json) => TryParseStreamChunk(json).Error;
+    public string? ParseChunkText(string json) => TryParseStreamChunk(json).Chunk;
+    public int ParseChunkToolDeltaCount(string json) => TryParseStreamChunk(json).ToolCallDeltas.Count;
+
     public override async IAsyncEnumerable<string> StreamAsync(List<ChatMessage> history, byte[]? image = null, List<ToolDefinition>? tools = null, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         await Task.CompletedTask;
@@ -35,6 +41,50 @@ internal class TestOpenAIStyleProvider : OpenAIStyleProvider
 
 public class OpenAIStyleProviderTests
 {
+    [Fact]
+    public void ParseChunk_ExplicitNullToolCalls_DoesNotThrow()
+    {
+        // Regression: reasoning models / proxies emit "tool_calls": null in
+        // deltas; this used to throw InvalidOperationException and kill the
+        // whole stream ("...requires an element of type 'Array', but the
+        // target element has type 'Null'").
+        var provider = new TestOpenAIStyleProvider();
+
+        var error = provider.ParseChunkError("""{"choices":[{"delta":{"tool_calls":null}}]}""");
+
+        Assert.Null(error);
+        Assert.Equal(0, provider.ParseChunkToolDeltaCount("""{"choices":[{"delta":{"tool_calls":null}}]}"""));
+    }
+
+    [Fact]
+    public void ParseChunk_ExplicitNullChoices_DoesNotThrow()
+    {
+        var provider = new TestOpenAIStyleProvider();
+
+        Assert.Null(provider.ParseChunkError("""{"choices":null}"""));
+        Assert.Null(provider.ParseChunkText("""{"choices":null}"""));
+    }
+
+    [Fact]
+    public void ParseChunk_ValidContentAndToolDeltas_StillParsed()
+    {
+        var provider = new TestOpenAIStyleProvider();
+
+        Assert.Equal("hi", provider.ParseChunkText("""{"choices":[{"delta":{"content":"hi"}}]}"""));
+
+        const string toolDelta = """{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"web_fetch","arguments":"{\"url\":"}}]}}]}""";
+        Assert.Null(provider.ParseChunkError(toolDelta));
+        Assert.Equal(1, provider.ParseChunkToolDeltaCount(toolDelta));
+    }
+
+    [Fact]
+    public void ParseChunk_MalformedJson_ReportsErrorWithoutThrowing()
+    {
+        var provider = new TestOpenAIStyleProvider();
+
+        Assert.NotNull(provider.ParseChunkError("""{"choices": [broken"""));
+    }
+
     [Fact]
     public void StripDsmlTags_RemovesTags()
     {

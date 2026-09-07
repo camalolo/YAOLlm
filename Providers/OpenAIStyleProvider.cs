@@ -167,7 +167,8 @@ public abstract class OpenAIStyleProvider : BaseLLMProvider
             using var doc = JsonDocument.Parse(jsonPart);
             var root = doc.RootElement;
 
-            if (root.TryGetProperty("choices", out var choices) && choices.GetArrayLength() > 0)
+            if (root.TryGetProperty("choices", out var choices) &&
+                choices.ValueKind == JsonValueKind.Array && choices.GetArrayLength() > 0)
             {
                 var choice = choices[0];
 
@@ -191,7 +192,10 @@ public abstract class OpenAIStyleProvider : BaseLLMProvider
                         result.Chunk = content.GetString() ?? "";
                     }
 
-                    if (delta.TryGetProperty("tool_calls", out var toolCallsDelta))
+                    // Models/proxies may send "tool_calls": null explicitly —
+                    // TryGetProperty matches that, so check the kind too.
+                    if (delta.TryGetProperty("tool_calls", out var toolCallsDelta) &&
+                        toolCallsDelta.ValueKind == JsonValueKind.Array)
                     {
                         foreach (var tc in toolCallsDelta.EnumerateArray())
                         {
@@ -220,6 +224,12 @@ public abstract class OpenAIStyleProvider : BaseLLMProvider
         }
         catch (JsonException ex)
         {
+            result.Error = ex.Message;
+        }
+        catch (InvalidOperationException ex)
+        {
+            // Unexpected element kinds (e.g. "choices": null) — skip the chunk
+            // rather than aborting the whole stream.
             result.Error = ex.Message;
         }
 

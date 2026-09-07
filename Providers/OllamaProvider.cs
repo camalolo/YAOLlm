@@ -137,7 +137,8 @@ public class OllamaProvider : BaseLLMProvider
             }
 
             if (root.TryGetProperty("message", out var msgForTools) &&
-                msgForTools.TryGetProperty("tool_calls", out var toolCallsArr))
+                msgForTools.TryGetProperty("tool_calls", out var toolCallsArr) &&
+                toolCallsArr.ValueKind == JsonValueKind.Array)
             {
                 foreach (var tc in toolCallsArr.EnumerateArray())
                 {

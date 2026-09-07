@@ -184,7 +184,8 @@ public class GeminiProvider : BaseLLMProvider
             using var doc = JsonDocument.Parse(jsonPart);
             var root = doc.RootElement;
 
-            if (root.TryGetProperty("candidates", out var candidates) && candidates.GetArrayLength() > 0)
+            if (root.TryGetProperty("candidates", out var candidates) &&
+                candidates.ValueKind == JsonValueKind.Array && candidates.GetArrayLength() > 0)
             {
                 var candidate = candidates[0];
 
