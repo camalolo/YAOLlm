@@ -32,6 +32,12 @@
     #chat-area::-webkit-scrollbar-thumb:hover {
       background: rgba(255, 255, 255, 0.5);
     }
+    /* Pin-to-bottom is managed manually in JS; Chromium's scroll anchoring
+       fights those writes when content above resizes (streaming re-renders),
+       producing visible jumps at the bottom of the chat. */
+    #chat-area {
+      overflow-anchor: none;
+    }
 
     /* Markdown-like styles for message content */
     .msg-content h1 { font-size: 1.5em; font-weight: 700; margin: 0.5em 0 0.3em; }
@@ -374,18 +380,18 @@
                   self.streamingHtml = '';
                   self.userScrolledUp = false;
                   self.$nextTick(() => self.highlightNew());
-                  self.$nextTick(() => self.scrollToBottom());
+                  self.$nextTick(() => self.scheduleScrollToBottom());
                   break;
                 case 'chat_queued':
                   self.pendingMessages.push({role: 'user', html: msg.html, id: self.nextId++});
                   self.$nextTick(() => self.highlightNew());
-                  self.$nextTick(() => self.scrollToBottom());
+                  self.$nextTick(() => self.scheduleScrollToBottom());
                   break;
                 case 'chat_stream':
                   // No syntax highlighting while streaming — code blocks are usually
                   // incomplete and the final chat_message will highlight them.
                   self.streamingHtml = msg.html;
-                  self.$nextTick(() => self.scrollToBottom());
+                  self.$nextTick(() => self.scheduleScrollToBottom());
                   break;
                 case 'status':
                   if (msg.status === 'Idle') self.userScrolledUp = false;
@@ -402,13 +408,13 @@
                   self.messages.push({role: 'system', html: '<em>' + msg.message + '</em>', id: self.nextId++});
                   self.userScrolledUp = false;
                   self.$nextTick(() => self.highlightNew());
-                  self.$nextTick(() => self.scrollToBottom());
+                  self.$nextTick(() => self.scheduleScrollToBottom());
                   break;
                 case 'error':
                   self.messages.push({role: 'error', html: msg.message, id: self.nextId++});
                   self.userScrolledUp = false;
                   self.$nextTick(() => self.highlightNew());
-                  self.$nextTick(() => self.scrollToBottom());
+                  self.$nextTick(() => self.scheduleScrollToBottom());
                   break;
                 case 'focus_input':
                   self.$nextTick(() => {
@@ -428,6 +434,22 @@
           if (this.userScrolledUp) return;
           const chat = document.getElementById('chat-area');
           if (chat) chat.scrollTop = chat.scrollHeight;
+        },
+
+        // Pin in $nextTick (runs before the frame's layout+paint, so the chunk
+        // and the scroll land in the same frame), then re-pin once after paint
+        // via rAF to absorb any late resizes (highlighting, images). Coalesced
+        // so bursts of chunks cost at most one follow-up per frame.
+        scheduleScrollToBottom() {
+          this.$nextTick(() => {
+            this.scrollToBottom();
+            if (this._scrollFollowUp === undefined) {
+              this._scrollFollowUp = requestAnimationFrame(() => {
+                this._scrollFollowUp = undefined;
+                this.scrollToBottom();
+              });
+            }
+          });
         }
       };
     }
