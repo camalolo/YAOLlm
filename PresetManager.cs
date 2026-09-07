@@ -51,6 +51,8 @@ public class PresetManager : IDisposable
         try
         {
             var presetEntries = new List<(int order, string value)>();
+            var baseUrls = new Dictionary<int, string>();
+            var apiKeys = new Dictionary<int, string>();
 
             foreach (DictionaryEntry entry in Environment.GetEnvironmentVariables())
             {
@@ -58,8 +60,28 @@ public class PresetManager : IDisposable
                 if (key == null || !key.StartsWith("PRESET_", StringComparison.OrdinalIgnoreCase))
                     continue;
 
-                var numPart = key["PRESET_".Length..];
-                presetEntries.Add((int.TryParse(numPart, out var num) ? num : int.MaxValue, entry.Value?.ToString() ?? ""));
+                var suffix = key["PRESET_".Length..];
+
+                // Exact PRESET_<n> — the preset line itself.
+                if (int.TryParse(suffix, out var num))
+                {
+                    presetEntries.Add((num, entry.Value?.ToString() ?? ""));
+                    continue;
+                }
+
+                // PRESET_<n>_BASE_URL / PRESET_<n>_API_KEY extras.
+                const string baseUrlSuffix = "_BASE_URL";
+                const string apiKeySuffix = "_API_KEY";
+                if (suffix.EndsWith(baseUrlSuffix, StringComparison.OrdinalIgnoreCase) &&
+                    int.TryParse(suffix[..^baseUrlSuffix.Length], out var urlNum))
+                {
+                    baseUrls[urlNum] = entry.Value?.ToString() ?? "";
+                }
+                else if (suffix.EndsWith(apiKeySuffix, StringComparison.OrdinalIgnoreCase) &&
+                         int.TryParse(suffix[..^apiKeySuffix.Length], out var keyNum))
+                {
+                    apiKeys[keyNum] = entry.Value?.ToString() ?? "";
+                }
             }
 
             foreach (var entry in presetEntries.OrderBy(e => e.order))
@@ -67,6 +89,11 @@ public class PresetManager : IDisposable
                 var config = ProviderConfig.Parse(entry.value);
                 if (config != null)
                 {
+                    config.SourceIndex = entry.order;
+                    if (baseUrls.TryGetValue(entry.order, out var baseUrl))
+                        config.BaseUrl = baseUrl;
+                    if (apiKeys.TryGetValue(entry.order, out var apiKey))
+                        config.ApiKey = apiKey;
                     _presets.Add(config);
                 }
             }
@@ -113,13 +140,12 @@ public class PresetManager : IDisposable
                     var eqIndex = trimmed.IndexOf('=');
                     if (eqIndex > 0)
                     {
-                        var key = trimmed.Substring(0, eqIndex).Trim();
+                    var key = trimmed.Substring(0, eqIndex).Trim();
 
-                        if (key.StartsWith("PRESET_", StringComparison.OrdinalIgnoreCase) ||
-                            key.Equals("ACTIVE_PRESET", StringComparison.OrdinalIgnoreCase))
-                        {
-                            continue;
-                        }
+                    if (IsPresetKey(key))
+                    {
+                        continue;
+                    }
                     }
                     lines.Add(line);
                 }
@@ -132,7 +158,12 @@ public class PresetManager : IDisposable
 
             for (int i = 0; i < _presets.Count; i++)
             {
-                lines.Add($"PRESET_{i + 1}={_presets[i]}");
+                var n = i + 1;
+                lines.Add($"PRESET_{n}={_presets[i]}");
+                if (!string.IsNullOrWhiteSpace(_presets[i].BaseUrl))
+                    lines.Add($"PRESET_{n}_BASE_URL={_presets[i].BaseUrl}");
+                if (!string.IsNullOrWhiteSpace(_presets[i].ApiKey))
+                    lines.Add($"PRESET_{n}_API_KEY={_presets[i].ApiKey}");
             }
             lines.Add($"ACTIVE_PRESET={_activeIndex + 1}");
 
@@ -160,74 +191,118 @@ public class PresetManager : IDisposable
         _logger.Log($"Switched to preset {_activeIndex + 1}: {ActivePreset}");
     }
 
+    private static bool IsPresetKey(string key)
+    {
+        return key.StartsWith("PRESET_", StringComparison.OrdinalIgnoreCase) ||
+               key.Equals("ACTIVE_PRESET", StringComparison.OrdinalIgnoreCase);
+    }
+
     public ILLMProvider CreateProvider()
     {
         var preset = ActivePreset;
-        var model = preset.Model;
         var providerName = preset.Provider.ToLowerInvariant();
 
         return providerName switch
         {
-            "gemini" => CreateGeminiProvider(model),
-            "openrouter" => CreateOpenRouterProvider(model),
-            "ollama" => CreateOllamaProvider(model),
-            "openai-compatible" => CreateOpenAICompatibleProvider(model),
-            "deepseek" => CreateDeepSeekProvider(model),
-            "zai" => CreateZaiProvider(model),
+            "gemini" => CreateGeminiProvider(preset),
+            "openrouter" => CreateOpenRouterProvider(preset),
+            "ollama" => CreateOllamaProvider(preset),
+
+            // All remaining OpenAI-style profiles share one implementation;
+            // only legacy env fallbacks and key requirements differ.
+            "openai" or "openai-compatible"
+                => CreateOpenAIStyleProvider(preset, "openai-compatible", legacyUrlEnv: "OPENAI_COMPATIBLE_BASE_URL"),
+            "deepseek" => CreateOpenAIStyleProvider(preset, "deepseek", legacyKeyEnv: "DEEPSEEK_API_KEY", keyRequired: true),
+            "zai" => CreateOpenAIStyleProvider(preset, "zai", legacyKeyEnv: "ZAI_API_KEY", keyRequired: true),
             _ => throw new NotSupportedException($"Unknown provider: {providerName}")
         };
     }
 
-    private ILLMProvider CreateGeminiProvider(string model)
+    /// <summary>
+    /// Resolves the endpoint root for a preset: PRESET_N_BASE_URL first, then a
+    /// legacy per-provider env var (OLLAMA_BASE_URL / OPENAI_COMPATIBLE_BASE_URL).
+    /// There are no hardcoded API endpoints in code — missing config throws.
+    /// </summary>
+    private string ResolveBaseUrl(ProviderConfig preset, string? legacyEnvVar)
     {
-        var apiKey = Environment.GetEnvironmentVariable("GEMINI_API_KEY");
+        var url = FirstNonEmpty(preset.BaseUrl,
+            legacyEnvVar == null ? null : Environment.GetEnvironmentVariable(legacyEnvVar));
+
+        if (string.IsNullOrWhiteSpace(url))
+        {
+            var hint = legacyEnvVar == null ? $"PRESET_{preset.SourceIndex}_BASE_URL"
+                                            : $"PRESET_{preset.SourceIndex}_BASE_URL or {legacyEnvVar}";
+            throw new InvalidOperationException(
+                $"No base URL configured for preset {preset.SourceIndex} ({preset.Provider}). Set {hint}.");
+        }
+
+        return url.TrimEnd('/');
+    }
+
+    /// <summary>
+    /// Resolves the API key for a preset: PRESET_N_API_KEY first, then the
+    /// legacy per-vendor env vars in order.
+    /// </summary>
+    private string? ResolveApiKey(ProviderConfig preset, params string[] legacyEnvVars)
+    {
+        var candidates = new List<string?> { preset.ApiKey };
+        candidates.AddRange(legacyEnvVars.Select(Environment.GetEnvironmentVariable));
+        return FirstNonEmpty(candidates.ToArray());
+    }
+
+    private static string? FirstNonEmpty(params string?[] values)
+        => values.FirstOrDefault(v => !string.IsNullOrWhiteSpace(v));
+
+    private ILLMProvider CreateGeminiProvider(ProviderConfig preset)
+    {
+        var baseUrl = ResolveBaseUrl(preset, legacyEnvVar: null);
+        var apiKey = ResolveApiKey(preset, "GEMINI_API_KEY");
         if (string.IsNullOrEmpty(apiKey))
         {
-            throw new InvalidOperationException("GEMINI_API_KEY not set");
+            throw new InvalidOperationException(
+                $"No API key for preset {preset.SourceIndex} (gemini). Set PRESET_{preset.SourceIndex}_API_KEY or GEMINI_API_KEY.");
         }
-        return new GeminiProvider(model, apiKey, _httpClient, _searchService, _webFetchService, _logger);
+        return new GeminiProvider(preset.Model, apiKey, baseUrl, _httpClient, _searchService, _webFetchService, _logger);
     }
 
-    private ILLMProvider CreateOpenRouterProvider(string model)
+    private ILLMProvider CreateOpenRouterProvider(ProviderConfig preset)
     {
-        var apiKey = Environment.GetEnvironmentVariable("OPENROUTER_API_KEY");
+        var baseUrl = ResolveBaseUrl(preset, legacyEnvVar: null);
+        var apiKey = ResolveApiKey(preset, "OPENROUTER_API_KEY");
         if (string.IsNullOrEmpty(apiKey))
         {
-            throw new InvalidOperationException("OPENROUTER_API_KEY not set");
+            throw new InvalidOperationException(
+                $"No API key for preset {preset.SourceIndex} (openrouter). Set PRESET_{preset.SourceIndex}_API_KEY or OPENROUTER_API_KEY.");
         }
-        return new OpenRouterProvider(model, apiKey, _httpClient, _searchService, _webFetchService, _logger);
+        return new OpenRouterProvider(preset.Model, apiKey, baseUrl, _httpClient, _searchService, _webFetchService, _logger);
     }
 
-    private ILLMProvider CreateOllamaProvider(string model)
+    private ILLMProvider CreateOllamaProvider(ProviderConfig preset)
     {
-        var baseUrl = Environment.GetEnvironmentVariable("OLLAMA_BASE_URL") ?? "http://localhost:11434";
-        return new OllamaProvider(model, baseUrl, _httpClient, _logger);
+        var baseUrl = ResolveBaseUrl(preset, "OLLAMA_BASE_URL");
+        return new OllamaProvider(preset.Model, baseUrl, _httpClient, _logger);
     }
 
-    private ILLMProvider CreateOpenAICompatibleProvider(string model)
+    /// <summary>
+    /// Creates the shared OpenAI-style provider for any non-gemini/non-ollama
+    /// profile. The endpoint always comes from config; legacy per-vendor env
+    /// vars are honored as fallbacks, and key requirements vary per profile.
+    /// </summary>
+    private ILLMProvider CreateOpenAIStyleProvider(ProviderConfig preset, string name,
+        string? legacyUrlEnv = null, string? legacyKeyEnv = null, bool keyRequired = false)
     {
-        var baseUrl = Environment.GetEnvironmentVariable("OPENAI_COMPATIBLE_BASE_URL") ?? "http://localhost:11434";
-        return new OpenAICompatibleProvider(model, baseUrl, _httpClient, _searchService, _webFetchService, _logger);
-    }
+        var baseUrl = ResolveBaseUrl(preset, legacyUrlEnv);
+        var apiKey = ResolveApiKey(preset, legacyKeyEnv ?? "");
 
-    private ILLMProvider CreateDeepSeekProvider(string model)
-    {
-        var apiKey = Environment.GetEnvironmentVariable("DEEPSEEK_API_KEY");
-        if (string.IsNullOrEmpty(apiKey))
+        if (keyRequired && string.IsNullOrEmpty(apiKey))
         {
-            throw new InvalidOperationException("DEEPSEEK_API_KEY not set");
+            var fallback = legacyKeyEnv == null ? "" : $" or {legacyKeyEnv}";
+            throw new InvalidOperationException(
+                $"No API key for preset {preset.SourceIndex} ({name}). Set PRESET_{preset.SourceIndex}_API_KEY{fallback}.");
         }
-        return new DeepSeekProvider(model, apiKey, _httpClient, _searchService, _webFetchService, _logger);
-    }
 
-    private ILLMProvider CreateZaiProvider(string model)
-    {
-        var apiKey = Environment.GetEnvironmentVariable("ZAI_API_KEY");
-        if (string.IsNullOrEmpty(apiKey))
-        {
-            throw new InvalidOperationException("ZAI_API_KEY not set");
-        }
-        return new ZaiProvider(model, apiKey, _httpClient, _searchService, _webFetchService, _logger);
+        return new OpenAICompatibleProvider(preset.Model, baseUrl, apiKey,
+            _httpClient, _searchService, _webFetchService, _logger, name);
     }
 
     public void Dispose()

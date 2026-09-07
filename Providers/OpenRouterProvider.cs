@@ -4,28 +4,35 @@ using System.Net.Http.Headers;
 
 namespace YAOLlm.Providers;
 
+/// <summary>
+/// OpenAI-style provider for OpenRouter-shaped endpoints. The endpoint root
+/// comes from config (PRESET_N_BASE_URL, e.g. https://openrouter.ai/api/v1) —
+/// only the protocol headers are hardcoded.
+/// </summary>
 public class OpenRouterProvider : OpenAIStyleProvider
 {
-    private const string ApiUrl = "https://openrouter.ai/api/v1/chat/completions";
     private const string DefaultReferer = "https://github.com/camalolo/YAOLlm";
     private const string DefaultTitle = "YAOLlm";
 
     private readonly string? _apiKey;
+    private readonly string _baseUrl;
 
     public override string Name => "openrouter";
     public override string Model { get; protected set; }
     public override bool SupportsWebSearch => true;
 
-    protected override string StreamUrl => ApiUrl;
+    protected override string StreamUrl => $"{_baseUrl}/chat/completions";
 
-    public OpenRouterProvider(string model, string? apiKey = null, HttpClient? httpClient = null, ISearchService? searchService = null, IWebFetchService? webFetchService = null, Logger? logger = null)
+    /// <param name="baseUrl">Endpoint root, e.g. https://openrouter.ai/api/v1 (from PRESET_N_BASE_URL).</param>
+    public OpenRouterProvider(string model, string? apiKey, string baseUrl, HttpClient? httpClient = null, ISearchService? searchService = null, IWebFetchService? webFetchService = null, Logger? logger = null)
         : base(httpClient, searchService, webFetchService, logger)
     {
         Model = model ?? throw new ArgumentNullException(nameof(model));
-        _apiKey = apiKey ?? Environment.GetEnvironmentVariable("OPENROUTER_API_KEY");
+        _apiKey = apiKey;
+        _baseUrl = (baseUrl ?? throw new ArgumentNullException(nameof(baseUrl))).TrimEnd('/');
 
         if (string.IsNullOrEmpty(_apiKey))
-            throw new InvalidOperationException("OpenRouter API key not provided. Set OPENROUTER_API_KEY environment variable or pass apiKey parameter.");
+            throw new InvalidOperationException("OpenRouter API key not provided. Set PRESET_N_API_KEY or OPENROUTER_API_KEY, or pass apiKey parameter.");
     }
 
     protected override void CustomizeRequest(HttpRequestMessage request)

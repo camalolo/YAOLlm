@@ -11,21 +11,22 @@ namespace YAOLlm.Providers;
 
 public class GeminiProvider : BaseLLMProvider
 {
-    private const string ApiBaseUrl = "https://generativelanguage.googleapis.com/v1beta/models/";
-
     private readonly string _apiKey;
+    private readonly string _baseUrl;
 
     public override string Name => "gemini";
     public override string Model { get; protected set; }
     public override bool SupportsWebSearch => true;
 
-    private string StreamUrl => $"{ApiBaseUrl}{Model}:streamGenerateContent?alt=sse";
+    private string StreamUrl => $"{_baseUrl}/models/{Model}:streamGenerateContent?alt=sse";
 
-    public GeminiProvider(string model, string apiKey, HttpClient? httpClient = null, ISearchService? searchService = null, IWebFetchService? webFetchService = null, Logger? logger = null)
+    /// <param name="baseUrl">Endpoint root, e.g. https://generativelanguage.googleapis.com/v1beta (from PRESET_N_BASE_URL).</param>
+    public GeminiProvider(string model, string apiKey, string baseUrl, HttpClient? httpClient = null, ISearchService? searchService = null, IWebFetchService? webFetchService = null, Logger? logger = null)
         : base(httpClient, searchService, webFetchService, logger)
     {
         Model = model ?? throw new ArgumentNullException(nameof(model));
         _apiKey = apiKey ?? throw new ArgumentNullException(nameof(apiKey));
+        _baseUrl = (baseUrl ?? throw new ArgumentNullException(nameof(baseUrl))).TrimEnd('/');
     }
 
     protected override void CustomizeRequest(HttpRequestMessage request)

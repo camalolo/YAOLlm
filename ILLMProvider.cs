@@ -12,7 +12,8 @@ namespace YAOLlm;
 public interface ILLMProvider : IDisposable
 {
     /// <summary>
-    /// Provider name (e.g., "gemini", "openrouter", "ollama")
+    /// Protocol profile name (e.g., "gemini", "openai-compatible", "deepseek",
+    /// "ollama") — used in log lines and exception context, not for UI display.
     /// </summary>
     string Name { get; }
 

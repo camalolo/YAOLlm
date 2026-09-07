@@ -17,13 +17,13 @@ public class OllamaProvider : BaseLLMProvider
     public override string Model { get => _model; protected set => _model = value; }
     public override bool SupportsWebSearch => false;
 
-    public OllamaProvider(string model, string? baseUrl = null, HttpClient? httpClient = null, Logger? logger = null)
+    private string StreamUrl => $"{_baseUrl}/api/chat";
+
+    public OllamaProvider(string model, string baseUrl, HttpClient? httpClient = null, Logger? logger = null)
         : base(httpClient, null, null, logger)
     {
         _model = model ?? throw new ArgumentNullException(nameof(model));
-        _baseUrl = baseUrl
-            ?? Environment.GetEnvironmentVariable("OLLAMA_BASE_URL")
-            ?? "http://localhost:11434";
+        _baseUrl = (baseUrl ?? throw new ArgumentNullException(nameof(baseUrl))).TrimEnd('/');
     }
 
     private List<object> BuildMessages(List<ChatMessage> history, byte[]? image)
@@ -77,7 +77,7 @@ public class OllamaProvider : BaseLLMProvider
         var jsonPayload = JsonSerializer.Serialize(requestBody);
 
         ThrowIfDisposed();
-        using var response = await PostWithRetryAsync($"{_baseUrl}/api/chat", jsonPayload, cancellationToken);
+        using var response = await PostWithRetryAsync(StreamUrl, jsonPayload, cancellationToken);
         using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
         using var reader = new StreamReader(stream);
 
