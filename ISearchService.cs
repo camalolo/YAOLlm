@@ -5,7 +5,7 @@ namespace YAOLlm;
 public interface ISearchService
 {
     /// <summary>
-    /// Display name of this search service (e.g. "Exa", "Serper").
+    /// Display name of this search service (e.g. "proxy").
     /// </summary>
     string Name { get; }
 

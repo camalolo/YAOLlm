@@ -22,7 +22,7 @@ dotnet publish -p:PublishSingleFile=true -c Release -r win-x64 --self-contained 
 
 ```
 Program.cs → MainForm (WinForms shell + WebView2 host)
-                ├─ PresetManager        → ILLMProvider (6 implementations), owns shared HttpClient
+                ├─ PresetManager        → ILLMProvider (4 implementations), owns shared HttpClient
                 ├─ ConversationManager  → ChatMessage history
                 ├─ StatusManager        → Status enum (Idle/Sending/Receiving/Searching/Fetching)
                 ├─ WebViewBridge        → C# ↔ JS messaging (JSON over postMessage)
@@ -54,12 +54,14 @@ All providers implement `IAsyncEnumerable<string> StreamAsync(...)` — streamin
 
 | Provider | Base Class | API Style | Web Search |
 |---|---|---|---|
-| `GeminiProvider` | `BaseLLMProvider` | Gemini SSE (`/v1beta/models/{m}:streamGenerateContent?alt=sse`) | Yes (`web_search` tool) |
-| `OpenRouterProvider` | `OpenAIStyleProvider` | OpenAI-compatible SSE | Yes (`web_search` tool) |
-| `OllamaProvider` | `BaseLLMProvider` | Ollama JSON streaming (`/api/chat`) | No (`SupportsWebSearch = false`) |
-| `OpenAICompatibleProvider` | `OpenAIStyleProvider` | OpenAI-compatible SSE (`/v1/chat/completions`) | Yes |
-| `DeepSeekProvider` | `OpenAICompatibleProvider` | DeepSeek SSE | Yes |
-| `ZaiProvider` | `OpenAICompatibleProvider` | Z.ai SSE (`/chat/completions`) | Yes |
+| `GeminiProvider` | `BaseLLMProvider` | Gemini SSE (`{BASE_URL}/models/{m}:streamGenerateContent?alt=sse`) | Yes (`web_search` tool) |
+| `OllamaProvider` | `BaseLLMProvider` | Ollama JSON streaming (`{BASE_URL}/api/chat`) | No (`SupportsWebSearch = false`) |
+| `OpenAICompatibleProvider` | `OpenAIStyleProvider` | OpenAI-compatible SSE (`{BASE_URL}/chat/completions`) | Yes |
+| `OpenRouterProvider` | `OpenAIStyleProvider` | OpenAI-compatible SSE + `HTTP-Referer`/`X-Title` headers | Yes (`web_search` tool) |
+
+All provider base URLs come from config (`PRESET_N_BASE_URL`) — see [Configuration](#configuration). Providers hardcode only the protocol resource path (`/chat/completions`, `/api/chat`, `/models/...`).
+
+There are only **two real protocol implementations** per family: `OpenAICompatibleProvider` serves every OpenAI-style config profile (`openai`, `openai-compatible`, `deepseek`, `zai` — the profile name is just a ctor param used in logs/errors), and `OpenRouterProvider` adds attribution headers. Don't create new per-vendor subclasses for OpenAI-style APIs — add a profile name in `PresetManager` instead.
 
 ### `BaseLLMProvider` — shared transport & tooling
 
@@ -95,38 +97,54 @@ Providers raise structured `ProviderStatus` records (`StatusManager.cs`) — not
 
 Config file: `~/.yaollm.conf` — loaded **once** by `Program.Main` via `DotEnv.Load` into the process environment. `PresetManager.LoadConfig()` reads `PRESET_*`/`ACTIVE_PRESET` from environment variables (no second dotenv parse).
 
+**No LLM endpoint is hardcoded in code.** Every preset gets its endpoint from config:
+
 ```
-GEMINI_API_KEY=...
+GEMINI_API_KEY=...        # legacy per-vendor keys, still honored as fallback
 OPENROUTER_API_KEY=...
 DEEPSEEK_API_KEY=...
 ZAI_API_KEY=...
-OLLAMA_BASE_URL=http://localhost:11434
-OPENAI_COMPATIBLE_BASE_URL=http://localhost:11434
-TAVILY_API_KEY=...
-EXA_API_KEY=...
-SERPER_API_KEY=...
-TINYFISH_API_KEY=...
+OLLAMA_BASE_URL=http://localhost:11434           # legacy fallback for ollama presets
+OPENAI_COMPATIBLE_BASE_URL=http://localhost:11434 # legacy fallback for openai presets
+TTS_VOICE=en-US-GuyNeural
 
-SEARCH_SERVICES=exa,tavily,tinyfish,serper
+SEARCH_SERVICES=proxy            # on/off switch: must contain "proxy" to enable search
+PROXY_API_KEY=ik-...             # key for the user's own proxy (search + LLM presets)
+PROXY_SEARCH_URL=https://inference.camalolo.com/api/search
 
-PRESET_1=gemini:gemini-2.0-flash:My Gemini
-PRESET_2=openrouter:openrouter/...:OpenRouter
+PRESET_1=openai:glm-5.3-flash:My Proxy
+PRESET_1_BASE_URL=http://127.0.0.1:3003/api/v1
+PRESET_1_API_KEY=ik-XXXXX
+
+PRESET_2=gemini:gemini-2.5-flash-lite:Gemini-2.5
+PRESET_2_BASE_URL=https://generativelanguage.googleapis.com/v1beta
 ACTIVE_PRESET=1
 ```
 
-`SEARCH_SERVICES` — comma-separated list of search service names in priority order. Supported names: `exa`, `tavily`, `tinyfish`, `serper`. Each name maps to its API key env var:
-- `exa` → `EXA_API_KEY`
-- `serper` → `SERPER_API_KEY`
-- `tavily` → `TAVILY_API_KEY`
-- `tinyfish` → `TINYFISH_API_KEY`
+Per-preset keys:
 
-Services are tried in the order listed. If `SEARCH_SERVICES` is not set, falls back to `tinyfish` first, then `tavily`. Tavily falls back to a DuckDuckGo HTML scrape on quota errors (432/433).
+- `PRESET_N=provider:model[:display_name]` — `provider` selects the protocol profile: `gemini`, `openai`/`openai-compatible`, `openrouter`, `deepseek`, `zai`, `ollama` (case-insensitive).
+- `PRESET_N_BASE_URL` — endpoint root. `PRESET_N_BASE_URL` wins; if absent, legacy env fallbacks apply (`OLLAMA_BASE_URL` for ollama, `OPENAI_COMPATIBLE_BASE_URL` for openai/openai-compatible). If neither is set, `CreateProvider()` throws `InvalidOperationException`.
+- `PRESET_N_API_KEY` — optional. Falls back to the legacy vendor env vars (`GEMINI_API_KEY`, `OPENROUTER_API_KEY`, `DEEPSEEK_API_KEY`, `ZAI_API_KEY`). Generic `openai`/`ollama` presets need no key; omitting `PRESET_N_API_KEY` means `SaveConfig` won't write a key line (avoids duplicating secrets into the preset block).
 
-Preset format: `provider:model[:display_name]`. Provider names are case-insensitive. With 3+ colon-separated segments, the **last** segment is always the display name.
+Providers append only their protocol resource path to `BASE_URL` — the host/version segment comes entirely from config:
+
+| provider | resulting URL | auth |
+|---|---|---|
+| `gemini` | `{BASE_URL}/models/{model}:streamGenerateContent?alt=sse` | `x-goog-api-key` header |
+| `openai` / `openai-compatible` | `{BASE_URL}/chat/completions` | Bearer if key set |
+| `openrouter` | `{BASE_URL}/chat/completions` | Bearer + `HTTP-Referer`/`X-Title` |
+| `deepseek` | `{BASE_URL}/chat/completions` | Bearer (BASE_URL e.g. `https://api.deepseek.com/v1`) |
+| `zai` | `{BASE_URL}/chat/completions` | Bearer (BASE_URL e.g. `https://api.z.ai/api/coding/paas/v4`) |
+| `ollama` | `{BASE_URL}/api/chat` | none |
+
+Preset line format: `provider:model[:display_name]`. Provider names are case-insensitive. With 3+ colon-separated segments, the **last** segment is always the display name (so model IDs containing colons work).
+
+`SEARCH_SERVICES` — on/off switch for web search. There is exactly one search backend: the user's own proxy endpoint (`PROXY_SEARCH_URL` + `PROXY_API_KEY`), which does provider failover server-side. If `SEARCH_SERVICES` is set, it must contain `proxy` (e.g. `SEARCH_SERVICES=proxy`) or search is disabled; if unset, search is enabled when both `PROXY_API_KEY` and `PROXY_SEARCH_URL` are present. The local per-provider search services (Exa/Tavily/TinyFish/Serper) were removed — don't reintroduce them; add upstreams to the proxy's server-side chain instead.
 
 ### Search services
 
-All extend `SearchServiceBase` — a template that owns the HTTP call, error mapping, and markdown formatting. Subclasses implement `CreateRequest` (endpoint/auth/body) and `ParseResults` (JSON → `(title, url, content)` triples), plus an optional `OnRequestFailedAsync` quota fallback. Failures return strings starting with `"Error:"`, which is the convention `SearchServiceAggregator` uses to fall through to the next service.
+`ProxySearchService` is the only implementation: a thin client for `GET {PROXY_SEARCH_URL}?q=<encoded>&limit=N` with Bearer auth. Per the endpoint contract it retries 429 (honoring `Retry-After`), 5xx, and network errors (max 3 attempts, 1s → 4s backoff, 45s per-attempt timeout), never retries 400/401 or empty result sets, and treats `results: []` with HTTP 200 as a valid answer. It never parses the informational `provider` field. Results are formatted as markdown (`**title**` / `URL:` / `Content:` blocks). Failures return strings starting with `"Error:"`, which is the convention `SearchServiceAggregator` uses to fall through to the next service.
 
 ## UI Bridge Protocol
 

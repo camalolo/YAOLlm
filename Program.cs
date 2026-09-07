@@ -40,45 +40,32 @@ static class Program
         var searchServices = new List<ISearchService>();
         var enabledNames = new List<string>();
 
-        var searchFactories = new (string Name, string EnvVar, Func<string, Logger, ISearchService> Create)[]
-        {
-            ("exa", "EXA_API_KEY", (key, log) => new ExaSearchService(key, log)),
-            ("serper", "SERPER_API_KEY", (key, log) => new SerperSearchService(key, log)),
-            ("tavily", "TAVILY_API_KEY", (key, log) => new TavilySearchService(key, log)),
-            ("tinyfish", "TINYFISH_API_KEY", (key, log) => new TinyFishSearchService(key, log)),
-        };
-
-        void AddSearchService(string name)
-        {
-            var entry = Array.Find(searchFactories, f => f.Name == name);
-            if (entry.Name == null)
-            {
-                logger.Log($"[Startup] Unknown search service: '{name}'");
-                return;
-            }
-
-            var apiKey = Environment.GetEnvironmentVariable(entry.EnvVar) ?? "";
-            if (string.IsNullOrEmpty(apiKey))
-            {
-                logger.Log($"[Startup] {entry.EnvVar} not set, skipping {entry.Name} search");
-                return;
-            }
-
-            searchServices.Add(entry.Create(apiKey, logger));
-            enabledNames.Add(entry.Name);
-        }
-
+        // Web search goes through the user's proxy endpoint exclusively
+        // (server-side provider failover). SEARCH_SERVICES acts as an on/off
+        // switch: when set, it must contain "proxy" to enable search.
         var searchServicesConfig = Environment.GetEnvironmentVariable("SEARCH_SERVICES");
-        if (!string.IsNullOrEmpty(searchServicesConfig))
+        var wantsProxy = string.IsNullOrWhiteSpace(searchServicesConfig) ||
+            searchServicesConfig.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Any(name => name.Equals("proxy", StringComparison.OrdinalIgnoreCase));
+
+        if (wantsProxy)
         {
-            foreach (var name in searchServicesConfig.Split(',', StringSplitOptions.RemoveEmptyEntries))
-                AddSearchService(name.Trim().ToLowerInvariant());
+            var proxyKey = Environment.GetEnvironmentVariable("PROXY_API_KEY") ?? "";
+            var proxyUrl = Environment.GetEnvironmentVariable("PROXY_SEARCH_URL") ?? "";
+
+            if (proxyKey.Length > 0 && proxyUrl.Length > 0)
+            {
+                searchServices.Add(new ProxySearchService(proxyKey, proxyUrl, logger));
+                enabledNames.Add("proxy");
+            }
+            else
+            {
+                logger.Log("[Startup] PROXY_API_KEY / PROXY_SEARCH_URL not set, web search disabled");
+            }
         }
         else
         {
-            // Fallback: TinyFish first, Tavily second
-            AddSearchService("tinyfish");
-            AddSearchService("tavily");
+            logger.Log($"[Startup] SEARCH_SERVICES={searchServicesConfig} does not include 'proxy', web search disabled");
         }
 
         logger.Log($"[Startup] Search services: {string.Join(", ", enabledNames)} ({enabledNames.Count} services)");
