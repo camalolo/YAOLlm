@@ -183,31 +183,29 @@
           class="w-full bg-white/10 border border-white/30 rounded-xl text-white placeholder-white/60 focus:border-white/50 focus:outline-none p-3 font-mono text-sm leading-relaxed"
         ></textarea>
 
-        <!-- Button row -->
-        <div class="flex items-center justify-between mt-2">
-          <!-- Left: action buttons -->
-          <div class="flex items-center gap-1.5 flex-wrap">
-            <button @click="sendMessage()" :disabled="!hasProvider" class="bg-white/10 hover:bg-white/20 text-white text-xs rounded-lg px-3 py-1.5 transition-all">Send</button>
-            <button @click="stopStream()" :disabled="status === 'Idle'" :class="status === 'Idle' ? 'bg-white/10 text-white/30' : 'bg-red-600/80 hover:bg-red-500 text-white'" class="text-xs rounded-lg px-3 py-1.5 transition-all">⏹ Stop</button>
-            <button @click="captureSend()" :disabled="!hasProvider" class="bg-white/10 hover:bg-white/20 text-white text-xs rounded-lg px-3 py-1.5 transition-all">Capture &amp; Send</button>
-            <button @click="loadImage()" :disabled="!hasProvider" class="bg-white/10 hover:bg-white/20 text-white text-xs rounded-lg px-3 py-1.5 transition-all">Load Image</button>
-            <button @click="proceed()" :disabled="!hasProvider" class="bg-white/10 hover:bg-white/20 text-white text-xs rounded-lg px-3 py-1.5 transition-all">Proceed</button>
-            <button @click="clearChat()" :disabled="!hasProvider" class="bg-white/10 hover:bg-white/20 text-white text-xs rounded-lg px-3 py-1.5 transition-all">Clear</button>
-            <button @click="cycleProvider()" :disabled="!hasProvider" class="bg-white/10 hover:bg-white/20 text-white text-xs rounded-lg px-3 py-1.5 transition-all">⇄ Provider</button>
-            <button @click="toggleTts()" :class="ttsEnabled ? 'bg-green-600/80 hover:bg-green-500 text-white' : 'bg-white/10 hover:bg-white/20 text-white/50'" class="text-xs rounded-lg px-3 py-1.5 transition-all"><span x-text="ttsEnabled ? '🔊 TTS' : '🔇 TTS'"></span></button>
-          </div>
+        <!-- Button row: buttons must not share a row with the status text —
+             status label width changes (Idle→Receiving→Searching) would
+             re-wrap the buttons and resize the whole bottom section. -->
+        <div class="flex items-center gap-1.5 flex-wrap mt-2">
+          <button @click="sendMessage()" :disabled="!hasProvider" class="bg-white/10 hover:bg-white/20 text-white text-xs rounded-lg px-3 py-1.5 transition-all">Send</button>
+          <button @click="stopStream()" :disabled="status === 'Idle'" :class="status === 'Idle' ? 'bg-white/10 text-white/30' : 'bg-red-600/80 hover:bg-red-500 text-white'" class="text-xs rounded-lg px-3 py-1.5 transition-all">⏹ Stop</button>
+          <button @click="captureSend()" :disabled="!hasProvider" class="bg-white/10 hover:bg-white/20 text-white text-xs rounded-lg px-3 py-1.5 transition-all">Capture &amp; Send</button>
+          <button @click="loadImage()" :disabled="!hasProvider" class="bg-white/10 hover:bg-white/20 text-white text-xs rounded-lg px-3 py-1.5 transition-all">Load Image</button>
+          <button @click="proceed()" :disabled="!hasProvider" class="bg-white/10 hover:bg-white/20 text-white text-xs rounded-lg px-3 py-1.5 transition-all">Proceed</button>
+          <button @click="clearChat()" :disabled="!hasProvider" class="bg-white/10 hover:bg-white/20 text-white text-xs rounded-lg px-3 py-1.5 transition-all">Clear</button>
+          <button @click="cycleProvider()" :disabled="!hasProvider" class="bg-white/10 hover:bg-white/20 text-white text-xs rounded-lg px-3 py-1.5 transition-all">⇄ Provider</button>
+          <button @click="toggleTts()" :class="ttsEnabled ? 'bg-green-600/80 hover:bg-green-500 text-white' : 'bg-white/10 hover:bg-white/20 text-white/50'" class="text-xs rounded-lg px-3 py-1.5 transition-all"><span x-text="ttsEnabled ? '🔊 TTS' : '🔇 TTS'"></span></button>
+        </div>
 
-          <!-- Right: status info -->
-          <div class="flex flex-col items-end gap-0.5 flex-shrink-0 ml-2">
-            <div class="flex items-center gap-3">
-              <div class="flex items-center gap-1.5">
-                <span class="w-2 h-2 rounded-full inline-block" :class="[statusColor(), status !== 'Idle' ? 'status-dot-active' : '']"></span>
-                <span class="text-white text-xs font-mono" x-text="status"></span>
-              </div>
-              <span class="text-white/80 text-xs font-mono" x-show="historyChars > 0" x-text="historyChars + ' chars'"></span>
-            </div>
-            <span class="text-xs font-mono" :class="hasProvider ? 'text-white/80' : 'text-red-400'" x-text="hasProvider ? (provider || '—') : 'No provider configured'"></span>
+        <!-- Status row: right-aligned, single line; its own row so label
+             width changes never affect the button layout above. -->
+        <div class="flex items-center justify-end gap-3 mt-1.5 overflow-hidden whitespace-nowrap">
+          <div class="flex items-center gap-1.5 flex-shrink-0">
+            <span class="w-2 h-2 rounded-full inline-block" :class="[statusColor(), status !== 'Idle' ? 'status-dot-active' : '']"></span>
+            <span class="text-white text-xs font-mono" x-text="status"></span>
           </div>
+          <span class="text-white/80 text-xs font-mono flex-shrink-0" x-show="historyChars > 0" x-text="historyChars + ' chars'"></span>
+          <span class="text-xs font-mono flex-shrink-0" :class="hasProvider ? 'text-white/80' : 'text-red-400'" x-text="hasProvider ? (provider || '—') : 'No provider configured'"></span>
         </div>
       </div>
     </div>
@@ -445,11 +443,33 @@
           if (chat) chat.scrollTop = chat.scrollHeight;
         },
 
+        // While a stream is active, pin every animation frame. Content can
+        // only be mutated between frames, and rAF callbacks run before the
+        // frame's layout+paint — so a bottom gap can never survive into a
+        // painted frame, no matter how busy the main thread gets. The loop
+        // disarms itself when the stream ends or the user scrolls away, and
+        // scheduleScrollToBottom() re-arms it on the next chunk.
+        ensurePinLoop() {
+          if (this._pinLoopActive || !this.streamingHtml || this.userScrolledUp) return;
+          this._pinLoopActive = true;
+          const step = () => {
+            if (!this.streamingHtml || this.userScrolledUp) {
+              this._pinLoopActive = false;
+              return;
+            }
+            const chat = document.getElementById('chat-area');
+            if (chat) chat.scrollTop = chat.scrollHeight;
+            requestAnimationFrame(step);
+          };
+          requestAnimationFrame(step);
+        },
+
         // Pin in $nextTick (runs before the frame's layout+paint, so the chunk
         // and the scroll land in the same frame), then re-pin once after paint
         // via rAF to absorb any late resizes (highlighting, images). Coalesced
         // so bursts of chunks cost at most one follow-up per frame.
         scheduleScrollToBottom() {
+          this.ensurePinLoop();
           this.$nextTick(() => {
             this.scrollToBottom();
             if (this._scrollFollowUp === undefined) {
