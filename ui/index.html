@@ -69,6 +69,17 @@
       padding: 0;
       border-radius: 0;
     }
+    /* The hljs theme switches highlighted code to display:block, which lays
+       the lines out with the code's own line boxes instead of the pre's —
+       every code block changes height the moment highlighting is applied
+       after streaming, and the whole message visibly collapses. Keep the
+       highlighted code inline so the layout matches the streamed render. */
+    .msg-content pre code.hljs {
+      display: inline;
+      background: none;
+      padding: 0;
+      overflow-x: visible;
+    }
     .msg-content blockquote {
       border-left: 3px solid rgba(255, 255, 255, 0.2);
       padding-left: 0.75em;
