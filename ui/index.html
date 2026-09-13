@@ -204,6 +204,7 @@
           <button @click="loadImage()" :disabled="!hasProvider" class="bg-white/10 hover:bg-white/20 text-white text-xs rounded-lg px-3 py-1.5 transition-all">Load Image</button>
           <button @click="proceed()" :disabled="!hasProvider" class="bg-white/10 hover:bg-white/20 text-white text-xs rounded-lg px-3 py-1.5 transition-all">Proceed</button>
           <button @click="clearChat()" :disabled="!hasProvider" class="bg-white/10 hover:bg-white/20 text-white text-xs rounded-lg px-3 py-1.5 transition-all">Clear</button>
+          <button @click="compactChat()" :disabled="!hasProvider || status !== 'Idle'" :class="!hasProvider || status !== 'Idle' ? 'bg-white/10 text-white/30' : 'bg-white/10 hover:bg-white/20 text-white'" class="text-xs rounded-lg px-3 py-1.5 transition-all">🗜 Compact</button>
           <button @click="cycleProvider()" :disabled="!hasProvider" class="bg-white/10 hover:bg-white/20 text-white text-xs rounded-lg px-3 py-1.5 transition-all">⇄ Provider</button>
           <button @click="toggleTts()" :class="ttsEnabled ? 'bg-green-600/80 hover:bg-green-500 text-white' : 'bg-white/10 hover:bg-white/20 text-white/50'" class="text-xs rounded-lg px-3 py-1.5 transition-all"><span x-text="ttsEnabled ? '🔊 TTS' : '🔇 TTS'"></span></button>
         </div>
@@ -277,6 +278,10 @@
 
         clearChat() {
           window.chrome.webview.postMessage(JSON.stringify({type: 'clear'}));
+        },
+
+        compactChat() {
+          window.chrome.webview.postMessage(JSON.stringify({type: 'compact'}));
         },
 
         hide() {

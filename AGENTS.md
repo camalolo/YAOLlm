@@ -168,7 +168,7 @@ All messages are JSON. C# → JS via `CoreWebView2.PostWebMessageAsJson`. JS →
 
 ### JS → C# messages
 
-`send`, `capture_send`, `load_image`, `proceed`, `clear`, `hide`, `exit`, `cycle_provider`, `stop`, `_console` (JS console forwarding — logged by `WebViewBridge`, not dispatched)
+`send`, `capture_send`, `load_image`, `proceed`, `clear`, `compact`, `hide`, `exit`, `cycle_provider`, `stop`, `_console` (JS console forwarding — logged by `WebViewBridge`, not dispatched)
 
 Syntax highlighting uses `highlightNew()` — only `pre code` blocks lacking the `hljs` class are highlighted; streaming chunks are not highlighted at all (the final `chat_message` handles it).
 
@@ -191,4 +191,5 @@ Syntax highlighting uses `highlightNew()` — only `pre code` blocks lacking the
 - **Tab key cycles providers** — `ProcessCmdKey` intercepts `Tab` when the overlay is visible to call `CyclePreset()`. Switching mid-request defers the actual provider swap to the next send (`_pendingPresetSwitch`).
 - **Error/empty exchanges are not persisted** — failed requests and empty responses don't add turns to `ConversationManager`; the user can simply retry. Cancelled (stopped) responses *are* persisted with a stop marker.
 - **History trim**: `ConversationManager` caps at 32 entries (system + 31 conversation turns). Trimming removes oldest user/model pairs, keeping the system message.
+- **Compaction (🗜 Compact button)**: `MainForm.CompactConversationAsync` streams a summarization request (`BuildCompactionSystemPrompt` + `BuildCompactionTranscript`) through the current provider with no tools, then `ConversationManager.Compact(summary)` replaces the whole history with system prompt + a single summary-bearing user message. Takes `_sendLock` (busy → warning, no queueing); Stop cancels it via the shared `_cancellationTokenSource`; failures/cancellations leave history untouched. Attached images are noted in the transcript, not embedded. Re-compacting works — the previous summary becomes part of the transcript.
 - **Tool arguments box as `JsonElement`** — `DeserializeArguments` values (including numbers/bools) come back as `JsonElement`; use `GetIntArg`/`.ToString()` rather than `is long`/`is bool` checks.

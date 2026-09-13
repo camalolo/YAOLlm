@@ -32,6 +32,40 @@ public class ConversationManager
         }
     }
 
+    /// <summary>
+    /// Snapshot of the conversation turns only — everything after the system
+    /// prompt. This is the raw material for context compaction.
+    /// </summary>
+    public List<ChatMessage> GetConversationTurns()
+    {
+        lock (_historyLock)
+        {
+            if (_conversationHistory.Count <= 1)
+                return new List<ChatMessage>();
+            return _conversationHistory.GetRange(1, _conversationHistory.Count - 1);
+        }
+    }
+
+    /// <summary>
+    /// Replaces the entire conversation with the current system prompt followed
+    /// by a single user message containing the compaction summary (opencode-style
+    /// compaction). The summary must carry every detail needed to continue the
+    /// conversation seamlessly. Subsequent exchanges append after it normally.
+    /// </summary>
+    public void Compact(string summary)
+    {
+        if (summary == null) throw new ArgumentNullException(nameof(summary));
+        lock (_historyLock)
+        {
+            var systemPrompt = _conversationHistory.Count > 0
+                ? _conversationHistory[0].Content ?? BuildSystemPrompt()
+                : BuildSystemPrompt();
+            _conversationHistory.Clear();
+            _conversationHistory.Add(new ChatMessage(ChatRole.System, systemPrompt));
+            _conversationHistory.Add(new ChatMessage(ChatRole.User, summary));
+        }
+    }
+
     public void AddExchange(ChatMessage userMessage, string modelResponse)
     {
         lock (_historyLock)

@@ -146,6 +146,7 @@ public partial class MainForm : Form
             _bridge.Exit += Application.Exit;
             _bridge.CycleProvider += CyclePreset;
             _bridge.Stop += StopStreaming;
+            _bridge.Compact += () => _ = CompactConversationAsync();
             _bridge.ToggleTts += () =>
             {
                 _ttsEnabled = !_ttsEnabled;
@@ -353,16 +354,7 @@ public partial class MainForm : Form
         }
 
         if (_pendingPresetSwitch)
-        {
-            _pendingPresetSwitch = false;
-            var oldProvider = _currentProvider;
-            if (oldProvider != null && _providerStatusHandler != null)
-                oldProvider.OnStatusChange -= _providerStatusHandler;
-            _currentProvider = _presetManager.CreateProvider();
-            SubscribeToProviderStatus();
-            _bridge?.Provider(_presetManager.ActivePreset.DisplayName ?? _presetManager.ActivePreset.ToString());
-            oldProvider?.Dispose();
-        }
+            ApplyPendingPresetSwitchIfQueued();
 
         if (!alreadyShown)
             _bridge?.ChatMessageFromMarkdown("user", message);
@@ -396,6 +388,189 @@ public partial class MainForm : Form
     {
         if (_messageQueue.TryDequeue(out var queued))
             SendMessage(queued.message, queued.imageBase64, queued.title, alreadyShown: true);
+    }
+
+    /// <summary>
+    /// Applies a preset cycle that was deferred because a request was in flight.
+    /// Called from both SendMessage and the compaction flow once the send lock
+    /// is held, so the new provider is actually used by the next request.
+    /// </summary>
+    private void ApplyPendingPresetSwitchIfQueued()
+    {
+        if (!_pendingPresetSwitch) return;
+        _pendingPresetSwitch = false;
+        var oldProvider = _currentProvider;
+        if (oldProvider != null && _providerStatusHandler != null)
+            oldProvider.OnStatusChange -= _providerStatusHandler;
+        _currentProvider = _presetManager.CreateProvider();
+        SubscribeToProviderStatus();
+        _bridge?.Provider(_presetManager.ActivePreset.DisplayName ?? _presetManager.ActivePreset.ToString());
+        oldProvider?.Dispose();
+    }
+
+    // ─── Conversation compaction (opencode-style) ───────────────────────
+
+    private async Task CompactConversationAsync()
+    {
+        if (!_presetManager.HasProvider)
+        {
+            _bridge?.Warning("No provider configured. Add presets to ~/.yaollm.conf");
+            return;
+        }
+
+        if (!_sendLock.Wait(0))
+        {
+            _bridge?.Warning("Busy — compaction is available once the current request finishes.");
+            return;
+        }
+
+        // Snapshot under the lock so exchanges completing between the take-over
+        // and the summary write can't be dropped by Compact().
+        var turns = _conversationManager.GetConversationTurns();
+        if (turns.Count == 0)
+        {
+            _sendLock.Release();
+            _bridge?.Warning("Nothing to compact yet — the conversation is empty.");
+            return;
+        }
+
+        _ = Task.Run(async () =>
+        {
+            try { await ProcessCompactionAsync(turns); }
+            finally
+            {
+                _sendLock.Release();
+                SendNextQueuedMessage();
+            }
+        });
+    }
+
+    private async Task ProcessCompactionAsync(List<ChatMessage> turns)
+    {
+        var oldCharCount = _conversationManager.GetTotalCharacterCount();
+        try
+        {
+            ApplyPendingPresetSwitchIfQueued();
+            var provider = _currentProvider;
+            _logger.Log($"Compacting conversation: {turns.Count} turns, {oldCharCount} chars");
+            _bridge?.ChatMessage("system", "<em>🗜 Compacting conversation…</em>");
+
+            var messages = new List<ChatMessage>
+            {
+                new(ChatRole.System, BuildCompactionSystemPrompt()),
+                new(ChatRole.User, BuildCompactionTranscript(turns)),
+            };
+
+            var summary = new StringBuilder();
+            var lastStreamUpdate = DateTime.UtcNow;
+
+            _cancellationTokenSource = new CancellationTokenSource();
+            var token = _cancellationTokenSource.Token;
+            _statusManager.SetStatus(Status.Sending);
+
+            await foreach (var chunk in provider.StreamAsync(messages, null, null, token).WithCancellation(token))
+            {
+                if (string.IsNullOrEmpty(chunk)) continue;
+                summary.Append(chunk);
+                if (summary.Length == chunk.Length)
+                    _statusManager.SetStatus(Status.Receiving);
+
+                // Slower render cadence than chat — the compaction output is
+                // progress feedback, not content to read while streaming.
+                var now = DateTime.UtcNow;
+                if ((now - lastStreamUpdate).TotalMilliseconds >= 200)
+                {
+                    _bridge?.ChatStream(MarkdownHelper.ToHtml(summary.ToString()));
+                    lastStreamUpdate = now;
+                }
+            }
+
+            var result = summary.ToString().Trim();
+            if (string.IsNullOrEmpty(result))
+            {
+                _bridge?.Warning("Compaction failed — the model returned no summary. History unchanged.");
+                return;
+            }
+
+            _conversationManager.Compact("[Compacted conversation]\n\n" + result);
+            var newCharCount = _conversationManager.GetTotalCharacterCount();
+            _logger.Log($"Compaction complete: {oldCharCount} → {newCharCount} chars");
+
+            // Fresh visual slate — the live history is now just system + summary.
+            _bridge?.Reset();
+            _bridge?.ChatMessage("system", $"<em>🗜 Context compacted: {oldCharCount:N0} → {newCharCount:N0} chars</em>");
+            _bridge?.ChatMessageFromMarkdown("system", result);
+            UpdateHistoryCounter();
+        }
+        catch (OperationCanceledException)
+        {
+            _logger.Log("Compaction cancelled by user");
+            _bridge?.Warning("⏹ Compaction cancelled — history unchanged.");
+        }
+        catch (LLMException ex)
+        {
+            _logger.Log($"Compaction LLM error: {ex.Message}");
+            _bridge?.Error($"Compaction failed: {ex.UserMessage}");
+        }
+        catch (Exception ex)
+        {
+            _logger.Log($"Compaction error: {ex.Message}");
+            _bridge?.Error($"Compaction failed: {ex.Message}");
+        }
+        finally
+        {
+            var cts = _cancellationTokenSource;
+            _cancellationTokenSource = null;
+            cts?.Dispose();
+            _statusManager.SetStatus(Status.Idle);
+        }
+    }
+
+    /// <summary>
+    /// Instructions for the summarization pass — the summary must let the
+    /// conversation continue as if the full history were still present.
+    /// </summary>
+    internal static string BuildCompactionSystemPrompt() => """
+        You are a conversation summarizer. Compress the conversation below into a compact summary that preserves every detail needed to continue it seamlessly.
+
+        Cover, in order of importance:
+        1. The user's goal(s), constraints, and preferences.
+        2. All key facts, decisions, and results established so far.
+        3. All technical specifics — code, commands, file paths, URLs, names, IDs, numbers — preserved verbatim where they matter.
+        4. Open questions, unresolved problems, and agreed next steps.
+
+        Rules:
+        - Preserve all details; omit only pleasantries and repetition.
+        - Do not answer the conversation or add commentary of your own — output only the summary.
+        - Write in the same language as the conversation.
+        """;
+
+    /// <summary>
+    /// Renders the conversation turns as a labelled transcript for the
+    /// summarization pass. Attached images can't be embedded — they are noted
+    /// so the summary still accounts for them.
+    /// </summary>
+    internal static string BuildCompactionTranscript(List<ChatMessage> turns)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("Conversation to summarize:");
+        sb.AppendLine();
+        foreach (var turn in turns)
+        {
+            var speaker = turn.Role switch
+            {
+                ChatRole.User => "User",
+                ChatRole.Model => "Assistant",
+                ChatRole.System => "System",
+                _ => "Message",
+            };
+            sb.AppendLine($"[{speaker}]");
+            if (turn.Image != null)
+                sb.AppendLine("(a screenshot was attached to this message)");
+            sb.AppendLine(turn.Content ?? "");
+            sb.AppendLine();
+        }
+        return sb.ToString();
     }
 
     private async Task ProcessLLMRequestAsync(string prompt, string? imageBase64 = null, string? activeWindowTitle = null)

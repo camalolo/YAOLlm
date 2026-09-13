@@ -71,6 +71,11 @@ public sealed class WebViewBridge
     public event Action? ToggleTts;
 
     /// <summary>
+    /// Fired when JavaScript requests compacting the conversation: <c>{"type":"compact"}</c>.
+    /// </summary>
+    public event Action? Compact;
+
+    /// <summary>
     /// Initializes a new instance of <see cref="WebViewBridge"/> and subscribes to
     /// <see cref="CoreWebView2.WebMessageReceived"/> for inbound message handling.
     /// </summary>
@@ -271,6 +276,9 @@ public sealed class WebViewBridge
                     break;
                 case "toggle_tts":
                     ToggleTts?.Invoke();
+                    break;
+                case "compact":
+                    Compact?.Invoke();
                     break;
                 case "_console":
                     // JS console forwarder (injected by MainForm) — log and don't dispatch
