@@ -21,7 +21,7 @@ public class ToolDefinitionsTests
     {
         var tools = ToolDefinitions.BuildTools(supportsWebSearch: true, ttsEnabled: true, fileReadEnabled: false);
 
-        Assert.Equal(new[] { "web_search", "web_fetch", "tts_summary" }, tools.Select(t => t.Name));
+        Assert.Equal(new[] { "web_search", "web_scrape", "tts_summary" }, tools.Select(t => t.Name));
     }
 
     [Fact]
@@ -37,11 +37,11 @@ public class ToolDefinitionsTests
     {
         var withTts = ToolDefinitions.BuildTools(supportsWebSearch: true, ttsEnabled: true)
             .Select(t => t.Name).ToList();
-        Assert.Equal(new[] { "web_search", "web_fetch", "file_read", "tts_summary" }, withTts);
+        Assert.Equal(new[] { "web_search", "web_scrape", "file_read", "tts_summary" }, withTts);
 
         var withoutTts = ToolDefinitions.BuildTools(supportsWebSearch: true, ttsEnabled: false)
             .Select(t => t.Name).ToList();
-        Assert.Equal(new[] { "web_search", "web_fetch", "file_read" }, withoutTts);
+        Assert.Equal(new[] { "web_search", "web_scrape", "file_read" }, withoutTts);
     }
 
     [Fact]

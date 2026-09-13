@@ -69,7 +69,7 @@ There are only **two real protocol implementations** per family: `OpenAICompatib
 - `PostWithRetryAsync(url, jsonPayload, ct)` — POST with exponential backoff on 429/503/network errors; throws `LLMException` on final failure.
 - `CustomizeRequest(HttpRequestMessage)` — virtual hook for per-provider auth headers.
 - `ReadSseDataLinesAsync(response, ct)` — shared SSE reader yielding `data:` payloads.
-- `ExecuteWebSearchToolAsync` / `ExecuteWebFetchToolAsync` / `ExecuteFileReadToolAsync` — shared tool executors that also update `CompletedSearchCount`/`CompletedFetchCount`/`CompletedFileReadCount`/`CompletedSearchSummaries`.
+- `ExecuteWebSearchToolAsync` / `ExecuteWebScrapeToolAsync` / `ExecuteFileReadToolAsync` — shared tool executors that also update `CompletedSearchCount`/`CompletedScrapeCount`/`CompletedFileReadCount`/`CompletedSearchSummaries`.
 - `ExtractTtsText(ToolCall)`, `GetIntArg(...)` — TTS/tool argument helpers. Note: JSON scalars from `DeserializeArguments` box as `JsonElement`, so numeric args must go through `GetIntArg`.
 
 ### `OpenAIStyleProvider` — full OpenAI-style template
@@ -110,8 +110,9 @@ OPENAI_COMPATIBLE_BASE_URL=http://localhost:11434 # legacy fallback for openai p
 TTS_VOICE=en-US-GuyNeural
 
 SEARCH_SERVICES=proxy            # on/off switch: must contain "proxy" to enable search
-PROXY_API_KEY=ik-...             # key for the user's own proxy (search + LLM presets)
+PROXY_API_KEY=ik-...             # key for the user's own proxy (search + scrape + LLM presets)
 PROXY_SEARCH_URL=https://inference.camalolo.com/api/search
+PROXY_SCRAPE_URL=...             # optional; defaults to PROXY_SEARCH_URL with /search → /scrape
 
 PRESET_1=openai:glm-5.3-flash:My Proxy
 PRESET_1_BASE_URL=http://127.0.0.1:3003/api/v1
@@ -166,9 +167,11 @@ Preset line format: `provider:model[:display_name]`. Provider names are case-ins
 
 `FILE_READ` — on/off switch for the `file_read` tool (read-only local file access via `FileReadService`). On by default; set `FILE_READ=off` (also `no`/`false`/`0`) to keep the tool unadvertised. The service opens files with `FileAccess.Read` only, refuses binary content (NUL-byte sniff), rejects relative paths (models must send absolute paths; `~` and `%ENV%` are expanded, wrapping quotes stripped), and truncates at 15k chars with a marker telling the model to re-read via `start_line`/`end_line`. Caveat: a fetched web page could prompt-inject the model into reading a local file — that's the accepted trade-off of a personal assistant; use `FILE_READ=off` for sensitive setups.
 
-### Search services
+### Search & scrape services
 
-`ProxySearchService` is the only implementation: a thin client for `GET {PROXY_SEARCH_URL}?q=<encoded>&limit=N` with Bearer auth. Per the endpoint contract it retries 429 (honoring `Retry-After`), 5xx, and network errors (max 3 attempts, 1s → 4s backoff, 45s per-attempt timeout), never retries 400/401 or empty result sets, and treats `results: []` with HTTP 200 as a valid answer. It never parses the informational `provider` field. Results are formatted as markdown (`**title**` / `URL:` / `Content:` blocks). Failures return strings starting with `"Error:"`, which is the convention `SearchServiceAggregator` uses to fall through to the next service.
+`ProxySearchService` is the only search implementation: a thin client for `GET {PROXY_SEARCH_URL}?q=<encoded>&limit=N` with Bearer auth. Per the endpoint contract it retries 429 (honoring `Retry-After`), 5xx, and network errors (max 3 attempts, 1s → 4s backoff, 45s per-attempt timeout), never retries 400/401 or empty result sets, and treats `results: []` with HTTP 200 as a valid answer. It never parses the informational `provider` field. Results are formatted as markdown (`**title**` / `URL:` / `Content:` blocks). Failures return strings starting with `"Error:"`, which is the convention `SearchServiceAggregator` uses to fall through to the next service.
+
+`web_scrape` follows the same pattern: `ProxyScrapeService` is a thin client for `GET {scrapeUrl}?url=<encoded>&format=json` with the same Bearer auth and identical retry contract, parsing `{"url","title","content","provider"}` (provider never used). The scrape URL is `PROXY_SCRAPE_URL` if set, otherwise derived from `PROXY_SEARCH_URL` by replacing the trailing `/search` path segment with `/scrape` (case-insensitive, trailing slash preserved). The result is formatted as a bold `**title**` heading + full page content, truncated at 15k chars with the same marker as the direct fetcher. Empty content is a failure (`"Error: Scrape returned no content..."`), unlike search's empty results. When the proxy scrape isn't configured (no key or no derivable URL), `Program.Main` falls back to the direct `WebFetchService` (browser-mimicking headers, regex HTML-to-text pipeline, 2 MB download cap — see `WebFetchService.cs`/`WebFetchServiceTests.cs`); keep that class as the no-proxy fallback.
 
 ## UI Bridge Protocol
 

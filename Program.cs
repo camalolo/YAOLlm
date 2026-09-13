@@ -48,14 +48,14 @@ static class Program
             searchServicesConfig.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
                 .Any(name => name.Equals("proxy", StringComparison.OrdinalIgnoreCase));
 
+        var proxyKey = Environment.GetEnvironmentVariable("PROXY_API_KEY") ?? "";
+        var proxySearchUrl = Environment.GetEnvironmentVariable("PROXY_SEARCH_URL") ?? "";
+
         if (wantsProxy)
         {
-            var proxyKey = Environment.GetEnvironmentVariable("PROXY_API_KEY") ?? "";
-            var proxyUrl = Environment.GetEnvironmentVariable("PROXY_SEARCH_URL") ?? "";
-
-            if (proxyKey.Length > 0 && proxyUrl.Length > 0)
+            if (proxyKey.Length > 0 && proxySearchUrl.Length > 0)
             {
-                searchServices.Add(new ProxySearchService(proxyKey, proxyUrl, logger));
+                searchServices.Add(new ProxySearchService(proxyKey, proxySearchUrl, logger));
                 enabledNames.Add("proxy");
             }
             else
@@ -71,7 +71,26 @@ static class Program
         logger.Log($"[Startup] Search services: {string.Join(", ", enabledNames)} ({enabledNames.Count} services)");
 
         var searchAggregator = new SearchServiceAggregator(searchServices, logger);
-        var webFetchService = new WebFetchService(logger: logger);
+
+        // web_scrape goes through the proxy scrape endpoint the same way search
+        // does (server-side bot-block handling). PROXY_SCRAPE_URL wins; if
+        // unset, it is derived from PROXY_SEARCH_URL (/search → /scrape).
+        // Without proxy config, fetch falls back to the direct fetcher.
+        IWebFetchService webFetchService;
+        var proxyScrapeUrl = Environment.GetEnvironmentVariable("PROXY_SCRAPE_URL") ?? "";
+        if (string.IsNullOrWhiteSpace(proxyScrapeUrl))
+            proxyScrapeUrl = ProxyScrapeService.DeriveScrapeUrl(proxySearchUrl) ?? "";
+
+        if (proxyKey.Length > 0 && proxyScrapeUrl.Length > 0)
+        {
+            webFetchService = new ProxyScrapeService(proxyKey, proxyScrapeUrl, logger);
+            logger.Log($"[Startup] web_scrape via proxy scrape: {proxyScrapeUrl}");
+        }
+        else
+        {
+            webFetchService = new WebFetchService(logger: logger);
+            logger.Log("[Startup] proxy scrape not configured, web_scrape uses direct fetch");
+        }
 
         // file_read is a read-only local file access tool. On by default;
         // FILE_READ=off (also no/false/0) keeps the tool unadvertised and the

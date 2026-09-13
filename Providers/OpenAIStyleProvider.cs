@@ -41,7 +41,7 @@ public abstract class OpenAIStyleProvider : BaseLLMProvider
 
         LogRequest(history.Count, tools != null && tools.Count > 0);
         CompletedSearchCount = 0;
-        CompletedFetchCount = 0;
+        CompletedScrapeCount = 0;
         CompletedFileReadCount = 0;
         CompletedSearchSummaries = null;
 
@@ -383,12 +383,12 @@ public abstract class OpenAIStyleProvider : BaseLLMProvider
                     RaiseOnStatusChange(new ProviderStatus(ProviderStatusKind.Searching, query, _searchService.Name));
                 toolResults.Add(await ExecuteWebSearchToolAsync(toolCall, cancellationToken));
             }
-            else if (toolCall.Name == "web_fetch" && _webFetchService != null)
+            else if (toolCall.Name == "web_scrape" && _webFetchService != null)
             {
                 var fetchUrl = toolCall.Arguments.TryGetValue("url", out var u) ? u?.ToString() : null;
                 if (!string.IsNullOrEmpty(fetchUrl))
                     RaiseOnStatusChange(new ProviderStatus(ProviderStatusKind.Fetching, fetchUrl));
-                toolResults.Add(await ExecuteWebFetchToolAsync(toolCall, cancellationToken));
+                toolResults.Add(await ExecuteWebScrapeToolAsync(toolCall, cancellationToken));
             }
             else if (toolCall.Name == "file_read" && _fileReadService != null)
             {

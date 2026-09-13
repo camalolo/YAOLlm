@@ -31,7 +31,7 @@ public abstract class BaseLLMProvider : ILLMProvider
 
     public string? CompletedSearchSummaries { get; protected set; }
     public int CompletedSearchCount { get; protected set; }
-    public int CompletedFetchCount { get; protected set; }
+    public int CompletedScrapeCount { get; protected set; }
     public int CompletedFileReadCount { get; protected set; }
 
     /// <summary>
@@ -209,33 +209,33 @@ public abstract class BaseLLMProvider : ILLMProvider
     }
 
     /// <summary>
-    /// Executes a web_fetch tool call and updates the Completed* counters.
+    /// Executes a web_scrape tool call and updates the Completed* counters.
     /// </summary>
-    protected async Task<ToolResult> ExecuteWebFetchToolAsync(ToolCall toolCall, CancellationToken cancellationToken = default)
+    protected async Task<ToolResult> ExecuteWebScrapeToolAsync(ToolCall toolCall, CancellationToken cancellationToken = default)
     {
         try
         {
             var url = toolCall.Arguments.TryGetValue("url", out var u) ? u?.ToString() : null;
             if (string.IsNullOrEmpty(url))
             {
-                LogError("web_fetch", "Missing url parameter");
+                LogError("web_scrape", "Missing url parameter");
                 return new ToolResult(toolCall.Id, "Error: Missing url parameter", isError: true);
             }
 
-            LogToolExecution("web_fetch");
-            var fetchResult = await _webFetchService!.FetchAsync(url, cancellationToken: cancellationToken);
-            // Full fetch results can be tens of KB of page text — truncate in
+            LogToolExecution("web_scrape");
+            var scrapeResult = await _webFetchService!.FetchAsync(url, cancellationToken: cancellationToken);
+            // Full scrape results can be tens of KB of page text — truncate in
             // the log (the LLM still gets the full content) to keep yaollm.log readable.
-            LogToolResult("web_fetch", fetchResult, maxLength: 500);
+            LogToolResult("web_scrape", scrapeResult, maxLength: 500);
 
-            CompletedFetchCount++;
+            CompletedScrapeCount++;
 
-            return new ToolResult(toolCall.Id, fetchResult);
+            return new ToolResult(toolCall.Id, scrapeResult);
         }
         catch (Exception ex)
         {
-            LogError("web_fetch", ex.Message);
-            return new ToolResult(toolCall.Id, $"Error fetching URL: {ex.Message}", isError: true);
+            LogError("web_scrape", ex.Message);
+            return new ToolResult(toolCall.Id, $"Error scraping URL: {ex.Message}", isError: true);
         }
     }
 

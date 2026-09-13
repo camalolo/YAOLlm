@@ -67,7 +67,7 @@ public class GeminiProvider : BaseLLMProvider
 
         LogRequest(history.Count, tools != null && tools.Count > 0);
         CompletedSearchCount = 0;
-        CompletedFetchCount = 0;
+        CompletedScrapeCount = 0;
         CompletedFileReadCount = 0;
         CompletedSearchSummaries = null;
 
@@ -168,12 +168,12 @@ public class GeminiProvider : BaseLLMProvider
                         RaiseOnStatusChange(new ProviderStatus(ProviderStatusKind.Searching, query, _searchService.Name));
                     result = await ExecuteWebSearchToolAsync(toolCall, cancellationToken);
                 }
-                else if (toolCall.Name == "web_fetch" && _webFetchService != null)
+                else if (toolCall.Name == "web_scrape" && _webFetchService != null)
                 {
                     var fetchUrl = toolCall.Arguments.TryGetValue("url", out var u) ? u?.ToString() : null;
                     if (!string.IsNullOrEmpty(fetchUrl))
                         RaiseOnStatusChange(new ProviderStatus(ProviderStatusKind.Fetching, fetchUrl));
-                    result = await ExecuteWebFetchToolAsync(toolCall, cancellationToken);
+                    result = await ExecuteWebScrapeToolAsync(toolCall, cancellationToken);
                 }
                 else if (toolCall.Name == "file_read" && _fileReadService != null)
                 {

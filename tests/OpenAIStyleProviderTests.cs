@@ -72,7 +72,7 @@ public class OpenAIStyleProviderTests
 
         Assert.Equal("hi", provider.ParseChunkText("""{"choices":[{"delta":{"content":"hi"}}]}"""));
 
-        const string toolDelta = """{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"web_fetch","arguments":"{\"url\":"}}]}}]}""";
+        const string toolDelta = """{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"web_scrape","arguments":"{\"url\":"}}]}}]}""";
         Assert.Null(provider.ParseChunkError(toolDelta));
         Assert.Equal(1, provider.ParseChunkToolDeltaCount(toolDelta));
     }

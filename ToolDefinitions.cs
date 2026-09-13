@@ -27,12 +27,12 @@ public static class ToolDefinitions
     );
 
     /// <summary>
-    /// Web fetch tool definition — downloads the full text content of a URL
+    /// Web scrape tool definition — scrapes the full text content of a URL
     /// </summary>
-    public static ToolDefinition WebFetch => new(
-        "web_fetch",
-        "Download the full text content of a web page or API endpoint by URL. Use this to read a specific page after finding it via web_search, or to fetch known URLs (documentation, APIs, etc.). " +
-        "If the fetch returns an Error (bot-blocked page, 404, timeout), report that you could not read the page — never invent or guess its contents.",
+    public static ToolDefinition WebScrape => new(
+        "web_scrape",
+        "Scrape the full text content of a web page or API endpoint by URL. Use this to read a specific page after finding it via web_search, or to read known URLs (documentation, APIs, etc.). " +
+        "If the scrape returns an Error (bot-blocked page, 404, timeout), report that you could not read the page — never invent or guess its contents.",
         new
         {
             type = "object",
@@ -118,7 +118,7 @@ public static class ToolDefinitions
         if (supportsWebSearch)
         {
             tools.Add(WebSearch);
-            tools.Add(WebFetch);
+            tools.Add(WebScrape);
         }
         if (fileReadEnabled)
             tools.Add(FileRead);

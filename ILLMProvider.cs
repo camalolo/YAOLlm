@@ -49,7 +49,7 @@ public interface ILLMProvider : IDisposable
 
     string? CompletedSearchSummaries { get; }
     int CompletedSearchCount { get; }
-    int CompletedFetchCount { get; }
+    int CompletedScrapeCount { get; }
 }
 
 /// <summary>
