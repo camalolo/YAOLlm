@@ -13,6 +13,7 @@ public partial class MainForm : Form
     private readonly StatusManager _statusManager;
     private readonly Logger _logger;
     private readonly ConversationManager _conversationManager;
+    private readonly SessionStore _sessionStore;
     private readonly TrayIconManager _trayIconManager;
     private readonly WebView2 _webView;
     private WebViewBridge? _bridge;
@@ -58,9 +59,15 @@ public partial class MainForm : Form
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
 
         _currentProvider = _presetManager.CreateProvider();
+        _sessionStore = new SessionStore(_logger);
         _conversationManager = new ConversationManager(_logger);
         _conversationManager.TtsEnabled = _ttsEnabled;
         _conversationManager.Initialize(_conversationManager.BuildSystemPrompt());
+        // Restore before hooking persistence: Initialize() fires the hook and
+        // would otherwise overwrite the session file with the empty startup
+        // state before the previous session is read.
+        RestoreSession();
+        _conversationManager.OnHistoryChanged = snapshot => _sessionStore.Save(snapshot);
 
         _webView = new WebView2
         {
@@ -181,6 +188,8 @@ public partial class MainForm : Form
                     _bridge?.Provider(_presetManager.ActivePreset.DisplayName ?? _presetManager.ActivePreset.ToString());
                     _bridge?.Status("Idle");
                     _bridge?.TtsState(_ttsEnabled);
+                    ReplayRestoredSession();
+                    UpdateHistoryCounter();
                 }
             };
 
@@ -779,6 +788,59 @@ public partial class MainForm : Form
         _bridge?.Reset();
         _conversationManager.Initialize(_conversationManager.BuildSystemPrompt());
         UpdateHistoryCounter();
+    }
+
+    /// <summary>
+    /// Rehydrates the previous session's conversation turns (session resume).
+    /// The persisted system prompt is discarded — the new session rebuilds it
+    /// fresh (current date, TTS state, window title handling); only real
+    /// conversation turns resume.
+    /// </summary>
+    private void RestoreSession()
+    {
+        try
+        {
+            var saved = _sessionStore.Load();
+            if (saved == null)
+            {
+                _logger.Log("Session: no previous session to restore.");
+                return;
+            }
+
+            var turns = saved.Where(m => m.Role != ChatRole.System).ToList();
+            if (turns.Count == 0)
+            {
+                _logger.Log("Session: previous session was empty.");
+                return;
+            }
+
+            _conversationManager.RestoreTurns(turns);
+            _logger.Log($"Session restored: {turns.Count} turns");
+        }
+        catch (Exception ex)
+        {
+            _logger.Log($"Session restore failed: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Replays restored conversation turns into the freshly-loaded UI. Can only
+    /// run after NavigationCompleted — web messages posted before the page's
+    /// bridge listener attaches are dropped.
+    /// </summary>
+    private void ReplayRestoredSession()
+    {
+        if (_bridge == null) return;
+        var turns = _conversationManager.GetConversationTurns();
+        if (turns.Count == 0) return;
+
+        foreach (var msg in turns)
+        {
+            // History never contains Error messages; anything but Model renders as user
+            var role = msg.Role == ChatRole.Model ? "model" : "user";
+            _bridge.ChatMessageFromMarkdown(role, msg.Content ?? "");
+        }
+        _bridge.ChatMessage("system", "<em>Previous session restored.</em>");
     }
 
     private void UpdateHistoryCounter()

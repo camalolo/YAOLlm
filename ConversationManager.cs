@@ -10,6 +10,15 @@ public class ConversationManager
     private string _currentWindowTitle = "";
     private readonly Logger _logger;
 
+    /// <summary>
+    /// Optional sink invoked with a full-history snapshot after every structural
+    /// mutation (initialize, exchange, compact, restore) — used to persist the
+    /// session across restarts. Invoked outside the history lock; assign it only
+    /// after startup restore has run, or it will overwrite the session file
+    /// with the pre-restore state.
+    /// </summary>
+    public Action<IReadOnlyList<ChatMessage>>? OnHistoryChanged;
+
     public ConversationManager(Logger logger)
     {
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
@@ -22,6 +31,35 @@ public class ConversationManager
             _conversationHistory.Clear();
             _conversationHistory.Add(new ChatMessage(ChatRole.System, systemPrompt));
         }
+        NotifyHistoryChanged();
+    }
+
+    /// <summary>
+    /// Appends previously persisted conversation turns after Initialize
+    /// (session resume). Enforces the normal history cap and fires
+    /// OnHistoryChanged once with the merged history.
+    /// </summary>
+    public void RestoreTurns(IEnumerable<ChatMessage> turns)
+    {
+        if (turns == null) throw new ArgumentNullException(nameof(turns));
+        lock (_historyLock)
+        {
+            _conversationHistory.AddRange(turns);
+            TrimHistoryIfNeeded();
+        }
+        NotifyHistoryChanged();
+    }
+
+    private void NotifyHistoryChanged()
+    {
+        var handler = OnHistoryChanged;
+        if (handler == null) return;
+        List<ChatMessage> snapshot;
+        lock (_historyLock)
+        {
+            snapshot = new List<ChatMessage>(_conversationHistory);
+        }
+        handler(snapshot);
     }
 
     public List<ChatMessage> GetSnapshot()
@@ -64,6 +102,7 @@ public class ConversationManager
             _conversationHistory.Add(new ChatMessage(ChatRole.System, systemPrompt));
             _conversationHistory.Add(new ChatMessage(ChatRole.User, summary));
         }
+        NotifyHistoryChanged();
     }
 
     public void AddExchange(ChatMessage userMessage, string modelResponse)
@@ -74,6 +113,7 @@ public class ConversationManager
             _conversationHistory.Add(new ChatMessage(ChatRole.Model, modelResponse));
             TrimHistoryIfNeeded();
         }
+        NotifyHistoryChanged();
     }
 
     public string CurrentWindowTitle

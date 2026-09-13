@@ -246,4 +246,93 @@ public class ConversationManagerTests
 
         Assert.Throws<ArgumentNullException>(() => manager.Compact(null!));
     }
+
+    [Fact]
+    public void OnHistoryChanged_FiresOnStructuralMutations()
+    {
+        var manager = CreateManager();
+        var snapshots = new List<IReadOnlyList<ChatMessage>>();
+        manager.OnHistoryChanged = snapshots.Add;
+
+        manager.Initialize("sys");
+        manager.AddExchange(new ChatMessage(ChatRole.User, "q1"), "a1");
+        manager.Compact("summary");
+
+        Assert.Equal(3, snapshots.Count);
+        Assert.Single(snapshots[0]);
+        Assert.Equal(3, snapshots[1].Count);
+        Assert.Equal(2, snapshots[2].Count);
+        // Snapshots must be copies, not the live list
+        Assert.NotSame(manager.GetSnapshot(), snapshots[^1]);
+    }
+
+    [Fact]
+    public void RestoreTurns_AppendsAfterSystemMessage()
+    {
+        var manager = CreateManager();
+        manager.Initialize("sys");
+
+        manager.RestoreTurns(new List<ChatMessage>
+        {
+            new(ChatRole.User, "old question"),
+            new(ChatRole.Model, "old answer"),
+        });
+
+        var snapshot = manager.GetSnapshot();
+        Assert.Equal(3, snapshot.Count);
+        Assert.Equal(ChatRole.System, snapshot[0].Role);
+        Assert.Equal("old question", snapshot[1].Content);
+        Assert.Equal("old answer", snapshot[2].Content);
+    }
+
+    [Fact]
+    public void RestoreTurns_EnforcesHistoryCap()
+    {
+        var manager = CreateManager();
+        manager.Initialize("sys");
+
+        var turns = new List<ChatMessage>();
+        for (int i = 0; i < 40; i++)
+        {
+            turns.Add(new ChatMessage(ChatRole.User, $"q{i}"));
+            turns.Add(new ChatMessage(ChatRole.Model, $"a{i}"));
+        }
+
+        manager.RestoreTurns(turns);
+
+        var snapshot = manager.GetSnapshot();
+        Assert.True(snapshot.Count <= 32);
+        Assert.Equal(ChatRole.System, snapshot[0].Role);
+        // Newest turns kept after trim
+        Assert.Equal("q39", snapshot[^2].Content);
+        Assert.Equal("a39", snapshot[^1].Content);
+    }
+
+    [Fact]
+    public void RestoreTurns_FiresOnHistoryChangedOnce()
+    {
+        var manager = CreateManager();
+        manager.Initialize("sys");
+        var count = 0;
+        manager.OnHistoryChanged = _ => count++;
+
+        manager.RestoreTurns(new List<ChatMessage> { new(ChatRole.User, "q1") });
+
+        Assert.Equal(1, count);
+    }
+
+    [Fact]
+    public void RestoreTurns_ResumedExchangesAppendNormally()
+    {
+        var manager = CreateManager();
+        manager.Initialize("sys");
+        manager.RestoreTurns(new List<ChatMessage> { new(ChatRole.User, "old"), new(ChatRole.Model, "reply") });
+
+        manager.AddExchange(new ChatMessage(ChatRole.User, "new"), "answer");
+
+        var snapshot = manager.GetSnapshot();
+        Assert.Equal(5, snapshot.Count);
+        Assert.Equal("new", snapshot[3].Content);
+        Assert.Equal("answer", snapshot[4].Content);
+    }
 }
