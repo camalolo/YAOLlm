@@ -32,6 +32,27 @@ public class GeminiProvider : BaseLLMProvider
     protected override void CustomizeRequest(HttpRequestMessage request)
         => request.Headers.Add("x-goog-api-key", _apiKey);
 
+    /// <summary>
+    /// Maps the token-saving options onto generationConfig. Gemini 2.5 Flash /
+    /// Flash-Lite accept thinkingBudget=0 to disable thinking (2.5 Pro cannot
+    /// disable thinking — the API rejects budget 0, so only set REASONING on
+    /// models that support it). REASONING=low uses a small fixed budget.
+    /// </summary>
+    internal Dictionary<string, object> BuildGenerationConfig()
+    {
+        var config = new Dictionary<string, object>();
+
+        if (Reasoning == ReasoningMode.Off)
+            config["thinkingConfig"] = new Dictionary<string, object> { ["thinkingBudget"] = 0 };
+        else if (Reasoning == ReasoningMode.Low)
+            config["thinkingConfig"] = new Dictionary<string, object> { ["thinkingBudget"] = 1024 };
+
+        if (MaxTokens is int maxTokens)
+            config["maxOutputTokens"] = maxTokens;
+
+        return config;
+    }
+
     public override async IAsyncEnumerable<string> StreamAsync(
         List<ChatMessage> history,
         byte[]? image = null,
@@ -58,6 +79,9 @@ public class GeminiProvider : BaseLLMProvider
             var payload = new Dictionary<string, object> { ["contents"] = contentsArr };
             if (toolsPayload != null)
                 payload["tools"] = toolsPayload;
+            var generationConfig = BuildGenerationConfig();
+            if (generationConfig.Count > 0)
+                payload["generationConfig"] = generationConfig;
 
             var jsonPayload = JsonSerializer.Serialize(payload);
             using var response = await PostWithRetryAsync(StreamUrl, jsonPayload, cancellationToken);

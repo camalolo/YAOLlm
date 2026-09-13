@@ -53,6 +53,13 @@ public class PresetManager : IDisposable
             var presetEntries = new List<(int order, string value)>();
             var baseUrls = new Dictionary<int, string>();
             var apiKeys = new Dictionary<int, string>();
+            var maxTokens = new Dictionary<int, int?>();
+            var reasoningModes = new Dictionary<int, ReasoningMode?>();
+
+            // Global fallbacks: MAX_TOKENS / REASONING apply to every preset
+            // that doesn't override them with PRESET_N_MAX_TOKENS / PRESET_N_REASONING.
+            int? globalMaxTokens = ProviderConfig.ParseMaxTokens(Environment.GetEnvironmentVariable("MAX_TOKENS"));
+            ReasoningMode? globalReasoning = ReasoningModeExtensions.ParseReasoning(Environment.GetEnvironmentVariable("REASONING"));
 
             foreach (DictionaryEntry entry in Environment.GetEnvironmentVariables())
             {
@@ -69,9 +76,11 @@ public class PresetManager : IDisposable
                     continue;
                 }
 
-                // PRESET_<n>_BASE_URL / PRESET_<n>_API_KEY extras.
+                // PRESET_<n>_BASE_URL / _API_KEY / _MAX_TOKENS / _REASONING extras.
                 const string baseUrlSuffix = "_BASE_URL";
                 const string apiKeySuffix = "_API_KEY";
+                const string maxTokensSuffix = "_MAX_TOKENS";
+                const string reasoningSuffix = "_REASONING";
                 if (suffix.EndsWith(baseUrlSuffix, StringComparison.OrdinalIgnoreCase) &&
                     int.TryParse(suffix[..^baseUrlSuffix.Length], out var urlNum))
                 {
@@ -81,6 +90,16 @@ public class PresetManager : IDisposable
                          int.TryParse(suffix[..^apiKeySuffix.Length], out var keyNum))
                 {
                     apiKeys[keyNum] = entry.Value?.ToString() ?? "";
+                }
+                else if (suffix.EndsWith(maxTokensSuffix, StringComparison.OrdinalIgnoreCase) &&
+                         int.TryParse(suffix[..^maxTokensSuffix.Length], out var maxNum))
+                {
+                    maxTokens[maxNum] = ProviderConfig.ParseMaxTokens(entry.Value?.ToString());
+                }
+                else if (suffix.EndsWith(reasoningSuffix, StringComparison.OrdinalIgnoreCase) &&
+                         int.TryParse(suffix[..^reasoningSuffix.Length], out var reasoningNum))
+                {
+                    reasoningModes[reasoningNum] = ReasoningModeExtensions.ParseReasoning(entry.Value?.ToString());
                 }
             }
 
@@ -94,6 +113,12 @@ public class PresetManager : IDisposable
                         config.BaseUrl = baseUrl;
                     if (apiKeys.TryGetValue(entry.order, out var apiKey))
                         config.ApiKey = apiKey;
+                    config.MaxTokens = maxTokens.TryGetValue(entry.order, out var presetMax)
+                        ? (presetMax ?? globalMaxTokens)
+                        : globalMaxTokens;
+                    config.Reasoning = reasoningModes.TryGetValue(entry.order, out var presetReasoning)
+                        ? (presetReasoning ?? globalReasoning) ?? ReasoningMode.Default
+                        : globalReasoning ?? ReasoningMode.Default;
                     _presets.Add(config);
                 }
             }
@@ -164,6 +189,10 @@ public class PresetManager : IDisposable
                     lines.Add($"PRESET_{n}_BASE_URL={_presets[i].BaseUrl}");
                 if (!string.IsNullOrWhiteSpace(_presets[i].ApiKey))
                     lines.Add($"PRESET_{n}_API_KEY={_presets[i].ApiKey}");
+                if (_presets[i].MaxTokens is int maxTokens)
+                    lines.Add($"PRESET_{n}_MAX_TOKENS={maxTokens}");
+                if (_presets[i].Reasoning != ReasoningMode.Default)
+                    lines.Add($"PRESET_{n}_REASONING={_presets[i].Reasoning.ToConfigValue()}");
             }
             lines.Add($"ACTIVE_PRESET={_activeIndex + 1}");
 
@@ -202,7 +231,7 @@ public class PresetManager : IDisposable
         var preset = ActivePreset;
         var providerName = preset.Provider.ToLowerInvariant();
 
-        return providerName switch
+        var provider = providerName switch
         {
             "gemini" => CreateGeminiProvider(preset),
             "openrouter" => CreateOpenRouterProvider(preset),
@@ -216,6 +245,23 @@ public class PresetManager : IDisposable
             "zai" => CreateOpenAIStyleProvider(preset, "zai", legacyKeyEnv: "ZAI_API_KEY", keyRequired: true),
             _ => throw new NotSupportedException($"Unknown provider: {providerName}")
         };
+
+        ApplyTokenOptions(provider, preset);
+        return provider;
+    }
+
+    /// <summary>
+    /// Pushes the preset's token-saving options (PRESET_N_MAX_TOKENS /
+    /// PRESET_N_REASONING, with global fallbacks) onto the provider. All
+    /// provider implementations derive from BaseLLMProvider, which carries
+    /// both knobs and maps them to their protocol's parameters.
+    /// </summary>
+    private static void ApplyTokenOptions(ILLMProvider provider, ProviderConfig preset)
+    {
+        if (provider is not BaseLLMProvider baseProvider)
+            return;
+        baseProvider.MaxTokens = preset.MaxTokens;
+        baseProvider.Reasoning = preset.Reasoning;
     }
 
     /// <summary>

@@ -50,6 +50,35 @@ public class OllamaProvider : BaseLLMProvider
         return messages;
     }
 
+    /// <summary>
+    /// Builds the /api/chat request body. Thinking models (qwen3,
+    /// deepseek-r1, ...) accept think:false to skip the reasoning pass
+    /// entirely — the biggest local token/latency saver. Older Ollama versions
+    /// ignore the unknown field. MaxTokens maps to options.num_predict.
+    /// </summary>
+    internal Dictionary<string, object> BuildRequestBody(List<object> messages, List<ToolDefinition>? tools)
+    {
+        var requestBody = new Dictionary<string, object>
+        {
+            ["model"] = Model,
+            ["messages"] = messages,
+            ["stream"] = true
+        };
+
+        if (tools != null && tools.Count > 0)
+        {
+            requestBody["tools"] = FormatToolDefinitions(tools);
+        }
+
+        if (Reasoning == ReasoningMode.Off || Reasoning == ReasoningMode.Low)
+            requestBody["think"] = false;
+
+        if (MaxTokens is int maxTokens)
+            requestBody["options"] = new Dictionary<string, object> { ["num_predict"] = maxTokens };
+
+        return requestBody;
+    }
+
     public override async IAsyncEnumerable<string> StreamAsync(
         List<ChatMessage> history,
         byte[]? image = null,
@@ -62,17 +91,7 @@ public class OllamaProvider : BaseLLMProvider
         LogRequest(history.Count, tools != null && tools.Count > 0);
 
         var messages = BuildMessages(history, image);
-        var requestBody = new Dictionary<string, object>
-        {
-            ["model"] = Model,
-            ["messages"] = messages,
-            ["stream"] = true
-        };
-
-        if (tools != null && tools.Count > 0)
-        {
-            requestBody["tools"] = FormatToolDefinitions(tools);
-        }
+        var requestBody = BuildRequestBody(messages, tools);
 
         var jsonPayload = JsonSerializer.Serialize(requestBody);
 

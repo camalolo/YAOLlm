@@ -120,7 +120,28 @@ PRESET_1_API_KEY=ik-XXXXX
 PRESET_2=gemini:gemini-2.5-flash-lite:Gemini-2.5
 PRESET_2_BASE_URL=https://generativelanguage.googleapis.com/v1beta
 ACTIVE_PRESET=1
+
+MAX_TOKENS=2048          # global completion cap (all presets)
+REASONING=off            # global reasoning preference (all presets)
+PRESET_2_MAX_TOKENS=1024 # per-preset override (wins over the global)
+PRESET_2_REASONING=off   # per-preset override (wins over the global)
 ```
+
+Token-saving knobs (both optional, per-preset with global fallback):
+
+- `PRESET_N_MAX_TOKENS` / `MAX_TOKENS` — completion-token cap. Mapped per protocol: `max_tokens` (OpenAI-style), `generationConfig.maxOutputTokens` (Gemini), `options.num_predict` (Ollama).
+- `PRESET_N_REASONING` / `REASONING` — `off` or `low` (case-insensitive; also accepts `disabled`/`none`/`0`/`minimal`/`min`). Unset = provider default, nothing is sent. Verified per-profile mapping:
+
+| profile | `off` | `low` |
+|---|---|---|
+| `deepseek` | `thinking: {"type":"disabled"}` (V3.2+ hybrid toggle) | `thinking enabled` + `reasoning_effort: "low"` |
+| `zai` (GLM) | `thinking: {"type":"disabled"}` | `thinking: {"type":"enabled"}` (no effort param exists) |
+| `openrouter` | `reasoning: {"enabled": false}` | `reasoning: {"effort": "low"}` |
+| `gemini` | `thinkingConfig.thinkingBudget: 0` | `thinkingConfig.thinkingBudget: 1024` |
+| `ollama` | `think: false` | `think: false` (boolean-only API) |
+| `openai` / `openai-compatible` | `reasoning_effort: "low"` (most portable floor) | `reasoning_effort: "low"` |
+
+Caveats (both knobs are opt-in; defaults send nothing): Gemini 2.5 **Pro** cannot disable thinking (budget 0 is rejected — only set REASONING on Flash/Flash-Lite); OpenAI's `reasoning_effort` is only honored by reasoning-capable models and `low` is the lowest universally-accepted value there. `PRESET_N_MAX_TOKENS`/`PRESET_N_REASONING` lines are persisted by `SaveConfig` like the other extras.
 
 Per-preset keys:
 

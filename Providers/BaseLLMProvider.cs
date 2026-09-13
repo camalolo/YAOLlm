@@ -48,6 +48,20 @@ public abstract class BaseLLMProvider : ILLMProvider
     public abstract bool SupportsWebSearch { get; }
 
     /// <summary>
+    /// Optional completion-token cap (PRESET_N_MAX_TOKENS, fallback MAX_TOKENS).
+    /// Mapped per protocol: max_tokens (OpenAI-style), maxOutputTokens (Gemini),
+    /// options.num_predict (Ollama). Null = API default.
+    /// </summary>
+    public int? MaxTokens { get; set; }
+
+    /// <summary>
+    /// Reasoning-effort preference (PRESET_N_REASONING, fallback REASONING).
+    /// Off disables thinking where the API supports it, Low requests the lowest
+    /// portable effort; Default sends nothing.
+    /// </summary>
+    public ReasoningMode Reasoning { get; set; } = ReasoningMode.Default;
+
+    /// <summary>
     /// Called when the provider status changes (searching, fetching, tts, ...)
     /// </summary>
     public event Action<ProviderStatus>? OnStatusChange;

@@ -124,7 +124,28 @@ public abstract class OpenAIStyleProvider : BaseLLMProvider
             body["tools"] = FormatToolDefinitions(tools);
         }
 
+        if (MaxTokens is int maxTokens)
+        {
+            body["max_tokens"] = maxTokens;
+        }
+
+        ApplyReasoningOptions(body);
+
         return body;
+    }
+
+    /// <summary>
+    /// Maps the configured ReasoningMode onto profile-specific request
+    /// parameters. Subclasses override to match their endpoint's dialect.
+    /// </summary>
+    protected virtual void ApplyReasoningOptions(Dictionary<string, object> body)
+    {
+        // Generic OpenAI-style endpoints have no universal thinking toggle;
+        // reasoning_effort "low" is the most portable way to spend fewer
+        // reasoning tokens (honored by gpt-5/o-series and most compatible
+        // servers; models without reasoning support simply ignore it).
+        if (Reasoning == ReasoningMode.Off || Reasoning == ReasoningMode.Low)
+            body["reasoning_effort"] = "low";
     }
 
     // ─── Shared: Streaming Chunk Parsing Infrastructure ────────────────

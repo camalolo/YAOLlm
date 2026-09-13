@@ -42,4 +42,34 @@ public class OpenAICompatibleProvider : OpenAIStyleProvider
         if (!string.IsNullOrEmpty(_apiKey))
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _apiKey);
     }
+
+    /// <summary>
+    /// DeepSeek (V3.2+) and Z.ai GLM hybrid models take an explicit thinking
+    /// toggle in the same dialect: {"thinking": {"type": "enabled|disabled"}}.
+    /// REASONING=off turns thinking off entirely; REASONING=low keeps it on at
+    /// the lowest effort where the endpoint supports an effort knob (DeepSeek:
+    /// reasoning_effort low; GLM has no effort parameter, so enabled only).
+    /// Generic openai/openai-compatible profiles fall back to the base class's
+    /// portable reasoning_effort mapping.
+    /// </summary>
+    protected override void ApplyReasoningOptions(Dictionary<string, object> body)
+    {
+        if (Reasoning == ReasoningMode.Default)
+            return;
+
+        var thinkingToggleProfile = _name.Equals("deepseek", StringComparison.OrdinalIgnoreCase) ||
+                                    _name.Equals("zai", StringComparison.OrdinalIgnoreCase);
+        if (!thinkingToggleProfile)
+        {
+            base.ApplyReasoningOptions(body);
+            return;
+        }
+
+        body["thinking"] = Reasoning == ReasoningMode.Off
+            ? new Dictionary<string, object> { ["type"] = "disabled" }
+            : new Dictionary<string, object> { ["type"] = "enabled" };
+
+        if (Reasoning == ReasoningMode.Low && _name.Equals("deepseek", StringComparison.OrdinalIgnoreCase))
+            body["reasoning_effort"] = "low";
+    }
 }

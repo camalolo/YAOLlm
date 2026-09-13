@@ -41,4 +41,19 @@ public class OpenRouterProvider : OpenAIStyleProvider
         request.Headers.Add("HTTP-Referer", DefaultReferer);
         request.Headers.Add("X-Title", DefaultTitle);
     }
+
+    /// <summary>
+    /// OpenRouter's unified reasoning config: {"reasoning": {"enabled": false}}
+    /// disables reasoning across all routed models; {"effort": "low"} requests
+    /// minimal reasoning (translated per-provider server-side).
+    /// </summary>
+    protected override void ApplyReasoningOptions(Dictionary<string, object> body)
+    {
+        if (Reasoning == ReasoningMode.Default)
+            return;
+
+        body["reasoning"] = Reasoning == ReasoningMode.Off
+            ? new Dictionary<string, object> { ["enabled"] = false }
+            : new Dictionary<string, object> { ["effort"] = "low" };
+    }
 }

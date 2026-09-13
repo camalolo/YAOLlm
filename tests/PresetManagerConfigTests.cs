@@ -168,4 +168,80 @@ public class PresetManagerConfigTests : IDisposable
         Assert.Equal("http://127.0.0.1:3003/api/v1", manager.ActivePreset.BaseUrl);
         Assert.Equal("k", manager.ActivePreset.ApiKey);
     }
+
+    [Fact]
+    public void LoadConfig_TokenOptions_PerPresetOverrideGlobalFallback()
+    {
+        SetEnv("PRESET_1", "openai:m1");
+        SetEnv("PRESET_1_BASE_URL", "http://127.0.0.1:3003/api/v1");
+        SetEnv("PRESET_2", "openai:m2");
+        SetEnv("PRESET_2_BASE_URL", "http://127.0.0.1:3003/api/v1");
+        SetEnv("MAX_TOKENS", "1024");
+        SetEnv("REASONING", "low");
+        SetEnv("PRESET_2_MAX_TOKENS", "256");
+        SetEnv("PRESET_2_REASONING", "off");
+        SetEnv("ACTIVE_PRESET", "1");
+
+        using var manager = CreateManager();
+        manager.LoadConfig();
+
+        // Preset 1: globals only
+        Assert.Equal(1024, manager.ActivePreset.MaxTokens);
+        Assert.Equal(ReasoningMode.Low, manager.ActivePreset.Reasoning);
+        // Preset 2: per-preset values win
+        manager.CycleNext();
+        Assert.Equal(256, manager.ActivePreset.MaxTokens);
+        Assert.Equal(ReasoningMode.Off, manager.ActivePreset.Reasoning);
+    }
+
+    [Fact]
+    public void LoadConfig_InvalidTokenOptions_AreIgnored()
+    {
+        SetEnv("PRESET_1", "openai:m1");
+        SetEnv("PRESET_1_BASE_URL", "http://127.0.0.1:3003/api/v1");
+        SetEnv("PRESET_1_MAX_TOKENS", "not-a-number");
+        SetEnv("PRESET_1_REASONING", "turbo");
+        SetEnv("ACTIVE_PRESET", "1");
+
+        using var manager = CreateManager();
+        manager.LoadConfig();
+
+        Assert.Null(manager.ActivePreset.MaxTokens);
+        Assert.Equal(ReasoningMode.Default, manager.ActivePreset.Reasoning);
+    }
+
+    [Fact]
+    public void CreateProvider_AppliesTokenOptionsToProvider()
+    {
+        SetEnv("PRESET_1", "deepseek:deepseek-chat");
+        SetEnv("PRESET_1_BASE_URL", "https://api.deepseek.example/v1");
+        SetEnv("PRESET_1_API_KEY", "sk-test");
+        SetEnv("PRESET_1_MAX_TOKENS", "2048");
+        SetEnv("PRESET_1_REASONING", "off");
+        SetEnv("ACTIVE_PRESET", "1");
+
+        using var manager = CreateManager();
+        manager.LoadConfig();
+
+        using var provider = manager.CreateProvider();
+        var baseProvider = Assert.IsAssignableFrom<BaseLLMProvider>(provider);
+        Assert.Equal(2048, baseProvider.MaxTokens);
+        Assert.Equal(ReasoningMode.Off, baseProvider.Reasoning);
+    }
+
+    [Fact]
+    public void CreateProvider_NoTokenOptions_DefaultsApplied()
+    {
+        SetEnv("PRESET_1", "openai:m1");
+        SetEnv("PRESET_1_BASE_URL", "http://127.0.0.1:3003/api/v1");
+        SetEnv("ACTIVE_PRESET", "1");
+
+        using var manager = CreateManager();
+        manager.LoadConfig();
+
+        using var provider = manager.CreateProvider();
+        var baseProvider = Assert.IsAssignableFrom<BaseLLMProvider>(provider);
+        Assert.Null(baseProvider.MaxTokens);
+        Assert.Equal(ReasoningMode.Default, baseProvider.Reasoning);
+    }
 }
