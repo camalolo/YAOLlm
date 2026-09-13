@@ -207,7 +207,9 @@ public abstract class BaseLLMProvider : ILLMProvider
 
             LogToolExecution("web_fetch");
             var fetchResult = await _webFetchService!.FetchAsync(url, cancellationToken: cancellationToken);
-            LogToolResult("web_fetch", fetchResult);
+            // Full fetch results can be tens of KB of page text — truncate in
+            // the log (the LLM still gets the full content) to keep yaollm.log readable.
+            LogToolResult("web_fetch", fetchResult, maxLength: 500);
 
             CompletedFetchCount++;
 

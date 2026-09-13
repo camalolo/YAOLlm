@@ -18,6 +18,8 @@
     <None Remove="icon.ico" />
     <!-- Exclude the test project's sources from the app compilation glob -->
     <Compile Remove="tests\**" />
+    <!-- Allow tests to exercise internal helpers (WebFetchService extraction pipeline) -->
+    <InternalsVisibleTo Include="YAOLlm.Tests" />
   </ItemGroup>
 
   <ItemGroup>

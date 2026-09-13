@@ -31,7 +31,8 @@ public static class ToolDefinitions
     /// </summary>
     public static ToolDefinition WebFetch => new(
         "web_fetch",
-        "Download the full text content of a web page or API endpoint by URL. Use this to read a specific page after finding it via web_search, or to fetch known URLs (documentation, APIs, etc.).",
+        "Download the full text content of a web page or API endpoint by URL. Use this to read a specific page after finding it via web_search, or to fetch known URLs (documentation, APIs, etc.). " +
+        "If the fetch returns an Error (bot-blocked page, 404, timeout), report that you could not read the page — never invent or guess its contents.",
         new
         {
             type = "object",
@@ -72,7 +73,20 @@ public static class ToolDefinitions
     );
 
     /// <summary>
-    /// Get all web tools plus the TTS summary tool
+    /// Build the tool list for a request. The TTS summary tool is only
+    /// advertised when TTS output is enabled — otherwise the model would
+    /// still generate (and pay for) a spoken summary that is never played.
     /// </summary>
-    public static List<ToolDefinition> GetAllWithTts() => new() { WebSearch, WebFetch, TtsSummary };
+    public static List<ToolDefinition> BuildTools(bool supportsWebSearch, bool ttsEnabled)
+    {
+        var tools = new List<ToolDefinition>();
+        if (supportsWebSearch)
+        {
+            tools.Add(WebSearch);
+            tools.Add(WebFetch);
+        }
+        if (ttsEnabled)
+            tools.Add(TtsSummary);
+        return tools;
+    }
 }

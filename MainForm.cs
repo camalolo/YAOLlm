@@ -59,6 +59,7 @@ public partial class MainForm : Form
 
         _currentProvider = _presetManager.CreateProvider();
         _conversationManager = new ConversationManager(_logger);
+        _conversationManager.TtsEnabled = _ttsEnabled;
         _conversationManager.Initialize(_conversationManager.BuildSystemPrompt());
 
         _webView = new WebView2
@@ -148,6 +149,10 @@ public partial class MainForm : Form
             _bridge.ToggleTts += () =>
             {
                 _ttsEnabled = !_ttsEnabled;
+                // Keeps the system prompt in sync: with TTS off, the model is
+                // no longer told about tts_summary and the tool is no longer
+                // advertised — no tokens are spent on a summary never played.
+                _conversationManager.TtsEnabled = _ttsEnabled;
                 _logger.Log($"TTS toggled {(_ttsEnabled ? "ON" : "OFF")} via UI button.");
                 _bridge.TtsState(_ttsEnabled);
                 if (!_ttsEnabled)
@@ -424,9 +429,11 @@ public partial class MainForm : Form
 
             messages.Add(userMessage);
 
-            var tools = provider.SupportsWebSearch
-                ? ToolDefinitions.GetAllWithTts()
-                : new List<ToolDefinition> { ToolDefinitions.TtsSummary };
+            // tts_summary is advertised only while TTS is enabled — otherwise
+            // the model still generates (and pays for) a spoken summary that
+            // is never played. With TTS off and web search unsupported the
+            // list is empty and no tools field is sent at all.
+            var tools = ToolDefinitions.BuildTools(provider.SupportsWebSearch, _ttsEnabled);
 
             _preToolResponse = null;
             _lastTtsText = null;
