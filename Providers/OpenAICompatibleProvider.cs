@@ -28,8 +28,8 @@ public class OpenAICompatibleProvider : OpenAIStyleProvider
     /// <param name="baseUrl">Endpoint root including any version segment, e.g. http://127.0.0.1:3003/api/v1.</param>
     /// <param name="apiKey">Optional; when set, sent as a Bearer token.</param>
     /// <param name="name">Profile name used in logs and errors (e.g. "deepseek", "zai").</param>
-    public OpenAICompatibleProvider(string model, string baseUrl, string? apiKey = null, HttpClient? httpClient = null, ISearchService? searchService = null, IWebFetchService? webFetchService = null, Logger? logger = null, string name = "openai-compatible")
-        : base(httpClient, searchService, webFetchService, logger)
+    public OpenAICompatibleProvider(string model, string baseUrl, string? apiKey = null, HttpClient? httpClient = null, ISearchService? searchService = null, IWebFetchService? webFetchService = null, Logger? logger = null, string name = "openai-compatible", IFileReadService? fileReadService = null)
+        : base(httpClient, searchService, webFetchService, logger, fileReadService)
     {
         _model = model ?? throw new ArgumentNullException(nameof(model));
         _baseUrl = (baseUrl ?? throw new ArgumentNullException(nameof(baseUrl))).TrimEnd('/');

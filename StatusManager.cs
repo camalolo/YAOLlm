@@ -6,7 +6,8 @@ public enum Status
     Sending,
     Receiving,
     Searching,
-    Fetching
+    Fetching,
+    Reading
 }
 
 /// <summary>
@@ -22,6 +23,9 @@ public enum ProviderStatusKind
 
     /// <summary>A URL fetch is starting. <see cref="ProviderStatus.Detail"/> = URL.</summary>
     Fetching,
+
+    /// <summary>A local file read is starting. <see cref="ProviderStatus.Detail"/> = file path.</summary>
+    ReadingFile,
 
     /// <summary>The model produced a spoken summary. <see cref="ProviderStatus.Detail"/> = text to speak.</summary>
     Tts

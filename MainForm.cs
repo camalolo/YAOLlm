@@ -25,6 +25,8 @@ public partial class MainForm : Form
 
     /// <summary>TTS output toggle — disabled on startup; the UI button turns it on.</summary>
     private bool _ttsEnabled;
+    /// <summary>file_read tool availability — from FILE_READ at startup (default on).</summary>
+    private readonly bool _fileReadEnabled;
     private bool _pendingPresetSwitch;
     private IntPtr _previousWindowHandle = IntPtr.Zero;
     private readonly Queue<(string? message, string? imageBase64, string? title)> _messageQueue = new();
@@ -63,6 +65,7 @@ public partial class MainForm : Form
         _conversationManager = new ConversationManager(_logger);
         _conversationManager.TtsEnabled = _ttsEnabled;
         _conversationManager.Initialize(_conversationManager.BuildSystemPrompt());
+        _fileReadEnabled = !IsFileReadDisabledByEnv();
         // Restore before hooking persistence: Initialize() fires the hook and
         // would otherwise overwrite the session file with the empty startup
         // state before the previous session is read.
@@ -254,6 +257,12 @@ public partial class MainForm : Form
                     _bridge?.ChatMessage("system", $"<em>📥 Fetching: {status.Detail}</em>");
                     break;
 
+                case ProviderStatusKind.ReadingFile:
+                    _statusManager.SetStatus(Status.Reading);
+                    _onSearchComplete?.Invoke();
+                    _bridge?.ChatMessage("system", $"<em>📄 Reading: {status.Detail}</em>");
+                    break;
+
                 case ProviderStatusKind.Sending:
                     _statusManager.SetStatus(Status.Sending);
                     break;
@@ -263,6 +272,13 @@ public partial class MainForm : Form
     }
 
     private bool _hotkeyRegistrationFailed;
+
+    /// <summary>FILE_READ=off (also no/false/0) disables the file_read tool.</summary>
+    private static bool IsFileReadDisabledByEnv()
+    {
+        var config = Environment.GetEnvironmentVariable("FILE_READ");
+        return config?.Trim().ToLowerInvariant() is "off" or "no" or "false" or "0";
+    }
 
     private void RegisterGlobalHotkey()
     {
@@ -617,7 +633,7 @@ public partial class MainForm : Form
             // the model still generates (and pays for) a spoken summary that
             // is never played. With TTS off and web search unsupported the
             // list is empty and no tools field is sent at all.
-            var tools = ToolDefinitions.BuildTools(provider.SupportsWebSearch, _ttsEnabled);
+            var tools = ToolDefinitions.BuildTools(provider.SupportsWebSearch, _ttsEnabled, _fileReadEnabled);
 
             _preToolResponse = null;
             _lastTtsText = null;

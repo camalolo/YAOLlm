@@ -73,7 +73,23 @@ static class Program
         var searchAggregator = new SearchServiceAggregator(searchServices, logger);
         var webFetchService = new WebFetchService(logger: logger);
 
-        var presetManager = new PresetManager(searchAggregator, webFetchService, logger);
+        // file_read is a read-only local file access tool. On by default;
+        // FILE_READ=off (also no/false/0) keeps the tool unadvertised and the
+        // service unwired.
+        IFileReadService? fileReadService = null;
+        var fileReadConfig = Environment.GetEnvironmentVariable("FILE_READ");
+        var fileReadOff = fileReadConfig?.Trim().ToLowerInvariant() is "off" or "no" or "false" or "0";
+        if (!fileReadOff)
+        {
+            fileReadService = new FileReadService(logger);
+            logger.Log("[Startup] file_read tool enabled");
+        }
+        else
+        {
+            logger.Log($"[Startup] FILE_READ={fileReadConfig}, file_read tool disabled");
+        }
+
+        var presetManager = new PresetManager(searchAggregator, webFetchService, logger, fileReadService);
         presetManager.LoadConfig();
 
         var mainForm = new MainForm(presetManager, statusManager, logger);

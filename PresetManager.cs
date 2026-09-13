@@ -11,6 +11,7 @@ public class PresetManager : IDisposable
     private readonly string _configPath;
     private readonly ISearchService _searchService;
     private readonly IWebFetchService _webFetchService;
+    private readonly IFileReadService? _fileReadService;
     private readonly Logger _logger;
     private readonly HttpClient _httpClient;
     private List<ProviderConfig> _presets;
@@ -22,10 +23,11 @@ public class PresetManager : IDisposable
 
     public event Action<ProviderConfig>? PresetChanged;
 
-    public PresetManager(ISearchService searchService, IWebFetchService webFetchService, Logger? logger = null)
+    public PresetManager(ISearchService searchService, IWebFetchService webFetchService, Logger? logger = null, IFileReadService? fileReadService = null)
     {
         _searchService = searchService;
         _webFetchService = webFetchService;
+        _fileReadService = fileReadService;
         _logger = logger ?? new Logger();
         _presets = new List<ProviderConfig>();
         _activeIndex = 0;
@@ -308,7 +310,7 @@ public class PresetManager : IDisposable
             throw new InvalidOperationException(
                 $"No API key for preset {preset.SourceIndex} (gemini). Set PRESET_{preset.SourceIndex}_API_KEY or GEMINI_API_KEY.");
         }
-        return new GeminiProvider(preset.Model, apiKey, baseUrl, _httpClient, _searchService, _webFetchService, _logger);
+        return new GeminiProvider(preset.Model, apiKey, baseUrl, _httpClient, _searchService, _webFetchService, _logger, _fileReadService);
     }
 
     private ILLMProvider CreateOpenRouterProvider(ProviderConfig preset)
@@ -320,12 +322,13 @@ public class PresetManager : IDisposable
             throw new InvalidOperationException(
                 $"No API key for preset {preset.SourceIndex} (openrouter). Set PRESET_{preset.SourceIndex}_API_KEY or OPENROUTER_API_KEY.");
         }
-        return new OpenRouterProvider(preset.Model, apiKey, baseUrl, _httpClient, _searchService, _webFetchService, _logger);
+        return new OpenRouterProvider(preset.Model, apiKey, baseUrl, _httpClient, _searchService, _webFetchService, _logger, _fileReadService);
     }
 
     private ILLMProvider CreateOllamaProvider(ProviderConfig preset)
     {
         var baseUrl = ResolveBaseUrl(preset, "OLLAMA_BASE_URL");
+        // Ollama has no tool-result loop (tts_summary only) — no file service.
         return new OllamaProvider(preset.Model, baseUrl, _httpClient, _logger);
     }
 
@@ -348,7 +351,7 @@ public class PresetManager : IDisposable
         }
 
         return new OpenAICompatibleProvider(preset.Model, baseUrl, apiKey,
-            _httpClient, _searchService, _webFetchService, _logger, name);
+            _httpClient, _searchService, _webFetchService, _logger, name, _fileReadService);
     }
 
     public void Dispose()

@@ -21,8 +21,8 @@ public class GeminiProvider : BaseLLMProvider
     private string StreamUrl => $"{_baseUrl}/models/{Model}:streamGenerateContent?alt=sse";
 
     /// <param name="baseUrl">Endpoint root, e.g. https://generativelanguage.googleapis.com/v1beta (from PRESET_N_BASE_URL).</param>
-    public GeminiProvider(string model, string apiKey, string baseUrl, HttpClient? httpClient = null, ISearchService? searchService = null, IWebFetchService? webFetchService = null, Logger? logger = null)
-        : base(httpClient, searchService, webFetchService, logger)
+    public GeminiProvider(string model, string apiKey, string baseUrl, HttpClient? httpClient = null, ISearchService? searchService = null, IWebFetchService? webFetchService = null, Logger? logger = null, IFileReadService? fileReadService = null)
+        : base(httpClient, searchService, webFetchService, logger, fileReadService)
     {
         Model = model ?? throw new ArgumentNullException(nameof(model));
         _apiKey = apiKey ?? throw new ArgumentNullException(nameof(apiKey));
@@ -68,6 +68,7 @@ public class GeminiProvider : BaseLLMProvider
         LogRequest(history.Count, tools != null && tools.Count > 0);
         CompletedSearchCount = 0;
         CompletedFetchCount = 0;
+        CompletedFileReadCount = 0;
         CompletedSearchSummaries = null;
 
         ThrowIfDisposed();
@@ -173,6 +174,13 @@ public class GeminiProvider : BaseLLMProvider
                     if (!string.IsNullOrEmpty(fetchUrl))
                         RaiseOnStatusChange(new ProviderStatus(ProviderStatusKind.Fetching, fetchUrl));
                     result = await ExecuteWebFetchToolAsync(toolCall, cancellationToken);
+                }
+                else if (toolCall.Name == "file_read" && _fileReadService != null)
+                {
+                    var filePath = toolCall.Arguments.TryGetValue("path", out var fp) ? fp?.ToString() : null;
+                    if (!string.IsNullOrEmpty(filePath))
+                        RaiseOnStatusChange(new ProviderStatus(ProviderStatusKind.ReadingFile, filePath));
+                    result = await ExecuteFileReadToolAsync(toolCall, cancellationToken);
                 }
                 else
                 {

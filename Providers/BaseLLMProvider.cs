@@ -24,6 +24,7 @@ public abstract class BaseLLMProvider : ILLMProvider
     protected readonly HttpClient _httpClient;
     protected readonly ISearchService? _searchService;
     protected readonly IWebFetchService? _webFetchService;
+    protected readonly IFileReadService? _fileReadService;
     protected readonly Logger _logger;
     private readonly bool _ownsHttpClient;
     protected volatile bool _isDisposed;
@@ -31,6 +32,7 @@ public abstract class BaseLLMProvider : ILLMProvider
     public string? CompletedSearchSummaries { get; protected set; }
     public int CompletedSearchCount { get; protected set; }
     public int CompletedFetchCount { get; protected set; }
+    public int CompletedFileReadCount { get; protected set; }
 
     /// <summary>
     /// Provider name (e.g., "gemini", "openrouter", "ollama")
@@ -70,12 +72,13 @@ public abstract class BaseLLMProvider : ILLMProvider
     /// Initializes a new instance of the BaseLLMProvider class.
     /// A shared HttpClient can be supplied; the provider only disposes a client it created itself.
     /// </summary>
-    protected BaseLLMProvider(HttpClient? httpClient = null, ISearchService? searchService = null, IWebFetchService? webFetchService = null, Logger? logger = null)
+    protected BaseLLMProvider(HttpClient? httpClient = null, ISearchService? searchService = null, IWebFetchService? webFetchService = null, Logger? logger = null, IFileReadService? fileReadService = null)
     {
         _httpClient = httpClient ?? new HttpClient { Timeout = TimeSpan.FromMinutes(5) };
         _ownsHttpClient = httpClient == null;
         _searchService = searchService;
         _webFetchService = webFetchService;
+        _fileReadService = fileReadService;
         _logger = logger ?? new Logger();
     }
 
@@ -244,6 +247,40 @@ public abstract class BaseLLMProvider : ILLMProvider
         if (toolCall.Name != "tts_summary")
             return null;
         return toolCall.Arguments.TryGetValue("text", out var textObj) ? textObj?.ToString() : null;
+    }
+
+    /// <summary>
+    /// Executes a file_read tool call (read-only local file access).
+    /// </summary>
+    protected async Task<ToolResult> ExecuteFileReadToolAsync(ToolCall toolCall, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var path = toolCall.Arguments.TryGetValue("path", out var p) ? p?.ToString() : null;
+            if (string.IsNullOrEmpty(path))
+            {
+                LogError("file_read", "Missing path parameter");
+                return new ToolResult(toolCall.Id, "Error: Missing path parameter", isError: true);
+            }
+
+            var startLine = GetIntArg(toolCall.Arguments, "start_line", 0);
+            var endLine = GetIntArg(toolCall.Arguments, "end_line", 0);
+
+            LogToolExecution("file_read");
+            var content = await _fileReadService!.ReadFileAsync(path, startLine, endLine, cancellationToken: cancellationToken);
+            // Full file contents can be large — truncate in the log (the LLM
+            // still gets the full content) to keep yaollm.log readable.
+            LogToolResult("file_read", content, maxLength: 500);
+
+            CompletedFileReadCount++;
+
+            return new ToolResult(toolCall.Id, content);
+        }
+        catch (Exception ex)
+        {
+            LogError("file_read", ex.Message);
+            return new ToolResult(toolCall.Id, $"Error reading file: {ex.Message}", isError: true);
+        }
     }
 
     /// <summary>

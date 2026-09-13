@@ -73,11 +73,46 @@ public static class ToolDefinitions
     );
 
     /// <summary>
+    /// Local file read tool definition — strictly read-only access to text files
+    /// </summary>
+    public static ToolDefinition FileRead => new(
+        "file_read",
+        "Read a text file from the local system (read-only; files cannot be modified). " +
+        "Use this when the user refers to a file — configs, logs, source code, save games, documents. " +
+        "Returns plain text, up to ~15000 characters. For large files, call it again with start_line/end_line " +
+        "(1-based, inclusive) to read specific sections. Binary files are rejected.",
+        new
+        {
+            type = "object",
+            properties = new
+            {
+                path = new
+                {
+                    type = "string",
+                    description = "Absolute path of the file to read (e.g. C:\\Users\\me\\notes.txt)"
+                },
+                start_line = new
+                {
+                    type = "integer",
+                    description = "Optional first line to read (1-based). Defaults to the beginning of the file."
+                },
+                end_line = new
+                {
+                    type = "integer",
+                    description = "Optional last line to read (inclusive). Defaults to the end of the file."
+                }
+            },
+            required = new[] { "path" }
+        }
+    );
+
+    /// <summary>
     /// Build the tool list for a request. The TTS summary tool is only
     /// advertised when TTS output is enabled — otherwise the model would
     /// still generate (and pay for) a spoken summary that is never played.
+    /// The local file_read tool is advertised when file access is enabled.
     /// </summary>
-    public static List<ToolDefinition> BuildTools(bool supportsWebSearch, bool ttsEnabled)
+    public static List<ToolDefinition> BuildTools(bool supportsWebSearch, bool ttsEnabled, bool fileReadEnabled = true)
     {
         var tools = new List<ToolDefinition>();
         if (supportsWebSearch)
@@ -85,6 +120,8 @@ public static class ToolDefinitions
             tools.Add(WebSearch);
             tools.Add(WebFetch);
         }
+        if (fileReadEnabled)
+            tools.Add(FileRead);
         if (ttsEnabled)
             tools.Add(TtsSummary);
         return tools;

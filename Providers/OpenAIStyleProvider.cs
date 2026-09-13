@@ -19,8 +19,8 @@ public abstract class OpenAIStyleProvider : BaseLLMProvider
 {
     private string _dsmlBuffer = "";
 
-    protected OpenAIStyleProvider(HttpClient? httpClient = null, ISearchService? searchService = null, IWebFetchService? webFetchService = null, Logger? logger = null)
-        : base(httpClient, searchService, webFetchService, logger)
+    protected OpenAIStyleProvider(HttpClient? httpClient = null, ISearchService? searchService = null, IWebFetchService? webFetchService = null, Logger? logger = null, IFileReadService? fileReadService = null)
+        : base(httpClient, searchService, webFetchService, logger, fileReadService)
     {
     }
 
@@ -42,6 +42,7 @@ public abstract class OpenAIStyleProvider : BaseLLMProvider
         LogRequest(history.Count, tools != null && tools.Count > 0);
         CompletedSearchCount = 0;
         CompletedFetchCount = 0;
+        CompletedFileReadCount = 0;
         CompletedSearchSummaries = null;
 
         var messages = BuildMessages(history, image);
@@ -388,6 +389,13 @@ public abstract class OpenAIStyleProvider : BaseLLMProvider
                 if (!string.IsNullOrEmpty(fetchUrl))
                     RaiseOnStatusChange(new ProviderStatus(ProviderStatusKind.Fetching, fetchUrl));
                 toolResults.Add(await ExecuteWebFetchToolAsync(toolCall, cancellationToken));
+            }
+            else if (toolCall.Name == "file_read" && _fileReadService != null)
+            {
+                var filePath = toolCall.Arguments.TryGetValue("path", out var fp) ? fp?.ToString() : null;
+                if (!string.IsNullOrEmpty(filePath))
+                    RaiseOnStatusChange(new ProviderStatus(ProviderStatusKind.ReadingFile, filePath));
+                toolResults.Add(await ExecuteFileReadToolAsync(toolCall, cancellationToken));
             }
             else
             {

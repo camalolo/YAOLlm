@@ -69,7 +69,7 @@ There are only **two real protocol implementations** per family: `OpenAICompatib
 - `PostWithRetryAsync(url, jsonPayload, ct)` — POST with exponential backoff on 429/503/network errors; throws `LLMException` on final failure.
 - `CustomizeRequest(HttpRequestMessage)` — virtual hook for per-provider auth headers.
 - `ReadSseDataLinesAsync(response, ct)` — shared SSE reader yielding `data:` payloads.
-- `ExecuteWebSearchToolAsync` / `ExecuteWebFetchToolAsync` — shared tool executors that also update `CompletedSearchCount`/`CompletedFetchCount`/`CompletedSearchSummaries`.
+- `ExecuteWebSearchToolAsync` / `ExecuteWebFetchToolAsync` / `ExecuteFileReadToolAsync` — shared tool executors that also update `CompletedSearchCount`/`CompletedFetchCount`/`CompletedFileReadCount`/`CompletedSearchSummaries`.
 - `ExtractTtsText(ToolCall)`, `GetIntArg(...)` — TTS/tool argument helpers. Note: JSON scalars from `DeserializeArguments` box as `JsonElement`, so numeric args must go through `GetIntArg`.
 
 ### `OpenAIStyleProvider` — full OpenAI-style template
@@ -164,6 +164,8 @@ Preset line format: `provider:model[:display_name]`. Provider names are case-ins
 
 `SEARCH_SERVICES` — on/off switch for web search. There is exactly one search backend: the user's own proxy endpoint (`PROXY_SEARCH_URL` + `PROXY_API_KEY`), which does provider failover server-side. If `SEARCH_SERVICES` is set, it must contain `proxy` (e.g. `SEARCH_SERVICES=proxy`) or search is disabled; if unset, search is enabled when both `PROXY_API_KEY` and `PROXY_SEARCH_URL` are present. The local per-provider search services (Exa/Tavily/TinyFish/Serper) were removed — don't reintroduce them; add upstreams to the proxy's server-side chain instead.
 
+`FILE_READ` — on/off switch for the `file_read` tool (read-only local file access via `FileReadService`). On by default; set `FILE_READ=off` (also `no`/`false`/`0`) to keep the tool unadvertised. The service opens files with `FileAccess.Read` only, refuses binary content (NUL-byte sniff), rejects relative paths (models must send absolute paths; `~` and `%ENV%` are expanded, wrapping quotes stripped), and truncates at 15k chars with a marker telling the model to re-read via `start_line`/`end_line`. Caveat: a fetched web page could prompt-inject the model into reading a local file — that's the accepted trade-off of a personal assistant; use `FILE_READ=off` for sensitive setups.
+
 ### Search services
 
 `ProxySearchService` is the only implementation: a thin client for `GET {PROXY_SEARCH_URL}?q=<encoded>&limit=N` with Bearer auth. Per the endpoint contract it retries 429 (honoring `Retry-After`), 5xx, and network errors (max 3 attempts, 1s → 4s backoff, 45s per-attempt timeout), never retries 400/401 or empty result sets, and treats `results: []` with HTTP 200 as a valid answer. It never parses the informational `provider` field. Results are formatted as markdown (`**title**` / `URL:` / `Content:` blocks). Failures return strings starting with `"Error:"`, which is the convention `SearchServiceAggregator` uses to fall through to the next service.
@@ -208,7 +210,7 @@ Syntax highlighting uses `highlightNew()` — only `pre code` blocks lacking the
 
 - **No `.editorconfig` or style checker** — code style is inconsistent (braces on same/new line, field underscore prefixes vary).
 - **`GeminiProvider` maps system role to `"user"`** — Gemini API has no system role, so the system prompt is injected as a user message. This means it appears as a user message in the API history.
-- **Ollama does not support web search tools** — `SupportsWebSearch = false`. Only `tts_summary` is advertised, and it is handled as a terminal spoken summary (no tool-result round-trip).
+- **Ollama does not support web search tools** — `SupportsWebSearch = false`, gets no `IFileReadService` either (no tool-result loop to consume results). Only `tts_summary` is advertised, and it is handled as a terminal spoken summary (no tool-result round-trip).
 - **Provider creation throws at runtime** — if the required API key env var is missing, `CreateProvider()` throws `InvalidOperationException`/`NotSupportedException`, not at startup. The app starts but `HasProvider` will be false until a valid preset is configured.
 - **Tab key cycles providers** — `ProcessCmdKey` intercepts `Tab` when the overlay is visible to call `CyclePreset()`. Switching mid-request defers the actual provider swap to the next send (`_pendingPresetSwitch`).
 - **Error/empty exchanges are not persisted** — failed requests and empty responses don't add turns to `ConversationManager`; the user can simply retry. Cancelled (stopped) responses *are* persisted with a stop marker.
