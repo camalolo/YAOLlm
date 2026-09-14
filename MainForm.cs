@@ -106,7 +106,14 @@ public partial class MainForm : Form
             Directory.CreateDirectory(userDataFolder);
             var env = await CoreWebView2Environment.CreateAsync(null, userDataFolder);
             await _webView.EnsureCoreWebView2Async(env);
-            _webView.DefaultBackgroundColor = Color.FromArgb(0, 0, 0, 0);
+            // Opaque page background — do NOT use WebView2 transparency here.
+            // DefaultBackgroundColor=Transparent + transparent html/body hits a
+            // compositing regression in the Evergreen runtime (~152, Sep 2026):
+            // partial repaints (text selection, scrolling) composite regions
+            // against white, flashing white boxes / a white chat background.
+            // The overlay's translucency comes from FormLayout's form Opacity,
+            // so in-page transparency buys nothing.
+            _webView.DefaultBackgroundColor = Color.Black;
 
             // Inject console log forwarder
             await _webView.CoreWebView2.AddScriptToExecuteOnDocumentCreatedAsync(@"
