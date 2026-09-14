@@ -30,7 +30,21 @@ internal class TestOpenAIStyleProvider : OpenAIStyleProvider
     // pieces the tests need as primitives.
     public string? ParseChunkError(string json) => TryParseStreamChunk(json).Error;
     public string? ParseChunkText(string json) => TryParseStreamChunk(json).Chunk;
+    public string? ParseChunkFinishReason(string json) => TryParseStreamChunk(json).FinishReason;
     public int ParseChunkToolDeltaCount(string json) => TryParseStreamChunk(json).ToolCallDeltas.Count;
+
+    /// <summary>Reads SSE data payloads from raw text (exposes ReadSseDataLinesAsync).</summary>
+    public async System.Threading.Tasks.Task<System.Collections.Generic.List<string>> ReadSse(string sseText, CancellationToken ct = default)
+    {
+        using var response = new System.Net.Http.HttpResponseMessage
+        {
+            Content = new System.Net.Http.StringContent(sseText),
+        };
+        var results = new System.Collections.Generic.List<string>();
+        await foreach (var part in ReadSseDataLinesAsync(response, ct))
+            results.Add(part);
+        return results;
+    }
 
     public override async IAsyncEnumerable<string> StreamAsync(List<ChatMessage> history, byte[]? image = null, List<ToolDefinition>? tools = null, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
@@ -173,5 +187,40 @@ public class OpenAIStyleProviderTests
         Assert.Equal("image/gif", TestOpenAIStyleProvider.DetectMime(new byte[] { 0x47, 0x49, 0x46, 0x38 }));
         Assert.Equal("image/webp", TestOpenAIStyleProvider.DetectMime(new byte[] { 0x52, 0x49, 0x46, 0x46, 0x00, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50 }));
         Assert.Equal("image/jpeg", TestOpenAIStyleProvider.DetectMime(new byte[] { 0x00, 0x01 }));
+    }
+
+    [Theory]
+    [InlineData("""{"choices":[{"delta":{},"finish_reason":"stop"}]}""", "stop")]
+    [InlineData("""{"choices":[{"delta":{},"finish_reason":"length"}]}""", "length")]
+    [InlineData("""{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}""", "tool_calls")]
+    [InlineData("""{"choices":[{"delta":{}}]}""", null)]
+    public void ParseChunk_ExtractsFinishReason(string json, string? expected)
+    {
+        var provider = new TestOpenAIStyleProvider();
+
+        Assert.Equal(expected, provider.ParseChunkFinishReason(json));
+    }
+
+    [Fact]
+    public async Task ReadSse_YieldsAllDataPayloadsIncludingDoneSentinel()
+    {
+        var provider = new TestOpenAIStyleProvider();
+
+        var parts = await provider.ReadSse("data: {\"a\":1}\n\ndata: [DONE]\n\n");
+
+        Assert.Equal(2, parts.Count);
+        Assert.Equal("{\"a\":1}", parts[0]);
+        Assert.Equal("[DONE]", parts[1]);
+    }
+
+    [Fact]
+    public async Task ReadSse_StreamCutWithoutSentinel_YieldsDataOnly()
+    {
+        var provider = new TestOpenAIStyleProvider();
+
+        var parts = await provider.ReadSse("data: {\"a\":1}\n\ndata: {\"b\":2}\n\n");
+
+        Assert.Equal(2, parts.Count);
+        Assert.DoesNotContain("[DONE]", parts);
     }
 }

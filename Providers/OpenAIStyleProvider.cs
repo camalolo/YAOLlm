@@ -41,9 +41,11 @@ public abstract class OpenAIStyleProvider : BaseLLMProvider
 
         LogRequest(history.Count, tools != null && tools.Count > 0);
         CompletedSearchCount = 0;
-        CompletedScrapeCount = 0;
+        CompletedFetchCount = 0;
         CompletedFileReadCount = 0;
         CompletedSearchSummaries = null;
+        LastFinishReason = null;
+        LastStreamEndedCleanly = false;
 
         var messages = BuildMessages(history, image);
         var requestBody = BuildStreamingRequestBody(messages, tools);
@@ -184,6 +186,8 @@ public abstract class OpenAIStyleProvider : BaseLLMProvider
         public string? Chunk { get; set; }
         public string? ReasoningChunk { get; set; }
         public bool HasToolCallsFinish { get; set; }
+        /// <summary>Raw finish_reason from this chunk ("stop", "length", "tool_calls", ...), if present.</summary>
+        public string? FinishReason { get; set; }
         public List<ToolCallDelta> ToolCallDeltas { get; } = new();
     }
 
@@ -202,9 +206,11 @@ public abstract class OpenAIStyleProvider : BaseLLMProvider
                 var choice = choices[0];
 
                 if (choice.TryGetProperty("finish_reason", out var finishReason) &&
-                    finishReason.GetString() == "tool_calls")
+                    finishReason.ValueKind == JsonValueKind.String)
                 {
-                    result.HasToolCallsFinish = true;
+                    result.FinishReason = finishReason.GetString();
+                    if (result.FinishReason == "tool_calls")
+                        result.HasToolCallsFinish = true;
                 }
 
                 if (choice.TryGetProperty("delta", out var delta))
@@ -290,16 +296,27 @@ public abstract class OpenAIStyleProvider : BaseLLMProvider
         var toolCalls = new Dictionary<int, ToolCallBuilder>();
         var fullReasoning = new StringBuilder();
         bool hasToolCalls = false;
+        bool sawDoneSentinel = false;
+        string? finishReason = null;
         int chunkIndex = 0;
 
         await foreach (var jsonPart in ReadSseDataLinesAsync(response, cancellationToken))
         {
+            if (jsonPart == "[DONE]")
+            {
+                sawDoneSentinel = true;
+                break;
+            }
+
             var parseResult = TryParseStreamChunk(jsonPart);
             if (parseResult.Error != null)
             {
                 LogJsonParseError(jsonPart, parseResult.Error);
                 continue;
             }
+
+            if (parseResult.FinishReason != null)
+                finishReason = parseResult.FinishReason;
 
             if (parseResult.HasToolCallsFinish)
             {
@@ -341,6 +358,14 @@ public abstract class OpenAIStyleProvider : BaseLLMProvider
         }
 
         LogStreamComplete(chunkIndex, toolCalls.Count);
+
+        // Expose how the stream ended: a clean end has either the [DONE]
+        // sentinel or an explicit finish_reason. A stream that just closes
+        // (proxy drop, upstream reset) means the answer may be cut off.
+        LastFinishReason = finishReason;
+        LastStreamEndedCleanly = sawDoneSentinel || finishReason != null;
+        if (!LastStreamEndedCleanly)
+            _logger.Log("[warn] SSE stream ended without [DONE] or finish_reason — response may be truncated");
 
         if (hasToolCalls && toolCalls.Count > 0)
         {

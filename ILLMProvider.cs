@@ -50,6 +50,19 @@ public interface ILLMProvider : IDisposable
     string? CompletedSearchSummaries { get; }
     int CompletedSearchCount { get; }
     int CompletedScrapeCount { get; }
+
+    /// <summary>
+    /// finish_reason from the last streamed round ("stop", "length", ...);
+    /// null when the server never sent one (possible sign of a cut-off stream).
+    /// </summary>
+    string? LastFinishReason { get; }
+
+    /// <summary>
+    /// Whether the last stream ended cleanly ([DONE]/finish_reason/done flag
+    /// received). False = the connection likely closed mid-generation and the
+    /// response may be truncated.
+    /// </summary>
+    bool LastStreamEndedCleanly { get; }
 }
 
 /// <summary>

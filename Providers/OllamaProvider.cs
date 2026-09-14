@@ -97,6 +97,8 @@ public class OllamaProvider : BaseLLMProvider
             throw new ArgumentException("History cannot be null or empty", nameof(history));
 
         LogRequest(history.Count, tools != null && tools.Count > 0);
+        LastFinishReason = null;
+        LastStreamEndedCleanly = false;
 
         var messages = BuildMessages(history, image);
         var requestBody = BuildRequestBody(messages, tools);
@@ -110,12 +112,19 @@ public class OllamaProvider : BaseLLMProvider
 
         var pendingToolCalls = new List<ToolCall>();
         int chunkIndex = 0;
+        bool sawDone = false;
         string? line;
 
         while ((line = await reader.ReadLineAsync(cancellationToken)) != null)
         {
             if (string.IsNullOrWhiteSpace(line))
                 continue;
+
+            if (line.Contains("\"done\":true", StringComparison.OrdinalIgnoreCase) ||
+                line.Contains("\"done\": true", StringComparison.OrdinalIgnoreCase))
+            {
+                sawDone = true;
+            }
 
             var chunk = ParseStreamLine(line, pendingToolCalls);
             if (chunk != null)
@@ -127,6 +136,11 @@ public class OllamaProvider : BaseLLMProvider
         }
 
         LogStreamComplete(chunkIndex, pendingToolCalls.Count);
+
+        // Clean end = the final JSON line carried done:true; otherwise the
+        // connection dropped mid-generation
+        LastStreamEndedCleanly = sawDone;
+        LastFinishReason = sawDone ? "stop" : null;
 
         // Ollama does not support tool-result round-trips in this provider;
         // the only advertised tool is tts_summary, which we handle as a

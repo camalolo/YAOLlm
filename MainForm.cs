@@ -696,6 +696,18 @@ public partial class MainForm : Form
                 {
                     _bridge?.ChatMessageFromMarkdown("model", response);
                 }
+
+                // Surface silent truncation: finish_reason "length" = output
+                // token cap; a missing [DONE]/finish_reason = the connection
+                // closed mid-generation (proxy drop, upstream reset).
+                if (provider.LastFinishReason == "length")
+                {
+                    _bridge?.Warning("⚠️ Response was cut off — the model hit its output token limit. Say \"continue\" for the rest.");
+                }
+                else if (!provider.LastStreamEndedCleanly && !string.IsNullOrEmpty(combinedResponse))
+                {
+                    _bridge?.Warning("⚠️ Connection closed mid-response — the answer may be incomplete.");
+                }
             }
             else if (!string.IsNullOrEmpty(_lastTtsText))
             {

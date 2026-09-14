@@ -77,6 +77,8 @@ public class GeminiProvider : BaseLLMProvider
         CompletedScrapeCount = 0;
         CompletedFileReadCount = 0;
         CompletedSearchSummaries = null;
+        LastFinishReason = null;
+        LastStreamEndedCleanly = false;
 
         ThrowIfDisposed();
 
@@ -101,6 +103,14 @@ public class GeminiProvider : BaseLLMProvider
 
             await foreach (var jsonPart in ReadSseDataLinesAsync(response, cancellationToken))
             {
+                // OpenAI-style proxies can inject a [DONE] sentinel even on the
+                // Gemini protocol — treat it as a clean end, not a JSON parse error
+                if (jsonPart == "[DONE]")
+                {
+                    lastFinishReason ??= "DONE";
+                    break;
+                }
+
                 var (textChunks, toolCalls, finishReason) = ParseStreamChunk(jsonPart);
                 if (finishReason != null)
                     lastFinishReason = finishReason;
@@ -116,6 +126,11 @@ public class GeminiProvider : BaseLLMProvider
             }
 
             LogStreamComplete(roundChunks, roundToolCalls.Count);
+
+            // Clean end = an explicit per-round finish_reason (Gemini always
+            // sends one with the final chunk; "DONE" via sentinel)
+            LastFinishReason = lastFinishReason;
+            LastStreamEndedCleanly = lastFinishReason != null;
 
             if (roundToolCalls.Count == 0)
             {

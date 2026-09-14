@@ -31,8 +31,22 @@ public abstract class BaseLLMProvider : ILLMProvider
 
     public string? CompletedSearchSummaries { get; protected set; }
     public int CompletedSearchCount { get; protected set; }
+    public int CompletedFetchCount { get; protected set; }
     public int CompletedScrapeCount { get; protected set; }
     public int CompletedFileReadCount { get; protected set; }
+
+    /// <summary>
+    /// finish_reason from the last streamed round ("stop", "length", "tool_calls", ...).
+    /// Null when the server never sent one — a sign of a cut-off stream.
+    /// </summary>
+    public string? LastFinishReason { get; protected set; }
+
+    /// <summary>
+    /// Whether the last stream ended cleanly: [DONE] sentinel received or an
+    /// explicit finish_reason seen. False = the connection likely closed
+    /// mid-generation and the response may be truncated.
+    /// </summary>
+    public bool LastStreamEndedCleanly { get; protected set; }
 
     /// <summary>
     /// Provider name (e.g., "gemini", "openrouter", "ollama")
@@ -151,7 +165,8 @@ public abstract class BaseLLMProvider : ILLMProvider
 
     /// <summary>
     /// Reads an SSE stream ("data: ..." lines) from a response, yielding each data
-    /// payload. Stops at "[DONE]". Caller owns (disposes) the response.
+    /// payload including the final "[DONE]" sentinel — consumers use it to tell
+    /// a clean stream end from a silently-closed connection. Caller owns (disposes) the response.
     /// </summary>
     protected static async IAsyncEnumerable<string> ReadSseDataLinesAsync(
         HttpResponseMessage response,
@@ -166,10 +181,7 @@ public abstract class BaseLLMProvider : ILLMProvider
             if (!line.StartsWith("data: ", StringComparison.Ordinal))
                 continue;
 
-            var data = line["data: ".Length..];
-            if (data == "[DONE]")
-                yield break;
-            yield return data;
+            yield return line["data: ".Length..];
         }
     }
 
