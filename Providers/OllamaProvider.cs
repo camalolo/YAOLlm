@@ -141,6 +141,7 @@ public class OllamaProvider : BaseLLMProvider
         // connection dropped mid-generation
         LastStreamEndedCleanly = sawDone;
         LastFinishReason = sawDone ? "stop" : null;
+        _logger.Log($"[{Name}] stream ending: finish_reason={LastFinishReason ?? "(none)"}, clean_end={LastStreamEndedCleanly}");
 
         // Ollama does not support tool-result round-trips in this provider;
         // the only advertised tool is tts_summary, which we handle as a

@@ -364,6 +364,7 @@ public abstract class OpenAIStyleProvider : BaseLLMProvider
         // (proxy drop, upstream reset) means the answer may be cut off.
         LastFinishReason = finishReason;
         LastStreamEndedCleanly = sawDoneSentinel || finishReason != null;
+        _logger.Log($"[{Name}] stream ending: finish_reason={LastFinishReason ?? "(none)"}, clean_end={LastStreamEndedCleanly}");
         if (!LastStreamEndedCleanly)
             _logger.Log("[warn] SSE stream ended without [DONE] or finish_reason — response may be truncated");
 

@@ -131,6 +131,7 @@ public class GeminiProvider : BaseLLMProvider
             // sends one with the final chunk; "DONE" via sentinel)
             LastFinishReason = lastFinishReason;
             LastStreamEndedCleanly = lastFinishReason != null;
+            _logger.Log($"[{Name}] stream ending: finish_reason={LastFinishReason ?? "(none)"}, clean_end={LastStreamEndedCleanly}");
 
             if (roundToolCalls.Count == 0)
             {
