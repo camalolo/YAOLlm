@@ -58,6 +58,11 @@ public class TokenSavingTests
     [InlineData("low", ReasoningMode.Low)]
     [InlineData("MINIMAL", ReasoningMode.Low)]
     [InlineData("min", ReasoningMode.Low)]
+    [InlineData("medium", ReasoningMode.Medium)]
+    [InlineData("MED", ReasoningMode.Medium)]
+    [InlineData("high", ReasoningMode.High)]
+    [InlineData("MAX", ReasoningMode.High)]
+    [InlineData("maximum", ReasoningMode.High)]
     public void ParseReasoning_ValidValues(string value, ReasoningMode expected)
     {
         Assert.Equal(expected, ReasoningModeExtensions.ParseReasoning(value));
@@ -66,21 +71,27 @@ public class TokenSavingTests
     [Theory]
     [InlineData(null)]
     [InlineData("")]
-    [InlineData("medium")]
     [InlineData("turbo")]
     public void ParseReasoning_UnknownValues_ReturnNull(string? value)
     {
         Assert.Null(ReasoningModeExtensions.ParseReasoning(value));
     }
 
-    [Fact]
-    public void ToConfigValue_RoundTrips()
+    [Theory]
+    [InlineData(ReasoningMode.Off, "off")]
+    [InlineData(ReasoningMode.Low, "low")]
+    [InlineData(ReasoningMode.Medium, "medium")]
+    [InlineData(ReasoningMode.High, "high")]
+    public void ToConfigValue_RoundTrips(ReasoningMode mode, string configValue)
     {
-        Assert.Equal("off", ReasoningMode.Off.ToConfigValue());
-        Assert.Equal("low", ReasoningMode.Low.ToConfigValue());
+        Assert.Equal(configValue, mode.ToConfigValue());
+        Assert.Equal(mode, ReasoningModeExtensions.ParseReasoning(configValue));
+    }
+
+    [Fact]
+    public void ToConfigValue_Default_IsEmpty()
+    {
         Assert.Equal("", ReasoningMode.Default.ToConfigValue());
-        Assert.Equal(ReasoningMode.Off, ReasoningModeExtensions.ParseReasoning(ReasoningMode.Off.ToConfigValue()));
-        Assert.Equal(ReasoningMode.Low, ReasoningModeExtensions.ParseReasoning(ReasoningMode.Low.ToConfigValue()));
     }
 
     // ─── OpenAI-compatible (generic profile) ───────────────────────────
@@ -119,6 +130,22 @@ public class TokenSavingTests
         Assert.Equal("low", provider.BuildBody()["reasoning_effort"]);
     }
 
+    [Fact]
+    public void OpenAICompatible_ReasoningMedium_UsesMediumEffort()
+    {
+        var provider = new TestOpenAICompatibleProvider("openai-compatible") { Reasoning = ReasoningMode.Medium };
+
+        Assert.Equal("medium", provider.BuildBody()["reasoning_effort"]);
+    }
+
+    [Fact]
+    public void OpenAICompatible_ReasoningHigh_UsesHighEffort()
+    {
+        var provider = new TestOpenAICompatibleProvider("openai-compatible") { Reasoning = ReasoningMode.High };
+
+        Assert.Equal("high", provider.BuildBody()["reasoning_effort"]);
+    }
+
     // ─── DeepSeek profile: thinking toggle ─────────────────────────────
 
     [Fact]
@@ -141,6 +168,29 @@ public class TokenSavingTests
         var thinking = Assert.IsType<Dictionary<string, object>>(body["thinking"]);
         Assert.Equal("enabled", thinking["type"]);
         Assert.Equal("low", body["reasoning_effort"]);
+    }
+
+    [Fact]
+    public void DeepSeek_ReasoningMedium_MapsToHighEffort()
+    {
+        // DeepSeek's effort scale is low/high/max — no "medium" exists
+        var provider = new TestOpenAICompatibleProvider("deepseek") { Reasoning = ReasoningMode.Medium };
+        var body = provider.BuildBody();
+
+        var thinking = Assert.IsType<Dictionary<string, object>>(body["thinking"]);
+        Assert.Equal("enabled", thinking["type"]);
+        Assert.Equal("high", body["reasoning_effort"]);
+    }
+
+    [Fact]
+    public void DeepSeek_ReasoningHigh_MapsToMaxEffort()
+    {
+        var provider = new TestOpenAICompatibleProvider("deepseek") { Reasoning = ReasoningMode.High };
+        var body = provider.BuildBody();
+
+        var thinking = Assert.IsType<Dictionary<string, object>>(body["thinking"]);
+        Assert.Equal("enabled", thinking["type"]);
+        Assert.Equal("max", body["reasoning_effort"]);
     }
 
     [Fact]
@@ -174,6 +224,17 @@ public class TokenSavingTests
         Assert.False(body.ContainsKey("reasoning_effort"));
     }
 
+    [Fact]
+    public void Zai_ReasoningHigh_StillOnlySendsToggle()
+    {
+        var provider = new TestOpenAICompatibleProvider("zai") { Reasoning = ReasoningMode.High };
+        var body = provider.BuildBody();
+        var thinking = Assert.IsType<Dictionary<string, object>>(body["thinking"]);
+
+        Assert.Equal("enabled", thinking["type"]);
+        Assert.False(body.ContainsKey("reasoning_effort"));
+    }
+
     // ─── OpenRouter: unified reasoning object ──────────────────────────
 
     [Fact]
@@ -194,6 +255,18 @@ public class TokenSavingTests
 
         Assert.Equal("low", reasoning["effort"]);
         Assert.Equal(1024, body["max_tokens"]);
+    }
+
+    [Theory]
+    [InlineData(ReasoningMode.Medium, "medium")]
+    [InlineData(ReasoningMode.High, "high")]
+    public void OpenRouter_ReasoningMediumHigh_SendEffort(ReasoningMode mode, string effort)
+    {
+        var provider = new TestOpenRouterBodyProvider { Reasoning = mode };
+        var reasoning = Assert.IsType<Dictionary<string, object>>(provider.BuildBody()["reasoning"]);
+
+        Assert.Equal(effort, reasoning["effort"]);
+        Assert.False(reasoning.ContainsKey("enabled"));
     }
 
     [Fact]
@@ -226,6 +299,19 @@ public class TokenSavingTests
         var thinking = Assert.IsType<Dictionary<string, object>>(config["thinkingConfig"]);
 
         Assert.Equal(1024, thinking["thinkingBudget"]);
+    }
+
+    [Theory]
+    [InlineData(ReasoningMode.Medium, 8192)]
+    [InlineData(ReasoningMode.High, -1)] // dynamic — the model decides
+    public void Gemini_ReasoningMediumHigh_MapToBudgets(ReasoningMode mode, int expectedBudget)
+    {
+        var provider = CreateGeminiProvider();
+        provider.Reasoning = mode;
+        var config = provider.BuildGenerationConfig();
+        var thinking = Assert.IsType<Dictionary<string, object>>(config["thinkingConfig"]);
+
+        Assert.Equal(expectedBudget, thinking["thinkingBudget"]);
     }
 
     [Fact]
@@ -272,6 +358,17 @@ public class TokenSavingTests
         provider.Reasoning = ReasoningMode.Low;
 
         Assert.Equal(false, provider.BuildRequestBody(new List<object>(), null)["think"]);
+    }
+
+    [Theory]
+    [InlineData(ReasoningMode.Medium)]
+    [InlineData(ReasoningMode.High)]
+    public void Ollama_ReasoningMediumHigh_ThinkTrue(ReasoningMode mode)
+    {
+        var provider = CreateOllamaProvider();
+        provider.Reasoning = mode;
+
+        Assert.Equal(true, provider.BuildRequestBody(new List<object>(), null)["think"]);
     }
 
     [Fact]

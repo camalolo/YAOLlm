@@ -1,9 +1,9 @@
 namespace YAOLlm;
 
 /// <summary>
-/// Reasoning-effort preference for a preset. Off/Low map to per-provider
-/// request parameters (thinking toggles, reasoning_effort, thinking budgets);
-/// Default sends nothing and keeps the API's own behavior.
+/// Reasoning-effort preference for a preset. Off/Low/Medium/High map to
+/// per-provider request parameters (thinking toggles, reasoning_effort,
+/// thinking budgets); Default sends nothing and keeps the API's own behavior.
 /// </summary>
 public enum ReasoningMode
 {
@@ -15,6 +15,12 @@ public enum ReasoningMode
 
     /// <summary>Request the lowest portable reasoning effort.</summary>
     Low,
+
+    /// <summary>Moderate reasoning effort.</summary>
+    Medium,
+
+    /// <summary>Maximum reasoning effort the provider offers.</summary>
+    High,
 }
 
 public static class ReasoningModeExtensions
@@ -27,6 +33,8 @@ public static class ReasoningModeExtensions
         {
             "off" or "disabled" or "false" or "none" or "no" or "0" => ReasoningMode.Off,
             "low" or "minimal" or "min" => ReasoningMode.Low,
+            "medium" or "med" => ReasoningMode.Medium,
+            "high" or "max" or "maximum" => ReasoningMode.High,
             _ => null,
         };
     }
@@ -35,6 +43,8 @@ public static class ReasoningModeExtensions
     {
         ReasoningMode.Off => "off",
         ReasoningMode.Low => "low",
+        ReasoningMode.Medium => "medium",
+        ReasoningMode.High => "high",
         _ => "",
     };
 }
@@ -69,7 +79,8 @@ public class ProviderConfig
     /// Reasoning-effort preference from PRESET_N_REASONING (fallback: REASONING).
     /// Default = send nothing; Off = disable thinking where the API supports it
     /// (DeepSeek/GLM thinking toggle, OpenRouter reasoning.enabled=false, Gemini
-    /// thinkingBudget=0, Ollama think:false); Low = lowest portable effort.
+    /// thinkingBudget=0, Ollama think:false); Low/Medium/High = increasing
+    /// effort on the provider's own scale.
     /// </summary>
     public ReasoningMode Reasoning { get; set; } = ReasoningMode.Default;
 

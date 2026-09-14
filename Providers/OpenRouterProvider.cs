@@ -44,16 +44,29 @@ public class OpenRouterProvider : OpenAIStyleProvider
 
     /// <summary>
     /// OpenRouter's unified reasoning config: {"reasoning": {"enabled": false}}
-    /// disables reasoning across all routed models; {"effort": "low"} requests
-    /// minimal reasoning (translated per-provider server-side).
+    /// disables reasoning across all routed models; {"effort": ...} requests a
+    /// reasoning level (translated per-provider server-side; OpenRouter's scale
+    /// includes minimal/low/medium/high/max).
     /// </summary>
     protected override void ApplyReasoningOptions(Dictionary<string, object> body)
     {
         if (Reasoning == ReasoningMode.Default)
             return;
 
-        body["reasoning"] = Reasoning == ReasoningMode.Off
-            ? new Dictionary<string, object> { ["enabled"] = false }
-            : new Dictionary<string, object> { ["effort"] = "low" };
+        if (Reasoning == ReasoningMode.Off)
+        {
+            body["reasoning"] = new Dictionary<string, object> { ["enabled"] = false };
+            return;
+        }
+
+        var effort = Reasoning switch
+        {
+            ReasoningMode.Low => "low",
+            ReasoningMode.Medium => "medium",
+            ReasoningMode.High => "high",
+            _ => null,
+        };
+        if (effort != null)
+            body["reasoning"] = new Dictionary<string, object> { ["effort"] = effort };
     }
 }

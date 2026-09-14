@@ -142,11 +142,18 @@ public abstract class OpenAIStyleProvider : BaseLLMProvider
     protected virtual void ApplyReasoningOptions(Dictionary<string, object> body)
     {
         // Generic OpenAI-style endpoints have no universal thinking toggle;
-        // reasoning_effort "low" is the most portable way to spend fewer
-        // reasoning tokens (honored by gpt-5/o-series and most compatible
-        // servers; models without reasoning support simply ignore it).
-        if (Reasoning == ReasoningMode.Off || Reasoning == ReasoningMode.Low)
-            body["reasoning_effort"] = "low";
+        // reasoning_effort is the most portable knob. Off still sends "low" —
+        // the lowest universally-accepted value (models without reasoning
+        // support simply ignore it).
+        var effort = Reasoning switch
+        {
+            ReasoningMode.Off or ReasoningMode.Low => "low",
+            ReasoningMode.Medium => "medium",
+            ReasoningMode.High => "high",
+            _ => null,
+        };
+        if (effort != null)
+            body["reasoning_effort"] = effort;
     }
 
     // ─── Shared: Streaming Chunk Parsing Infrastructure ────────────────

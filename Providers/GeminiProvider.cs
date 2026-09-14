@@ -33,19 +33,26 @@ public class GeminiProvider : BaseLLMProvider
         => request.Headers.Add("x-goog-api-key", _apiKey);
 
     /// <summary>
-    /// Maps the token-saving options onto generationConfig. Gemini 2.5 Flash /
+    /// Maps the token options onto generationConfig. Gemini 2.5 Flash /
     /// Flash-Lite accept thinkingBudget=0 to disable thinking (2.5 Pro cannot
     /// disable thinking — the API rejects budget 0, so only set REASONING on
-    /// models that support it). REASONING=low uses a small fixed budget.
+    /// models that support it). Effort levels map to budgets on Gemini's scale;
+    /// High uses -1 (dynamic — the model decides how much to think).
     /// </summary>
     internal Dictionary<string, object> BuildGenerationConfig()
     {
         var config = new Dictionary<string, object>();
 
-        if (Reasoning == ReasoningMode.Off)
-            config["thinkingConfig"] = new Dictionary<string, object> { ["thinkingBudget"] = 0 };
-        else if (Reasoning == ReasoningMode.Low)
-            config["thinkingConfig"] = new Dictionary<string, object> { ["thinkingBudget"] = 1024 };
+        var thinkingBudget = Reasoning switch
+        {
+            ReasoningMode.Off => 0,
+            ReasoningMode.Low => 1024,
+            ReasoningMode.Medium => 8192,
+            ReasoningMode.High => -1,
+            _ => (int?)null,
+        };
+        if (thinkingBudget is int budget)
+            config["thinkingConfig"] = new Dictionary<string, object> { ["thinkingBudget"] = budget };
 
         if (MaxTokens is int maxTokens)
             config["maxOutputTokens"] = maxTokens;

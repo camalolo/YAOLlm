@@ -48,6 +48,7 @@ Program.cs → MainForm (WinForms shell + WebView2 host)
 - **Shared HttpClient**: `PresetManager` owns one `HttpClient` (5-minute timeout for long streams) passed to every provider. Auth headers are set per-request (`CustomizeRequest`), so the client is safe to reuse across preset switches. Providers only dispose a client they created themselves.
 - **HTML served from temp file**: `WriteHtmlToTempFile()` extracts `ui/index.html` + vendored JS/CSS from embedded resources to `%TEMP%\YAOLlm\`, skipping writes when the file on disk is already identical, then navigates via `file://` URI.
 - **WebView2 user data folder**: Set to `%TEMP%\YAOLlm\WebView2` to avoid profile lock conflicts.
+- **No WebView2 page transparency**: `DefaultBackgroundColor` must stay opaque black and `html/body` must have an opaque `background` — do not reintroduce `transparent`. WebView2 page transparency triggers a compositing regression in the Evergreen runtime (~152, Sep 2026): partial repaints (text selection, scrolling) composite regions against white, flashing white boxes / a white chat background. The overlay's translucency comes from `FormLayout`'s form-level `Opacity = 0.9`, which is unaffected.
 
 ## Providers
 
@@ -131,16 +132,18 @@ PRESET_2_REASONING=off   # per-preset override (wins over the global)
 Token-saving knobs (both optional, per-preset with global fallback):
 
 - `PRESET_N_MAX_TOKENS` / `MAX_TOKENS` — completion-token cap. Mapped per protocol: `max_tokens` (OpenAI-style), `generationConfig.maxOutputTokens` (Gemini), `options.num_predict` (Ollama).
-- `PRESET_N_REASONING` / `REASONING` — `off` or `low` (case-insensitive; also accepts `disabled`/`none`/`0`/`minimal`/`min`). Unset = provider default, nothing is sent. Verified per-profile mapping:
+- `PRESET_N_REASONING` / `REASONING` — `off`, `low`, `medium`, or `high` (case-insensitive; also accepts `disabled`/`none`/`0`, `minimal`/`min`, `med`, `max`/`maximum`). Unset = provider default, nothing is sent. Verified per-profile mapping (levels are monotone per provider; where a provider's scale has gaps, the nearest higher native value is used):
 
-| profile | `off` | `low` |
-|---|---|---|
-| `deepseek` | `thinking: {"type":"disabled"}` (V3.2+ hybrid toggle) | `thinking enabled` + `reasoning_effort: "low"` |
-| `zai` (GLM) | `thinking: {"type":"disabled"}` | `thinking: {"type":"enabled"}` (no effort param exists) |
-| `openrouter` | `reasoning: {"enabled": false}` | `reasoning: {"effort": "low"}` |
-| `gemini` | `thinkingConfig.thinkingBudget: 0` | `thinkingConfig.thinkingBudget: 1024` |
-| `ollama` | `think: false` | `think: false` (boolean-only API) |
-| `openai` / `openai-compatible` | `reasoning_effort: "low"` (most portable floor) | `reasoning_effort: "low"` |
+| profile | `off` | `low` | `medium` | `high` |
+|---|---|---|---|---|
+| `deepseek` | `thinking: {"type":"disabled"}` (V3.2+/V4 hybrid toggle) | enabled + `reasoning_effort: "low"` | enabled + `reasoning_effort: "high"` (no native medium) | enabled + `reasoning_effort: "max"` |
+| `zai` (GLM) | `thinking: {"type":"disabled"}` | `thinking: {"type":"enabled"}` | `thinking: {"type":"enabled"}` | `thinking: {"type":"enabled"}` (no effort param exists) |
+| `openrouter` | `reasoning: {"enabled": false}` | `reasoning: {"effort": "low"}` | `reasoning: {"effort": "medium"}` | `reasoning: {"effort": "high"}` |
+| `gemini` | `thinkingConfig.thinkingBudget: 0` | `thinkingBudget: 1024` | `thinkingBudget: 8192` | `thinkingBudget: -1` (dynamic) |
+| `ollama` | `think: false` | `think: false` (boolean-only API) | `think: true` | `think: true` |
+| `openai` / `openai-compatible` | `reasoning_effort: "low"` (most portable floor) | `reasoning_effort: "low"` | `reasoning_effort: "medium"` | `reasoning_effort: "high"` |
+
+Note: a preset using the generic `openai` profile against a DeepSeek hybrid model only gets `reasoning_effort` (no thinking toggle) — use the `deepseek` profile for the same endpoint to get the `thinking` on/off switch and DeepSeek's full effort scale.
 
 Caveats (both knobs are opt-in; defaults send nothing): Gemini 2.5 **Pro** cannot disable thinking (budget 0 is rejected — only set REASONING on Flash/Flash-Lite); OpenAI's `reasoning_effort` is only honored by reasoning-capable models and `low` is the lowest universally-accepted value there. `PRESET_N_MAX_TOKENS`/`PRESET_N_REASONING` lines are persisted by `SaveConfig` like the other extras.
 

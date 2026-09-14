@@ -44,11 +44,11 @@ public class OpenAICompatibleProvider : OpenAIStyleProvider
     }
 
     /// <summary>
-    /// DeepSeek (V3.2+) and Z.ai GLM hybrid models take an explicit thinking
+    /// DeepSeek (V3.2+/V4) and Z.ai GLM hybrid models take an explicit thinking
     /// toggle in the same dialect: {"thinking": {"type": "enabled|disabled"}}.
-    /// REASONING=off turns thinking off entirely; REASONING=low keeps it on at
-    /// the lowest effort where the endpoint supports an effort knob (DeepSeek:
-    /// reasoning_effort low; GLM has no effort parameter, so enabled only).
+    /// REASONING=off turns thinking off entirely; the effort levels map onto
+    /// DeepSeek's scale (low/high/max — no "medium" exists), so Medium sends
+    /// "high". GLM has no effort parameter, so it only gets the toggle.
     /// Generic openai/openai-compatible profiles fall back to the base class's
     /// portable reasoning_effort mapping.
     /// </summary>
@@ -65,11 +65,25 @@ public class OpenAICompatibleProvider : OpenAIStyleProvider
             return;
         }
 
-        body["thinking"] = Reasoning == ReasoningMode.Off
-            ? new Dictionary<string, object> { ["type"] = "disabled" }
-            : new Dictionary<string, object> { ["type"] = "enabled" };
+        if (Reasoning == ReasoningMode.Off)
+        {
+            body["thinking"] = new Dictionary<string, object> { ["type"] = "disabled" };
+            return;
+        }
 
-        if (Reasoning == ReasoningMode.Low && _name.Equals("deepseek", StringComparison.OrdinalIgnoreCase))
-            body["reasoning_effort"] = "low";
+        body["thinking"] = new Dictionary<string, object> { ["type"] = "enabled" };
+
+        if (_name.Equals("deepseek", StringComparison.OrdinalIgnoreCase))
+        {
+            var effort = Reasoning switch
+            {
+                ReasoningMode.Low => "low",
+                ReasoningMode.Medium => "high",
+                ReasoningMode.High => "max",
+                _ => null,
+            };
+            if (effort != null)
+                body["reasoning_effort"] = effort;
+        }
     }
 }

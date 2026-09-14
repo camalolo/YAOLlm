@@ -53,8 +53,10 @@ public class OllamaProvider : BaseLLMProvider
     /// <summary>
     /// Builds the /api/chat request body. Thinking models (qwen3,
     /// deepseek-r1, ...) accept think:false to skip the reasoning pass
-    /// entirely — the biggest local token/latency saver. Older Ollama versions
-    /// ignore the unknown field. MaxTokens maps to options.num_predict.
+    /// entirely and think:true to force it on; Ollama has no effort scale, so
+    /// Low keeps the saving behavior (think:false) and Medium/High restore
+    /// full thinking. Older Ollama versions ignore the unknown field.
+    /// MaxTokens maps to options.num_predict.
     /// </summary>
     internal Dictionary<string, object> BuildRequestBody(List<object> messages, List<ToolDefinition>? tools)
     {
@@ -70,8 +72,14 @@ public class OllamaProvider : BaseLLMProvider
             requestBody["tools"] = FormatToolDefinitions(tools);
         }
 
-        if (Reasoning == ReasoningMode.Off || Reasoning == ReasoningMode.Low)
-            requestBody["think"] = false;
+        requestBody["think"] = Reasoning switch
+        {
+            ReasoningMode.Off or ReasoningMode.Low => false,
+            ReasoningMode.Medium or ReasoningMode.High => true,
+            _ => null,
+        };
+        if (requestBody["think"] == null)
+            requestBody.Remove("think");
 
         if (MaxTokens is int maxTokens)
             requestBody["options"] = new Dictionary<string, object> { ["num_predict"] = maxTokens };
