@@ -72,14 +72,13 @@ public class OllamaProvider : BaseLLMProvider
             requestBody["tools"] = FormatToolDefinitions(tools);
         }
 
-        requestBody["think"] = Reasoning switch
-        {
-            ReasoningMode.Off or ReasoningMode.Low => false,
-            ReasoningMode.Medium or ReasoningMode.High => true,
-            _ => null,
-        };
-        if (requestBody["think"] == null)
-            requestBody.Remove("think");
+        // Boolean-only API: Off/Low skip the reasoning pass, Medium/High
+        // restore it, Unset sends nothing (older Ollama versions would ignore
+        // the unknown field, but a missing field is cleaner).
+        if (Reasoning is ReasoningMode.Off or ReasoningMode.Low)
+            requestBody["think"] = false;
+        else if (Reasoning is ReasoningMode.Medium or ReasoningMode.High)
+            requestBody["think"] = true;
 
         if (MaxTokens is int maxTokens)
             requestBody["options"] = new Dictionary<string, object> { ["num_predict"] = maxTokens };

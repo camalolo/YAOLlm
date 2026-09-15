@@ -12,6 +12,9 @@ public class PresetManager : IDisposable
     private readonly ISearchService _searchService;
     private readonly IWebFetchService _webFetchService;
     private readonly IFileReadService? _fileReadService;
+    private readonly IBrowserService? _browserService;
+    private readonly IYouTubeCaptionService? _captionService;
+    private readonly IFileWriteService? _fileWriteService;
     private readonly Logger _logger;
     private readonly HttpClient _httpClient;
     private List<ProviderConfig> _presets;
@@ -23,11 +26,14 @@ public class PresetManager : IDisposable
 
     public event Action<ProviderConfig>? PresetChanged;
 
-    public PresetManager(ISearchService searchService, IWebFetchService webFetchService, Logger? logger = null, IFileReadService? fileReadService = null)
+    public PresetManager(ISearchService searchService, IWebFetchService webFetchService, Logger? logger = null, IFileReadService? fileReadService = null, IBrowserService? browserService = null, IYouTubeCaptionService? captionService = null, IFileWriteService? fileWriteService = null)
     {
         _searchService = searchService;
         _webFetchService = webFetchService;
         _fileReadService = fileReadService;
+        _browserService = browserService;
+        _captionService = captionService;
+        _fileWriteService = fileWriteService;
         _logger = logger ?? new Logger();
         _presets = new List<ProviderConfig>();
         _activeIndex = 0;
@@ -310,7 +316,7 @@ public class PresetManager : IDisposable
             throw new InvalidOperationException(
                 $"No API key for preset {preset.SourceIndex} (gemini). Set PRESET_{preset.SourceIndex}_API_KEY or GEMINI_API_KEY.");
         }
-        return new GeminiProvider(preset.Model, apiKey, baseUrl, _httpClient, _searchService, _webFetchService, _logger, _fileReadService);
+        return new GeminiProvider(preset.Model, apiKey, baseUrl, _httpClient, _searchService, _webFetchService, _logger, _fileReadService, _browserService, _captionService, _fileWriteService);
     }
 
     private ILLMProvider CreateOpenRouterProvider(ProviderConfig preset)
@@ -322,7 +328,7 @@ public class PresetManager : IDisposable
             throw new InvalidOperationException(
                 $"No API key for preset {preset.SourceIndex} (openrouter). Set PRESET_{preset.SourceIndex}_API_KEY or OPENROUTER_API_KEY.");
         }
-        return new OpenRouterProvider(preset.Model, apiKey, baseUrl, _httpClient, _searchService, _webFetchService, _logger, _fileReadService);
+        return new OpenRouterProvider(preset.Model, apiKey, baseUrl, _httpClient, _searchService, _webFetchService, _logger, _fileReadService, _browserService, _captionService, _fileWriteService);
     }
 
     private ILLMProvider CreateOllamaProvider(ProviderConfig preset)
@@ -351,7 +357,7 @@ public class PresetManager : IDisposable
         }
 
         return new OpenAICompatibleProvider(preset.Model, baseUrl, apiKey,
-            _httpClient, _searchService, _webFetchService, _logger, name, _fileReadService);
+            _httpClient, _searchService, _webFetchService, _logger, name, _fileReadService, _browserService, _captionService, _fileWriteService);
     }
 
     public void Dispose()

@@ -40,9 +40,19 @@
        producing visible jumps at the bottom of the chat. */
     #chat-area {
       overflow-anchor: none;
+      /* Chat scrolls vertically only — wide content must wrap (see
+         .msg-content overflow-wrap), never produce a horizontal scrollbar. */
+      overflow-x: hidden;
     }
 
     /* Markdown-like styles for message content */
+    .msg-content {
+      /* Inherited by everything: long unbreakable tokens (URLs, paths,
+         identifiers) wrap instead of pushing content past the viewport.
+         Also collapses table min-content widths so auto-layout tables
+         always fit within width:100% — no horizontal scrollbars, ever. */
+      overflow-wrap: anywhere;
+    }
     .msg-content h1 { font-size: 1.5em; font-weight: 700; margin: 0.5em 0 0.3em; }
     .msg-content h2 { font-size: 1.3em; font-weight: 600; margin: 0.5em 0 0.3em; }
     .msg-content h3 { font-size: 1.15em; font-weight: 600; margin: 0.4em 0 0.2em; }
@@ -55,7 +65,10 @@
       background: rgba(255, 255, 255, 0.1);
       border-radius: 0.5rem;
       padding: 0.75rem;
-      overflow-x: auto;
+      /* Wrap long code lines instead of scrolling horizontally — the
+         overlay is a reading surface, not an editor. */
+      white-space: pre-wrap;
+      overflow-x: hidden;
       font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
       font-size: 0.85rem;
       margin: 0.5em 0;
@@ -138,6 +151,15 @@
       animation: status-pulse 1.5s ease-in-out infinite;
     }
 
+    /* Clock size: ~75% above text-6xl, scaled to the left grid cell. On
+       narrower screens the cell can't fit 5 digits at full size (~312px
+       wide), so step back down to text-6xl. Plain CSS (not Tailwind
+       arbitrary variants) so it never depends on the JIT. */
+    .clock-face { font-size: 6.5rem; }
+    @media (max-width: 1599px) {
+      .clock-face { font-size: 3.75rem; }
+    }
+
     [x-cloak] { display: none !important; }
   </style>
 </head>
@@ -182,45 +204,90 @@
       </div>
     </div>
 
-    <!-- Bottom Bar -->
+    <!-- Bottom Bar: three columns — left stays empty, center holds the chat
+         input + buttons, right column stacks the file pickers, the allowed
+         paths list, and the status/model row pinned to the window's
+         bottom-right. -->
     <div class="flex-shrink-0 bg-black/95 border-t border-white/30 px-4 py-3">
-      <div class="max-w-3xl mx-auto">
-        <!-- Textarea -->
-        <textarea
-          id="chat-input"
-          x-ref="input"
-          x-model="inputText"
-          @keydown.enter.prevent="if (!$event.shiftKey) sendMessage()"
-          placeholder="Type a message..."
-          :disabled="!hasProvider"
-          :class="!hasProvider ? 'opacity-50 cursor-not-allowed' : ''"
-          class="w-full bg-white/10 border border-white/30 rounded-xl text-white placeholder-white/60 focus:border-white/50 focus:outline-none p-3 font-mono text-sm leading-relaxed"
-        ></textarea>
-
-        <!-- Button row: buttons must not share a row with the status text —
-             status label width changes (Idle→Receiving→Searching) would
-             re-wrap the buttons and resize the whole bottom section. -->
-        <div class="flex items-center gap-1.5 flex-wrap mt-2">
-          <button @click="sendMessage()" :disabled="!hasProvider" class="bg-white/10 hover:bg-white/20 text-white text-xs rounded-lg px-3 py-1.5 transition-all">Send</button>
-          <button @click="stopStream()" :disabled="status === 'Idle'" :class="status === 'Idle' ? 'bg-white/10 text-white/30' : 'bg-red-600/80 hover:bg-red-500 text-white'" class="text-xs rounded-lg px-3 py-1.5 transition-all">⏹ Stop</button>
-          <button @click="captureSend()" :disabled="!hasProvider" class="bg-white/10 hover:bg-white/20 text-white text-xs rounded-lg px-3 py-1.5 transition-all">Capture &amp; Send</button>
-          <button @click="loadImage()" :disabled="!hasProvider" class="bg-white/10 hover:bg-white/20 text-white text-xs rounded-lg px-3 py-1.5 transition-all">Load Image</button>
-          <button @click="proceed()" :disabled="!hasProvider" class="bg-white/10 hover:bg-white/20 text-white text-xs rounded-lg px-3 py-1.5 transition-all">Proceed</button>
-          <button @click="clearChat()" :disabled="!hasProvider" class="bg-white/10 hover:bg-white/20 text-white text-xs rounded-lg px-3 py-1.5 transition-all">Clear</button>
-          <button @click="compactChat()" :disabled="!hasProvider || status !== 'Idle'" :class="!hasProvider || status !== 'Idle' ? 'bg-white/10 text-white/30' : 'bg-white/10 hover:bg-white/20 text-white'" class="text-xs rounded-lg px-3 py-1.5 transition-all">🗜 Compact</button>
-          <button @click="cycleProvider()" :disabled="!hasProvider" class="bg-white/10 hover:bg-white/20 text-white text-xs rounded-lg px-3 py-1.5 transition-all">⇄ Provider</button>
-          <button @click="toggleTts()" :class="ttsEnabled ? 'bg-green-600/80 hover:bg-green-500 text-white' : 'bg-white/10 hover:bg-white/20 text-white/50'" class="text-xs rounded-lg px-3 py-1.5 transition-all"><span x-text="ttsEnabled ? '🔊 TTS' : '🔇 TTS'"></span></button>
+      <div class="grid grid-cols-[1fr_minmax(0,48rem)_minmax(0,24rem)] gap-6">
+        <!-- Left column: 24h clock, sized to fill the cell height -->
+        <div class="flex items-center justify-center min-w-0">
+          <span id="clock" class="clock-face font-mono leading-none text-white/60 tabular-nums" x-text="clock"></span>
         </div>
 
-        <!-- Status row: right-aligned, single line; its own row so label
-             width changes never affect the button layout above. -->
-        <div class="flex items-center justify-end gap-3 mt-1.5 overflow-hidden whitespace-nowrap">
-          <div class="flex items-center gap-1.5 flex-shrink-0">
-            <span class="w-2 h-2 rounded-full inline-block" :class="[statusColor(), status !== 'Idle' ? 'status-dot-active' : '']"></span>
-            <span class="text-white text-xs font-mono" x-text="status"></span>
+        <!-- Center column: chat input + buttons -->
+        <div class="min-w-0">
+          <!-- Textarea -->
+          <textarea
+            id="chat-input"
+            x-ref="input"
+            x-model="inputText"
+            @keydown.enter.prevent="if (!$event.shiftKey) sendMessage()"
+            placeholder="Type a message..."
+            :disabled="!hasProvider"
+            :class="!hasProvider ? 'opacity-50 cursor-not-allowed' : ''"
+            class="w-full bg-white/10 border border-white/30 rounded-xl text-white placeholder-white/60 focus:border-white/50 focus:outline-none p-3 font-mono text-sm leading-relaxed"
+          ></textarea>
+
+          <!-- Button row: buttons must not share a row with the status text —
+               status label width changes (Idle→Receiving→Searching) would
+               re-wrap the buttons and resize the whole bottom section. The
+               status now lives in the right column, but keep the row wrap-proof
+               anyway (many buttons at small window sizes). -->
+          <div class="flex items-center gap-1.5 flex-wrap mt-2">
+            <button @click="sendMessage()" :disabled="!hasProvider" class="bg-white/10 hover:bg-white/20 text-white text-xs rounded-lg px-3 py-1.5 transition-all">Send</button>
+            <button @click="stopStream()" :disabled="status === 'Idle'" :class="status === 'Idle' ? 'bg-white/10 text-white/30' : 'bg-red-600/80 hover:bg-red-500 text-white'" class="text-xs rounded-lg px-3 py-1.5 transition-all">⏹ Stop</button>
+            <button @click="captureSend()" :disabled="!hasProvider" class="bg-white/10 hover:bg-white/20 text-white text-xs rounded-lg px-3 py-1.5 transition-all">Capture &amp; Send</button>
+            <button @click="loadImage()" :disabled="!hasProvider" class="bg-white/10 hover:bg-white/20 text-white text-xs rounded-lg px-3 py-1.5 transition-all">Load Image</button>
+            <button @click="proceed()" :disabled="!hasProvider" class="bg-white/10 hover:bg-white/20 text-white text-xs rounded-lg px-3 py-1.5 transition-all">Proceed</button>
+            <button @click="clearChat()" :disabled="!hasProvider" class="bg-white/10 hover:bg-white/20 text-white text-xs rounded-lg px-3 py-1.5 transition-all">Clear</button>
+            <button @click="compactChat()" :disabled="!hasProvider || status !== 'Idle'" :class="!hasProvider || status !== 'Idle' ? 'bg-white/10 text-white/30' : 'bg-white/10 hover:bg-white/20 text-white'" class="text-xs rounded-lg px-3 py-1.5 transition-all">🗜 Compact</button>
+            <button @click="cycleProvider()" :disabled="!hasProvider" class="bg-white/10 hover:bg-white/20 text-white text-xs rounded-lg px-3 py-1.5 transition-all">⇄ Provider</button>
+            <button @click="toggleTts()" :class="ttsEnabled ? 'bg-green-600/80 hover:bg-green-500 text-white' : 'bg-white/10 hover:bg-white/20 text-white/50'" class="text-xs rounded-lg px-3 py-1.5 transition-all"><span x-text="ttsEnabled ? '🔊 TTS' : '🔇 TTS'"></span></button>
           </div>
-          <span class="text-white/80 text-xs font-mono flex-shrink-0" x-show="historyChars > 0" x-text="historyChars + ' chars'"></span>
-          <span class="text-xs font-mono flex-shrink-0" :class="hasProvider ? 'text-white/80' : 'text-red-400'" x-text="hasProvider ? (provider || '—') : 'No provider configured'"></span>
+        </div>
+
+        <!-- Right column: file pickers on top, allowed paths below, status
+             pinned to the bottom (mt-auto) so it sits at the window's
+             bottom-right regardless of how tall the list is. -->
+        <div class="flex flex-col min-w-0">
+          <div x-show="fileAccessEnabled" x-cloak class="flex items-center justify-end gap-1.5">
+            <button @click="addFiles()" class="bg-white/10 hover:bg-white/20 text-white text-xs rounded-lg px-3 py-1.5 transition-all" title="Add files the assistant may read">📄 Files</button>
+            <button @click="addFolder()" class="bg-white/10 hover:bg-white/20 text-white text-xs rounded-lg px-3 py-1.5 transition-all" title="Add a folder the assistant may read">📁 Folder</button>
+          </div>
+
+          <!-- Memory file (special entry): [x] arms a 1s-confirmed deletion
+               of the file itself — never applies to the allowlist rows below. -->
+          <div x-show="memoryFile" x-cloak class="mt-2 text-right text-xs font-mono min-w-0 break-all"
+               :class="memoryArmed ? 'text-red-300' : 'text-amber-300/70'">
+            <button x-show="memoryFile && memoryFile.exists" @click="memoryX()"
+                    class="mr-1.5"
+                    :class="memoryArmed ? 'text-red-400 font-bold' : 'text-red-400/70 hover:text-red-300'"
+                    :title="memoryArmed ? 'Click again to DELETE the memory file' : 'Delete memory file (click twice within 1s)'">[x]</button><span :title="memoryFile ? memoryFile.path : ''">🧠 <span x-text="memoryFile ? shortenPath(memoryFile.path) : ''"></span><span x-show="memoryFile && !memoryFile.exists" class="text-white/40"> — empty</span></span>
+          </div>
+
+          <!-- Allowed paths: everything file_read/list_files may touch. Full
+               list replaces on every change; [x] revokes a path. Capped
+               height so a long list can't stretch the bottom bar. -->
+          <div x-show="fileAccessEnabled && allowedPaths.length > 0" x-cloak class="mt-2 flex flex-col gap-0.5 max-h-40 overflow-y-auto">
+            <template x-for="p in allowedPaths" :key="p">
+              <div class="text-right text-xs font-mono text-white/60 break-all min-w-0">
+                <button @click="removePath(p)" class="text-red-400/70 hover:text-red-300 mr-1.5" title="Remove from the allowed list">[x]</button><span :title="p" x-text="shortenPath(p)"></span>
+              </div>
+            </template>
+          </div>
+
+          <!-- Status row: right-aligned, single line; its own column so label
+               width changes (Idle→Receiving→Searching) never affect the
+               button layout. -->
+          <div class="mt-auto pt-1.5 flex items-center justify-end gap-3 overflow-hidden whitespace-nowrap">
+            <div class="flex items-center gap-1.5 flex-shrink-0">
+              <span class="w-2 h-2 rounded-full inline-block" :class="[statusColor(), status !== 'Idle' ? 'status-dot-active' : '']"></span>
+              <span class="text-white text-xs font-mono" x-text="status"></span>
+            </div>
+            <span class="text-white/80 text-xs font-mono flex-shrink-0" x-show="historyChars > 0" x-text="historyChars + ' chars'"></span>
+            <span class="text-xs font-mono flex-shrink-0" :class="hasProvider ? 'text-white/80' : 'text-red-400'" x-text="hasProvider ? (provider || '—') : 'No provider configured'"></span>
+          </div>
         </div>
       </div>
     </div>
@@ -240,6 +307,11 @@
         nextId: 0,
         hasProvider: true,
         ttsEnabled: false,
+        fileAccessEnabled: false,
+        allowedPaths: [],
+        memoryFile: null,
+        memoryArmed: false,
+        clock: '',
 
         sendMessage() {
           if (!this.inputText.trim()) return;
@@ -273,6 +345,48 @@
 
         loadImage() {
           window.chrome.webview.postMessage(JSON.stringify({type: 'load_image'}));
+        },
+
+        addFiles() {
+          window.chrome.webview.postMessage(JSON.stringify({type: 'add_files'}));
+        },
+
+        addFolder() {
+          window.chrome.webview.postMessage(JSON.stringify({type: 'add_folder'}));
+        },
+
+        removePath(p) {
+          window.chrome.webview.postMessage(JSON.stringify({type: 'remove_allowed_path', path: p}));
+        },
+
+        // Display-only middle truncation: keeps paths within a fixed length
+        // (the full value is still used for [x] removal and shown on hover).
+        shortenPath(p, max = 50) {
+          if (!p || p.length <= max) return p;
+          const marker = '[...]';
+          const keep = max - marker.length;
+          // Snap the cut to a separator so no directory name is split.
+          let headLen = Math.ceil(keep * 0.6);
+          const sepIdx = p.lastIndexOf('\\', headLen);
+          if (sepIdx > 4) headLen = sepIdx + 1;
+          let tailStart = p.length - (keep - headLen);
+          // Don't split a name at the tail's front either.
+          const nextSep = p.indexOf('\\', tailStart);
+          if (nextSep !== -1 && nextSep < p.length - 4) tailStart = nextSep + 1;
+          return p.slice(0, headLen) + marker + p.slice(tailStart);
+        },
+
+        // Memory row [x]: first click arms (red), second click within 1s deletes.
+        memoryX() {
+          if (this.memoryArmed) {
+            this.memoryArmed = false;
+            clearTimeout(this._memoryArmTimer);
+            window.chrome.webview.postMessage(JSON.stringify({type: 'delete_memory_file'}));
+          } else {
+            this.memoryArmed = true;
+            clearTimeout(this._memoryArmTimer);
+            this._memoryArmTimer = setTimeout(() => { this.memoryArmed = false; }, 1000);
+          }
         },
 
         proceed() {
@@ -310,7 +424,10 @@
             'Receiving': 'bg-green-400',
             'Searching': 'bg-yellow-400',
             'Fetching': 'bg-orange-400',
-            'Reading': 'bg-teal-400'
+            'Reading': 'bg-teal-400',
+            'Browsing': 'bg-purple-400',
+            'Captions': 'bg-pink-400',
+            'Writing': 'bg-cyan-400'
           }[this.status] || 'bg-gray-500';
         },
 
@@ -332,6 +449,16 @@
             console.error('WebView2 API not available');
             return;
           }
+
+          // 24h clock (HH:MM) — update only on change so x-text doesn't
+          // re-render identical values every tick.
+          const tickClock = () => {
+            const now = new Date();
+            const value = String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0');
+            if (value !== self.clock) self.clock = value;
+          };
+          tickClock();
+          setInterval(tickClock, 1000);
 
           // Focus input on load
           this.$nextTick(() => {
@@ -451,6 +578,17 @@
                   break;
                 case 'tts_state':
                   self.ttsEnabled = !!msg.enabled;
+                  break;
+                case 'file_access':
+                  self.fileAccessEnabled = !!msg.enabled;
+                  if (!self.fileAccessEnabled) self.allowedPaths = [];
+                  break;
+                case 'allowed_paths':
+                  self.allowedPaths = msg.paths || [];
+                  break;
+                case 'memory_file':
+                  self.memoryFile = msg.enabled ? {path: msg.path, exists: !!msg.exists} : null;
+                  self.memoryArmed = false;
                   break;
               }
             });

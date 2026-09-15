@@ -76,6 +76,27 @@ public sealed class WebViewBridge
     public event Action? Compact;
 
     /// <summary>
+    /// Fired when JavaScript requests adding files to the allowlist: <c>{"type":"add_files"}</c>.
+    /// </summary>
+    public event Action? AddFiles;
+
+    /// <summary>
+    /// Fired when JavaScript requests adding a folder to the allowlist: <c>{"type":"add_folder"}</c>.
+    /// </summary>
+    public event Action? AddFolder;
+
+    /// <summary>
+    /// Fired when JavaScript removes a path from the allowlist: <c>{"type":"remove_allowed_path","path":"..."}</c>.
+    /// </summary>
+    public event Action<string>? RemoveAllowedPath;
+
+    /// <summary>
+    /// Fired when JavaScript confirms memory-file deletion (second [x] click within 1s):
+    /// <c>{"type":"delete_memory_file"}</c>. C# validates the target before deleting.
+    /// </summary>
+    public event Action? DeleteMemoryFile;
+
+    /// <summary>
     /// Initializes a new instance of <see cref="WebViewBridge"/> and subscribes to
     /// <see cref="CoreWebView2.WebMessageReceived"/> for inbound message handling.
     /// </summary>
@@ -170,6 +191,34 @@ public sealed class WebViewBridge
     public void TtsState(bool enabled)
     {
         Post(new { type = "tts_state", enabled });
+    }
+
+    /// <summary>
+    /// Sends the current file-access master state (FILE_READ config) to the
+    /// JavaScript UI — controls visibility of the picker buttons and panel.
+    /// </summary>
+    public void FileAccessState(bool enabled)
+    {
+        Post(new { type = "file_access", enabled });
+    }
+
+    /// <summary>
+    /// Sends the current allowlist (full paths) to the JavaScript UI.
+    /// The full list is replaced each time — add/remove stay in sync for free.
+    /// </summary>
+    public void AllowedPaths(IReadOnlyList<string> paths)
+    {
+        Post(new { type = "allowed_paths", paths });
+    }
+
+    /// <summary>
+    /// Sends the per-game memory file state to the JavaScript UI. The row is
+    /// special: its [x] arms a 1s-confirmed deletion of the file (never
+    /// applies to user-added allowlist entries).
+    /// </summary>
+    public void MemoryFile(bool enabled, string path, bool exists)
+    {
+        Post(new { type = "memory_file", enabled, path, exists });
     }
 
     /// <summary>
@@ -279,6 +328,20 @@ public sealed class WebViewBridge
                     break;
                 case "compact":
                     Compact?.Invoke();
+                    break;
+                case "add_files":
+                    AddFiles?.Invoke();
+                    break;
+                case "add_folder":
+                    AddFolder?.Invoke();
+                    break;
+                case "remove_allowed_path":
+                    var removedPath = element.TryGetProperty("path", out var rmPathProp) ? rmPathProp.GetString() ?? "" : "";
+                    if (removedPath.Length > 0)
+                        RemoveAllowedPath?.Invoke(removedPath);
+                    break;
+                case "delete_memory_file":
+                    DeleteMemoryFile?.Invoke();
                     break;
                 case "_console":
                     // JS console forwarder (injected by MainForm) — log and don't dispatch

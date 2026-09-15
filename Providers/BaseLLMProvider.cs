@@ -25,6 +25,9 @@ public abstract class BaseLLMProvider : ILLMProvider
     protected readonly ISearchService? _searchService;
     protected readonly IWebFetchService? _webFetchService;
     protected readonly IFileReadService? _fileReadService;
+    protected readonly IBrowserService? _browserService;
+    protected readonly IYouTubeCaptionService? _captionService;
+    protected readonly IFileWriteService? _fileWriteService;
     protected readonly Logger _logger;
     private readonly bool _ownsHttpClient;
     protected volatile bool _isDisposed;
@@ -86,13 +89,16 @@ public abstract class BaseLLMProvider : ILLMProvider
     /// Initializes a new instance of the BaseLLMProvider class.
     /// A shared HttpClient can be supplied; the provider only disposes a client it created itself.
     /// </summary>
-    protected BaseLLMProvider(HttpClient? httpClient = null, ISearchService? searchService = null, IWebFetchService? webFetchService = null, Logger? logger = null, IFileReadService? fileReadService = null)
+    protected BaseLLMProvider(HttpClient? httpClient = null, ISearchService? searchService = null, IWebFetchService? webFetchService = null, Logger? logger = null, IFileReadService? fileReadService = null, IBrowserService? browserService = null, IYouTubeCaptionService? captionService = null, IFileWriteService? fileWriteService = null)
     {
         _httpClient = httpClient ?? new HttpClient { Timeout = TimeSpan.FromMinutes(5) };
         _ownsHttpClient = httpClient == null;
         _searchService = searchService;
         _webFetchService = webFetchService;
         _fileReadService = fileReadService;
+        _browserService = browserService;
+        _captionService = captionService;
+        _fileWriteService = fileWriteService;
         _logger = logger ?? new Logger();
     }
 
@@ -235,10 +241,26 @@ public abstract class BaseLLMProvider : ILLMProvider
             }
 
             LogToolExecution("web_scrape");
+
+            // 24h in-process cache: a session re-scrapes the same guide pages
+            // across turns, and each fetch otherwise re-hits the scrape API.
+            var cacheKey = ScrapeCache.NormalizeKey(url);
+            if (ScrapeCache.TryGet(cacheKey, out var cachedResult))
+            {
+                _logger.Log($"[scrape-cache] hit ({cachedResult.Length} chars): {url}");
+                CompletedScrapeCount++;
+                return new ToolResult(toolCall.Id, cachedResult);
+            }
+
             var scrapeResult = await _webFetchService!.FetchAsync(url, cancellationToken: cancellationToken);
             // Full scrape results can be tens of KB of page text — truncate in
             // the log (the LLM still gets the full content) to keep yaollm.log readable.
             LogToolResult("web_scrape", scrapeResult, maxLength: 500);
+
+            // Only successes are cached — "Error:" results (dead pages,
+            // bot-blocks, proxy failures) must retry live on the next call.
+            if (!scrapeResult.StartsWith("Error:"))
+                ScrapeCache.Store(cacheKey, scrapeResult);
 
             CompletedScrapeCount++;
 
@@ -293,6 +315,192 @@ public abstract class BaseLLMProvider : ILLMProvider
             LogError("file_read", ex.Message);
             return new ToolResult(toolCall.Id, $"Error reading file: {ex.Message}", isError: true);
         }
+    }
+
+    /// <summary>
+    /// Executes a list_files tool call (directory listing of user-approved paths).
+    /// </summary>
+    protected async Task<ToolResult> ExecuteFileListToolAsync(ToolCall toolCall, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var path = toolCall.Arguments.TryGetValue("path", out var p) ? p?.ToString() : null;
+            if (string.IsNullOrEmpty(path))
+            {
+                LogError("list_files", "Missing path parameter");
+                return new ToolResult(toolCall.Id, "Error: Missing path parameter", isError: true);
+            }
+
+            LogToolExecution("list_files");
+            var content = await _fileReadService!.ListFilesAsync(path, cancellationToken);
+            // Listings can be long — truncate in the log (the LLM still gets
+            // the full content) to keep yaollm.log readable.
+            LogToolResult("list_files", content, maxLength: 500);
+
+            return new ToolResult(toolCall.Id, content);
+        }
+        catch (Exception ex)
+        {
+            LogError("list_files", ex.Message);
+            return new ToolResult(toolCall.Id, $"Error listing directory: {ex.Message}", isError: true);
+        }
+    }
+
+    /// <summary>
+    /// Executes a browse_* tool call via the Playwright MCP bridge. Returns
+    /// the page snapshot / action result as text.
+    /// </summary>
+    protected async Task<ToolResult> ExecuteBrowseToolAsync(ToolCall toolCall, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            // Status label: the URL for navigations, otherwise the tool name —
+            // MainForm surfaces URLs as an in-chat system line.
+            var detail = toolCall.Arguments.TryGetValue("url", out var u) ? u?.ToString() : null;
+            if (string.IsNullOrEmpty(detail))
+                detail = toolCall.Name["browse_".Length..].Replace('_', ' ');
+            RaiseOnStatusChange(new ProviderStatus(ProviderStatusKind.Browsing, detail));
+
+            var argumentsJson = JsonSerializer.Serialize(toolCall.Arguments);
+            var content = await _browserService!.InvokeAsync(toolCall.Name, argumentsJson, cancellationToken);
+            // Snapshots/pages can be large — truncate in the log (the LLM
+            // still gets the full content) to keep yaollm.log readable.
+            LogToolResult(toolCall.Name, content, maxLength: 500);
+
+            return new ToolResult(toolCall.Id, content);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            LogError(toolCall.Name, ex.Message);
+            return new ToolResult(toolCall.Id, $"Error browsing: {ex.Message}", isError: true);
+        }
+    }
+
+    /// <summary>
+    /// Executes a youtube_captions tool call (transcript extraction via yt-dlp).
+    /// </summary>
+    protected async Task<ToolResult> ExecuteYouTubeCaptionsToolAsync(ToolCall toolCall, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var url = toolCall.Arguments.TryGetValue("url", out var u) ? u?.ToString() : null;
+            if (string.IsNullOrEmpty(url))
+            {
+                LogError("youtube_captions", "Missing url parameter");
+                return new ToolResult(toolCall.Id, "Error: Missing url parameter", isError: true);
+            }
+
+            var language = toolCall.Arguments.TryGetValue("language", out var l) ? l?.ToString() : null;
+            var timestamps = GetBoolArg(toolCall.Arguments, "timestamps", false);
+
+            LogToolExecution("youtube_captions");
+            RaiseOnStatusChange(new ProviderStatus(ProviderStatusKind.Captions, url));
+            var content = await _captionService!.GetCaptionsAsync(url, language, timestamps, cancellationToken);
+            // Transcripts can be tens of KB — truncate in the log (the LLM
+            // still gets the full content) to keep yaollm.log readable.
+            LogToolResult("youtube_captions", content, maxLength: 500);
+
+            return new ToolResult(toolCall.Id, content);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            LogError("youtube_captions", ex.Message);
+            return new ToolResult(toolCall.Id, $"Error fetching captions: {ex.Message}", isError: true);
+        }
+    }
+
+    /// <summary>
+    /// Executes a file_write tool call (writes restricted to the temp area).
+    /// </summary>
+    protected async Task<ToolResult> ExecuteFileWriteToolAsync(ToolCall toolCall, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var path = toolCall.Arguments.TryGetValue("path", out var p) ? p?.ToString() : null;
+            var content = toolCall.Arguments.TryGetValue("content", out var c) ? c?.ToString() : null;
+            if (string.IsNullOrEmpty(path) || content == null)
+            {
+                LogError("file_write", "Missing path/content parameter");
+                return new ToolResult(toolCall.Id, "Error: Missing path or content parameter", isError: true);
+            }
+
+            var append = GetBoolArg(toolCall.Arguments, "append", false);
+
+            LogToolExecution("file_write");
+            RaiseOnStatusChange(new ProviderStatus(ProviderStatusKind.WritingFile, path));
+            var result = await _fileWriteService!.WriteAsync(path, content, append, cancellationToken);
+            LogToolResult("file_write", result, maxLength: 300);
+
+            return new ToolResult(toolCall.Id, result);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            LogError("file_write", ex.Message);
+            return new ToolResult(toolCall.Id, $"Error writing file: {ex.Message}", isError: true);
+        }
+    }
+
+    /// <summary>
+    /// Executes a memory_write tool call (per-game memory file edit).
+    /// </summary>
+    protected async Task<ToolResult> ExecuteMemoryWriteToolAsync(ToolCall toolCall, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var content = toolCall.Arguments.TryGetValue("content", out var c) ? c?.ToString() : null;
+            if (content == null)
+            {
+                LogError("memory_write", "Missing content parameter");
+                return new ToolResult(toolCall.Id, "Error: Missing content parameter", isError: true);
+            }
+
+            var op = toolCall.Arguments.TryGetValue("op", out var o) ? o?.ToString() ?? "append" : "append";
+            var find = toolCall.Arguments.TryGetValue("find", out var f) ? f?.ToString() : null;
+            var game = toolCall.Arguments.TryGetValue("game", out var g) ? g?.ToString() : null;
+
+            LogToolExecution("memory_write");
+            RaiseOnStatusChange(new ProviderStatus(ProviderStatusKind.WritingFile,
+                game != null ? $"memory[{game}]" : _fileWriteService!.CurrentMemoryPath));
+            var result = await _fileWriteService!.WriteMemoryAsync(content, op, find, game, cancellationToken);
+            LogToolResult("memory_write", result, maxLength: 300);
+
+            return new ToolResult(toolCall.Id, result);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            LogError("memory_write", ex.Message);
+            return new ToolResult(toolCall.Id, $"Error updating memory: {ex.Message}", isError: true);
+        }
+    }
+
+    /// <summary>
+    /// Reads a boolean tool argument robustly across boxed types
+    /// (bool/string/JsonElement).
+    /// </summary>
+    protected static bool GetBoolArg(Dictionary<string, object?> args, string key, bool defaultValue)
+    {
+        if (!args.TryGetValue(key, out var value) || value is null)
+            return defaultValue;
+
+        return value switch
+        {
+            bool b => b,
+            JsonElement { ValueKind: JsonValueKind.True } => true,
+            JsonElement { ValueKind: JsonValueKind.False } => false,
+            JsonElement { ValueKind: JsonValueKind.String } s =>
+                bool.TryParse(s.GetString(), out var parsed) ? parsed : defaultValue,
+            _ => bool.TryParse(value.ToString(), out var coerced) ? coerced : defaultValue,
+        };
     }
 
     /// <summary>

@@ -7,7 +7,10 @@ public enum Status
     Receiving,
     Searching,
     Fetching,
-    Reading
+    Reading,
+    Browsing,
+    Captions,
+    Writing
 }
 
 /// <summary>
@@ -26,6 +29,15 @@ public enum ProviderStatusKind
 
     /// <summary>A local file read is starting. <see cref="ProviderStatus.Detail"/> = file path.</summary>
     ReadingFile,
+
+    /// <summary>A browse_* tool call is starting. <see cref="ProviderStatus.Detail"/> = short action label (URL for navigations).</summary>
+    Browsing,
+
+    /// <summary>YouTube caption extraction is starting. <see cref="ProviderStatus.Detail"/> = video URL.</summary>
+    Captions,
+
+    /// <summary>A file/memory write is starting. <see cref="ProviderStatus.Detail"/> = target path.</summary>
+    WritingFile,
 
     /// <summary>The model produced a spoken summary. <see cref="ProviderStatus.Detail"/> = text to speak.</summary>
     Tts

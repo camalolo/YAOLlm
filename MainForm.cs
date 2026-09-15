@@ -25,8 +25,18 @@ public partial class MainForm : Form
 
     /// <summary>TTS output toggle — disabled on startup; the UI button turns it on.</summary>
     private bool _ttsEnabled;
-    /// <summary>file_read tool availability — from FILE_READ at startup (default on).</summary>
+    /// <summary>file tools availability — from FILE_READ at startup (default on).</summary>
     private readonly bool _fileReadEnabled;
+    /// <summary>User-approved files/directories the file tools may access.</summary>
+    private readonly FileAllowlist _fileAllowlist;
+    /// <summary>Playwright MCP bridge for the browse_* tools (null = disabled).</summary>
+    private readonly IBrowserService? _browserService;
+    /// <summary>YouTube transcript tool (null or !IsEnabled = disabled).</summary>
+    private readonly IYouTubeCaptionService? _captionService;
+    /// <summary>file_write / memory_write service (null or !IsEnabled = disabled).</summary>
+    private readonly IFileWriteService? _fileWriteService;
+    /// <summary>The memory file path last pushed to the UI (dedupes pushes).</summary>
+    private string? _pushedMemoryPath;
     private bool _pendingPresetSwitch;
     private IntPtr _previousWindowHandle = IntPtr.Zero;
     private readonly Queue<(string? message, string? imageBase64, string? title)> _messageQueue = new();
@@ -54,7 +64,43 @@ public partial class MainForm : Form
     [DllImport("user32.dll")]
     private static extern IntPtr GetForegroundWindow();
 
-    public MainForm(PresetManager presetManager, StatusManager statusManager, Logger logger)
+    [DllImport("user32.dll")]
+    private static extern bool SetForegroundWindow(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    private static extern long GetWindowLong(IntPtr hWnd, int nIndex);
+
+    [DllImport("user32.dll")]
+    private static extern long SetWindowLong(IntPtr hWnd, int nIndex, long dwNewLong);
+
+    private const int GWL_EXSTYLE = -20;
+    private const long WS_EX_NOACTIVATE = 0x08000000;
+
+    /// <summary>False until the first user-initiated show removes WS_EX_NOACTIVATE.</summary>
+    private bool _activationUnlocked;
+
+    /// <summary>
+    /// The form starts with WS_EX_NOACTIVATE: WebView2 initialization (controller
+    /// creation + first child show) activates the still-hidden form and yanks
+    /// focus from whatever the user was doing (e.g. a fullscreen game). With the
+    /// style set, the hidden form can't take foreground at all. It is removed on
+    /// the first user-initiated show (see ToggleVisibility) so the overlay
+    /// behaves completely normally afterwards.
+    /// Note: exonerated during the 2026-09-15 WebView2 0x80070578 outage — the
+    /// failure reproduced identically with this style removed (minimal app too).
+    /// </summary>
+    protected override CreateParams CreateParams
+    {
+        get
+        {
+            var cp = base.CreateParams;
+            if (!_activationUnlocked)
+                cp.ExStyle |= (int)WS_EX_NOACTIVATE;
+            return cp;
+        }
+    }
+
+    public MainForm(PresetManager presetManager, StatusManager statusManager, Logger logger, FileAllowlist? fileAllowlist = null, IBrowserService? browserService = null, IYouTubeCaptionService? captionService = null, IFileWriteService? fileWriteService = null)
     {
         _presetManager = presetManager ?? throw new ArgumentNullException(nameof(presetManager));
         _statusManager = statusManager ?? throw new ArgumentNullException(nameof(statusManager));
@@ -66,11 +112,25 @@ public partial class MainForm : Form
         _conversationManager.TtsEnabled = _ttsEnabled;
         _conversationManager.Initialize(_conversationManager.BuildSystemPrompt());
         _fileReadEnabled = !IsFileReadDisabledByEnv();
+        _fileAllowlist = fileAllowlist ?? new FileAllowlist();
+        _browserService = browserService;
+        _captionService = captionService;
+        _fileWriteService = fileWriteService;
+        if (_fileWriteService is { IsEnabled: true } writeService)
+        {
+            // Prompt context exists from the very first message (general memory
+            // file until a game title is captured).
+            _conversationManager.MemoryFilePath = writeService.CurrentMemoryPath;
+            _conversationManager.MemoryFileNames = writeService.ListMemoryFiles();
+            _conversationManager.WritableRoot = writeService.WriteRoot;
+            _fileWriteService.Changed += OnFileWriteChanged;
+        }
         // Restore before hooking persistence: Initialize() fires the hook and
         // would otherwise overwrite the session file with the empty startup
         // state before the previous session is read.
         RestoreSession();
-        _conversationManager.OnHistoryChanged = snapshot => _sessionStore.Save(snapshot);
+        _conversationManager.OnHistoryChanged = snapshot => _sessionStore.Save(snapshot, _fileAllowlist.Entries);
+        _fileAllowlist.Changed += OnAllowlistChanged;
 
         _webView = new WebView2
         {
@@ -105,7 +165,41 @@ public partial class MainForm : Form
             var userDataFolder = Path.Combine(Path.GetTempPath(), "YAOLlm", "WebView2");
             Directory.CreateDirectory(userDataFolder);
             var env = await CoreWebView2Environment.CreateAsync(null, userDataFolder);
-            await _webView.EnsureCoreWebView2Async(env);
+
+            // WebView2 controller creation and the first child-window show both
+            // briefly ACTIVATE the (still hidden) form — stealing focus from
+            // whatever the user was doing (e.g. a fullscreen game). Watch the
+            // foreground for a few seconds after init and hand focus straight
+            // back whenever the hidden form grabs it.
+            var foregroundBeforeInit = GetForegroundWindow();
+
+            // Force the control's handle on the UI thread — controller creation
+            // needs a valid, UI-thread-owned parent HWND.
+            var webviewHandle = _webView.Handle;
+            if (!IsWindow(webviewHandle))
+                _logger.Log("WebView2 init: warning — control handle is not a valid window");
+
+            // A relaunch right after a hard kill can race the previous
+            // instance's teardown (hotkey, WebView2 browser process,
+            // user-data-folder) — controller creation then fails with odd
+            // HRESULTs (e.g. 0x80070578 Invalid window handle). Teardown can
+            // take a while, so retry patiently (up to ~30s) before giving up,
+            // so the tray app never ends up UI-less after a restart.
+            for (var attempt = 1; ; attempt++)
+            {
+                try
+                {
+                    await _webView.EnsureCoreWebView2Async(env);
+                    break;
+                }
+                catch (Exception ex) when (attempt < 10)
+                {
+                    _logger.Log($"WebView2 init attempt {attempt} failed: {ex.Message} — retrying in 3s");
+                    await Task.Delay(3000);
+                }
+            }
+
+            _ = Task.Run(() => WatchStartupForeground(foregroundBeforeInit, seconds: 5));
             // Opaque page background — do NOT use WebView2 transparency here.
             // DefaultBackgroundColor=Transparent + transparent html/body hits a
             // compositing regression in the Evergreen runtime (~152, Sep 2026):
@@ -164,6 +258,10 @@ public partial class MainForm : Form
             _bridge.CycleProvider += CyclePreset;
             _bridge.Stop += StopStreaming;
             _bridge.Compact += () => _ = CompactConversationAsync();
+            _bridge.AddFiles += AddFilesToAllowlist;
+            _bridge.AddFolder += AddFolderToAllowlist;
+            _bridge.RemoveAllowedPath += RemoveAllowedPath;
+            _bridge.DeleteMemoryFile += DeleteMemoryFile;
             _bridge.ToggleTts += () =>
             {
                 _ttsEnabled = !_ttsEnabled;
@@ -198,6 +296,9 @@ public partial class MainForm : Form
                     _bridge?.Provider(_presetManager.ActivePreset.DisplayName ?? _presetManager.ActivePreset.ToString());
                     _bridge?.Status("Idle");
                     _bridge?.TtsState(_ttsEnabled);
+                    _bridge?.FileAccessState(_fileReadEnabled);
+                    _bridge?.AllowedPaths(_fileAllowlist.Entries);
+                    PushMemoryFileState();
                     ReplayRestoredSession();
                     UpdateHistoryCounter();
                 }
@@ -222,6 +323,41 @@ public partial class MainForm : Form
             {
                 _logger.Log($"WebView2 init failed: {ex}");
             }
+    }
+
+    /// <summary>
+    /// Watches the foreground for a few seconds after WebView2 init: whenever
+    /// the still-hidden form is foreground (WebView2 stole it), focus goes
+    /// straight back to <paramref name="target"/>. Bails out permanently once
+    /// the user summons the overlay — from then on focus belongs here.
+    /// Safety net next to WS_EX_NOACTIVATE (which already prevents the steal).
+    /// </summary>
+    private void WatchStartupForeground(IntPtr target, int seconds)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(seconds);
+        while (DateTime.UtcNow < deadline)
+        {
+            if (Visible) return; // user-initiated show — focus belongs here now
+            if (GetForegroundWindow() == Handle)
+            {
+                // SetForegroundWindow can return true without the switch
+                // sticking — verify and retry a few times.
+                for (var attempt = 0; attempt < 3; attempt++)
+                {
+                    if (Visible || GetForegroundWindow() != Handle) return;
+                    if (target != IntPtr.Zero && IsWindow(target) && SetForegroundWindow(target)
+                        && GetForegroundWindow() != Handle)
+                    {
+                        _logger.Log("Startup: returned foreground focus stolen by WebView2 init.");
+                        return;
+                    }
+                    Thread.Sleep(100);
+                }
+                _logger.Log("Startup: WebView2 stole foreground but focus restore failed.");
+                return;
+            }
+            Thread.Sleep(50);
+        }
     }
 
     protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
@@ -270,6 +406,27 @@ public partial class MainForm : Form
                     _bridge?.ChatMessage("system", $"<em>📄 Reading: {status.Detail}</em>");
                     break;
 
+                case ProviderStatusKind.Browsing:
+                    _statusManager.SetStatus(Status.Browsing);
+                    _onSearchComplete?.Invoke();
+                    // Only navigations get an in-chat line — per-click/per-type
+                    // messages would flood the transcript during a browsing run.
+                    if (!string.IsNullOrEmpty(status.Detail) && status.Detail.Contains("://"))
+                        _bridge?.ChatMessage("system", $"<em>🌐 Browsing: {status.Detail}</em>");
+                    break;
+
+                case ProviderStatusKind.Captions:
+                    _statusManager.SetStatus(Status.Captions);
+                    _onSearchComplete?.Invoke();
+                    _bridge?.ChatMessage("system", $"<em>💬 Extracting captions: {status.Detail}</em>");
+                    break;
+
+                case ProviderStatusKind.WritingFile:
+                    _statusManager.SetStatus(Status.Writing);
+                    _onSearchComplete?.Invoke();
+                    _bridge?.ChatMessage("system", $"<em>✍️ Writing: {status.Detail}</em>");
+                    break;
+
                 case ProviderStatusKind.Sending:
                     _statusManager.SetStatus(Status.Sending);
                     break;
@@ -280,11 +437,99 @@ public partial class MainForm : Form
 
     private bool _hotkeyRegistrationFailed;
 
-    /// <summary>FILE_READ=off (also no/false/0) disables the file_read tool.</summary>
+    /// <summary>FILE_READ=off (also no/false/0) disables the file tools.</summary>
     private static bool IsFileReadDisabledByEnv()
     {
         var config = Environment.GetEnvironmentVariable("FILE_READ");
         return config?.Trim().ToLowerInvariant() is "off" or "no" or "false" or "0";
+    }
+
+    // ─── File allowlist (user-approved paths for file_read / list_files) ──
+
+    /// <summary>Applies allowlist mutations: system prompt, UI panel, session file.</summary>
+    private void OnAllowlistChanged()
+    {
+        // Rebuilds the system prompt so the model always sees the exact
+        // approved set (empty list → prompt says nothing about file access).
+        _conversationManager.AllowedPaths = _fileAllowlist.Entries;
+        _bridge?.AllowedPaths(_fileAllowlist.Entries);
+        _sessionStore.Save(_conversationManager.GetSnapshot(), _fileAllowlist.Entries);
+    }
+
+    private void AddFilesToAllowlist()
+    {
+        if (!_fileReadEnabled) return;
+        using var dialog = new OpenFileDialog
+        {
+            Title = "Add files the assistant may read",
+            CheckFileExists = true,
+            Multiselect = true,
+        };
+        if (dialog.ShowDialog(this) == DialogResult.OK)
+        {
+            foreach (var file in dialog.FileNames)
+                _fileAllowlist.Add(file);
+        }
+    }
+
+    private void AddFolderToAllowlist()
+    {
+        if (!_fileReadEnabled) return;
+        using var dialog = new FolderBrowserDialog
+        {
+            Description = "Add a folder the assistant may read",
+            ShowNewFolderButton = false,
+        };
+        if (dialog.ShowDialog(this) == DialogResult.OK)
+            _fileAllowlist.Add(dialog.SelectedPath);
+    }
+
+    private void RemoveAllowedPath(string path) => _fileAllowlist.Remove(path);
+
+    // ─── Memory file (file_write / memory_write) ──────────────────────
+
+    /// <summary>
+    /// Called when a new active window title is captured: the per-game memory
+    /// file follows the game, and the prompt + UI stay in sync with it.
+    /// </summary>
+    private void UpdateMemoryContext(string? game)
+    {
+        if (_fileWriteService is not { IsEnabled: true } writeService) return;
+        writeService.SetCurrentGame(game);
+        var path = writeService.CurrentMemoryPath;
+        if (string.Equals(path, _pushedMemoryPath, StringComparison.OrdinalIgnoreCase))
+            return;
+        _conversationManager.MemoryFilePath = path;
+        _conversationManager.MemoryFileNames = writeService.ListMemoryFiles();
+        PushMemoryFileState();
+    }
+
+    /// <summary>File writes/deletes happen on provider threads — refresh prompt + UI.</summary>
+    private void OnFileWriteChanged()
+    {
+        if (_fileWriteService is not { IsEnabled: true } writeService) return;
+        _conversationManager.MemoryFileNames = writeService.ListMemoryFiles();
+        PushMemoryFileState();
+    }
+
+    private void PushMemoryFileState()
+    {
+        if (_fileWriteService is not { IsEnabled: true } writeService) return;
+        var path = writeService.CurrentMemoryPath;
+        _pushedMemoryPath = path;
+        _bridge?.MemoryFile(writeService.MemoryEnabled, path, File.Exists(path));
+    }
+
+    /// <summary>
+    /// The [x]-twice confirmation landed. Only the current game's memory file
+    /// can be reached here — the service re-validates the path against the
+    /// memory dir, so a user-added allowlist entry can never be deleted.
+    /// </summary>
+    private void DeleteMemoryFile()
+    {
+        if (_fileWriteService is not { IsEnabled: true } writeService) return;
+        var message = writeService.DeleteCurrentMemoryFile();
+        _bridge?.ChatMessage("system", $"<em>{System.Net.WebUtility.HtmlEncode(message)}</em>");
     }
 
     private void RegisterGlobalHotkey()
@@ -312,6 +557,7 @@ public partial class MainForm : Form
         _ttsService.Dispose();
         _currentProvider?.Dispose();
         _presetManager.Dispose();
+        _browserService?.Dispose();
         _sendLock.Dispose();
         _logger.Log("Hotkey unregistered, tray icon disposed, and provider disposed.");
         _logger.Dispose();
@@ -615,7 +861,10 @@ public partial class MainForm : Form
             _logger.Log($"Processing LLM request: {prompt}");
 
             if (!string.IsNullOrEmpty(activeWindowTitle))
+            {
                 _conversationManager.CurrentWindowTitle = activeWindowTitle;
+                UpdateMemoryContext(activeWindowTitle);
+            }
 
             var provider = _currentProvider;
 
@@ -638,9 +887,16 @@ public partial class MainForm : Form
 
             // tts_summary is advertised only while TTS is enabled — otherwise
             // the model still generates (and pays for) a spoken summary that
-            // is never played. With TTS off and web search unsupported the
-            // list is empty and no tools field is sent at all.
-            var tools = ToolDefinitions.BuildTools(provider.SupportsWebSearch, _ttsEnabled, _fileReadEnabled);
+            // is never played. The file tools are advertised only while the
+            // allowlist is non-empty — an empty list can't serve any read, so
+            // advertising would just burn tokens. With everything off and web
+            // search unsupported the list is empty and no tools field is sent.
+            var fileToolsEnabled = _fileReadEnabled && (_fileAllowlist.Count > 0 || _fileWriteService is { IsEnabled: true });
+            var tools = ToolDefinitions.BuildTools(provider.SupportsWebSearch, _ttsEnabled, fileToolsEnabled,
+                browseEnabled: _browserService is { IsEnabled: true },
+                captionsEnabled: _captionService is { IsEnabled: true },
+                fileWriteEnabled: _fileWriteService is { IsEnabled: true },
+                memoryEnabled: _fileWriteService is { IsEnabled: true, MemoryEnabled: true });
 
             _preToolResponse = null;
             _lastTtsText = null;
@@ -826,23 +1082,34 @@ public partial class MainForm : Form
     }
 
     /// <summary>
-    /// Rehydrates the previous session's conversation turns (session resume).
-    /// The persisted system prompt is discarded — the new session rebuilds it
-    /// fresh (current date, TTS state, window title handling); only real
-    /// conversation turns resume.
+    /// Rehydrates the previous session (session resume): conversation turns
+    /// plus the persisted file allowlist. The persisted system prompt is
+    /// discarded — the new session rebuilds it fresh (current date, TTS
+    /// state, window title handling, current allowlist); only real
+    /// conversation turns resume. The allowlist is restored even when the
+    /// previous chat was empty — it is session state, not chat history.
     /// </summary>
     private void RestoreSession()
     {
         try
         {
-            var saved = _sessionStore.Load();
+            var saved = _sessionStore.LoadSession();
             if (saved == null)
             {
                 _logger.Log("Session: no previous session to restore.");
                 return;
             }
 
-            var turns = saved.Where(m => m.Role != ChatRole.System).ToList();
+            if (saved.AllowedPaths.Count > 0)
+            {
+                // Silent bulk restore — the Changed handler isn't attached
+                // yet, and the prompt is updated directly.
+                _fileAllowlist.Restore(saved.AllowedPaths);
+                _conversationManager.AllowedPaths = _fileAllowlist.Entries;
+                _logger.Log($"Session: restored {saved.AllowedPaths.Count} allowed path(s).");
+            }
+
+            var turns = saved.Messages.Where(m => m.Role != ChatRole.System).ToList();
             if (turns.Count == 0)
             {
                 _logger.Log("Session: previous session was empty.");
@@ -913,7 +1180,10 @@ public partial class MainForm : Form
     private void ToggleVisibility()
     {
         if (!this.Visible)
+        {
             _previousWindowHandle = GetForegroundWindow();
+            UnlockActivation();
+        }
         this.Visible = !this.Visible;
 
         if (this.Visible)
@@ -921,6 +1191,20 @@ public partial class MainForm : Form
             this.Activate();
             _bridge?.FocusInput();
         }
+    }
+
+    /// <summary>
+    /// Removes WS_EX_NOACTIVATE on the first user-initiated show — from then on
+    /// the overlay is a normal activatable window (clicks, Activate() work).
+    /// A live ExStyle change doesn't recreate the handle, so WebView2 is safe.
+    /// </summary>
+    private void UnlockActivation()
+    {
+        if (_activationUnlocked) return;
+        _activationUnlocked = true;
+        var exStyle = GetWindowLong(Handle, GWL_EXSTYLE);
+        SetWindowLong(Handle, GWL_EXSTYLE, exStyle & ~WS_EX_NOACTIVATE);
+        _logger.Log("Overlay activation unlocked for user-initiated show.");
     }
 
     private void HideOverlay() => this.Visible = false;

@@ -19,8 +19,8 @@ public abstract class OpenAIStyleProvider : BaseLLMProvider
 {
     private string _dsmlBuffer = "";
 
-    protected OpenAIStyleProvider(HttpClient? httpClient = null, ISearchService? searchService = null, IWebFetchService? webFetchService = null, Logger? logger = null, IFileReadService? fileReadService = null)
-        : base(httpClient, searchService, webFetchService, logger, fileReadService)
+    protected OpenAIStyleProvider(HttpClient? httpClient = null, ISearchService? searchService = null, IWebFetchService? webFetchService = null, Logger? logger = null, IFileReadService? fileReadService = null, IBrowserService? browserService = null, IYouTubeCaptionService? captionService = null, IFileWriteService? fileWriteService = null)
+        : base(httpClient, searchService, webFetchService, logger, fileReadService, browserService, captionService, fileWriteService)
     {
     }
 
@@ -429,6 +429,29 @@ public abstract class OpenAIStyleProvider : BaseLLMProvider
                 if (!string.IsNullOrEmpty(filePath))
                     RaiseOnStatusChange(new ProviderStatus(ProviderStatusKind.ReadingFile, filePath));
                 toolResults.Add(await ExecuteFileReadToolAsync(toolCall, cancellationToken));
+            }
+            else if (toolCall.Name == "list_files" && _fileReadService != null)
+            {
+                var listPath = toolCall.Arguments.TryGetValue("path", out var lp) ? lp?.ToString() : null;
+                if (!string.IsNullOrEmpty(listPath))
+                    RaiseOnStatusChange(new ProviderStatus(ProviderStatusKind.ReadingFile, listPath));
+                toolResults.Add(await ExecuteFileListToolAsync(toolCall, cancellationToken));
+            }
+            else if (toolCall.Name != null && toolCall.Name.StartsWith("browse_") && _browserService != null)
+            {
+                toolResults.Add(await ExecuteBrowseToolAsync(toolCall, cancellationToken));
+            }
+            else if (toolCall.Name == "youtube_captions" && _captionService != null)
+            {
+                toolResults.Add(await ExecuteYouTubeCaptionsToolAsync(toolCall, cancellationToken));
+            }
+            else if (toolCall.Name == "file_write" && _fileWriteService != null)
+            {
+                toolResults.Add(await ExecuteFileWriteToolAsync(toolCall, cancellationToken));
+            }
+            else if (toolCall.Name == "memory_write" && _fileWriteService != null)
+            {
+                toolResults.Add(await ExecuteMemoryWriteToolAsync(toolCall, cancellationToken));
             }
             else
             {

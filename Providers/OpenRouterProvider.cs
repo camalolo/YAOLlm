@@ -24,8 +24,8 @@ public class OpenRouterProvider : OpenAIStyleProvider
     protected override string StreamUrl => $"{_baseUrl}/chat/completions";
 
     /// <param name="baseUrl">Endpoint root, e.g. https://openrouter.ai/api/v1 (from PRESET_N_BASE_URL).</param>
-    public OpenRouterProvider(string model, string? apiKey, string baseUrl, HttpClient? httpClient = null, ISearchService? searchService = null, IWebFetchService? webFetchService = null, Logger? logger = null, IFileReadService? fileReadService = null)
-        : base(httpClient, searchService, webFetchService, logger, fileReadService)
+    public OpenRouterProvider(string model, string? apiKey, string baseUrl, HttpClient? httpClient = null, ISearchService? searchService = null, IWebFetchService? webFetchService = null, Logger? logger = null, IFileReadService? fileReadService = null, IBrowserService? browserService = null, IYouTubeCaptionService? captionService = null, IFileWriteService? fileWriteService = null)
+        : base(httpClient, searchService, webFetchService, logger, fileReadService, browserService, captionService, fileWriteService)
     {
         Model = model ?? throw new ArgumentNullException(nameof(model));
         _apiKey = apiKey;

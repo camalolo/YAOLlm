@@ -92,26 +92,89 @@ static class Program
             logger.Log("[Startup] proxy scrape not configured, web_scrape uses direct fetch");
         }
 
-        // file_read is a read-only local file access tool. On by default;
-        // FILE_READ=off (also no/false/0) keeps the tool unadvertised and the
-        // service unwired.
+        // The file tools (file_read, list_files) are read-only and gated by a
+        // user-curated allowlist: the UI file pickers fill it, the tools can
+        // only touch what's in it. On by default; FILE_READ=off (also
+        // no/false/0) keeps the tools unadvertised and the service unwired.
+        FileAllowlist? fileAllowlist = null;
         IFileReadService? fileReadService = null;
+        FileWriteService? fileWriteService = null;
         var fileReadConfig = Environment.GetEnvironmentVariable("FILE_READ");
         var fileReadOff = fileReadConfig?.Trim().ToLowerInvariant() is "off" or "no" or "false" or "0";
         if (!fileReadOff)
         {
-            fileReadService = new FileReadService(logger);
-            logger.Log("[Startup] file_read tool enabled");
+            fileAllowlist = new FileAllowlist();
+
+            // file_write + the per-game memory file: writes are restricted to
+            // the YAOLlm subtree under the system temp dir. FILE_WRITE=off
+            // disables the write tools; MEMORY=off keeps file_write but drops
+            // the memory file; MEMORY_DIR moves the memory dir (default:
+            // %TEMP%\YAOLlm\memory — note temp cleanup tools can wipe it).
+            var fileWriteOff = Environment.GetEnvironmentVariable("FILE_WRITE")?.Trim().ToLowerInvariant() is "off" or "no" or "false" or "0";
+            var memoryOff = Environment.GetEnvironmentVariable("MEMORY")?.Trim().ToLowerInvariant() is "off" or "no" or "false" or "0";
+            if (!fileWriteOff)
+            {
+                fileWriteService = new FileWriteService(logger,
+                    memoryEnabled: !memoryOff,
+                    memoryDir: Environment.GetEnvironmentVariable("MEMORY_DIR"));
+            }
+
+            fileReadService = new FileReadService(logger, fileAllowlist, fileWriteService?.ImplicitReadRoots);
+            logger.Log("[Startup] file_read/list_files tools enabled (allowlist-gated)");
+            if (fileWriteService != null)
+                logger.Log("[Startup] file_write tool enabled (temp-area only)"
+                    + (fileWriteService.MemoryEnabled ? "" : ", memory disabled"));
         }
         else
         {
-            logger.Log($"[Startup] FILE_READ={fileReadConfig}, file_read tool disabled");
+            logger.Log($"[Startup] FILE_READ={fileReadConfig}, file tools disabled");
         }
 
-        var presetManager = new PresetManager(searchAggregator, webFetchService, logger, fileReadService);
+        // browse_* tools (Playwright MCP bridge): opt-in, same switch pattern
+        // as SEARCH_SERVICES — BROWSER_SERVICES must contain "playwright" to
+        // enable. Spawns the globally-installed @playwright/mcp lazily on
+        // first browse tool call; the browser session survives preset switches.
+        IBrowserService? browserService = null;
+        var browserServicesConfig = Environment.GetEnvironmentVariable("BROWSER_SERVICES");
+        var wantsBrowser = browserServicesConfig?.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Any(name => name.Equals("playwright", StringComparison.OrdinalIgnoreCase)) == true;
+        if (wantsBrowser)
+        {
+            var headlessOff = Environment.GetEnvironmentVariable("BROWSER_HEADLESS")?.Trim().ToLowerInvariant() is "off" or "no" or "false" or "0";
+            browserService = new PlaywrightBrowserService(
+                logger,
+                headless: !headlessOff,
+                channel: Environment.GetEnvironmentVariable("BROWSER_CHANNEL"),
+                cdpEndpoint: Environment.GetEnvironmentVariable("BROWSER_CDP_ENDPOINT"),
+                cliPath: Environment.GetEnvironmentVariable("BROWSER_MCP_CLI"));
+        }
+        else
+        {
+            logger.Log("[Startup] BROWSER_SERVICES does not include 'playwright', browse_* tools disabled");
+        }
+
+        // youtube_captions (transcript extraction via yt-dlp): auto-enabled
+        // when yt-dlp is on PATH (or YTDLP_PATH points at it); YOUTUBE_CAPTIONS=off
+        // forces it off.
+        IYouTubeCaptionService? captionService = null;
+        var captionsOff = Environment.GetEnvironmentVariable("YOUTUBE_CAPTIONS")?.Trim().ToLowerInvariant() is "off" or "no" or "false" or "0";
+        if (!captionsOff)
+        {
+            captionService = new YouTubeCaptionService(logger, Environment.GetEnvironmentVariable("YTDLP_PATH"));
+            if (captionService.IsEnabled)
+                logger.Log("[Startup] youtube_captions tool enabled (yt-dlp found)");
+            else
+                logger.Log("[Startup] yt-dlp not found on PATH, youtube_captions tool disabled");
+        }
+        else
+        {
+            logger.Log("[Startup] YOUTUBE_CAPTIONS=off, youtube_captions tool disabled");
+        }
+
+        var presetManager = new PresetManager(searchAggregator, webFetchService, logger, fileReadService, browserService, captionService, fileWriteService);
         presetManager.LoadConfig();
 
-        var mainForm = new MainForm(presetManager, statusManager, logger);
+        var mainForm = new MainForm(presetManager, statusManager, logger, fileAllowlist, browserService, captionService, fileWriteService);
 
         var context = new TrayApplicationContext(mainForm);
         Application.Run(context);

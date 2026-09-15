@@ -149,12 +149,78 @@ public class ConversationManager
         set
         {
             _ttsEnabled = value;
-            lock (_historyLock)
+            RebuildSystemPrompt();
+        }
+    }
+
+    private IReadOnlyList<string> _allowedPaths = Array.Empty<string>();
+
+    /// <summary>
+    /// User-approved files/directories the file tools may access. Kept in sync
+    /// with the UI allowlist so the system prompt lists exactly what the model
+    /// can touch (and says nothing about file access while the list is empty).
+    /// Stores a snapshot; rebuilds the system prompt in place.
+    /// </summary>
+    public IReadOnlyList<string> AllowedPaths
+    {
+        get => _allowedPaths;
+        set
+        {
+            _allowedPaths = value?.ToArray() ?? Array.Empty<string>();
+            RebuildSystemPrompt();
+        }
+    }
+
+    private string? _memoryFilePath;
+
+    /// <summary>
+    /// The current game's memory file (file_write/memory_write feature). Always
+    /// present in the system prompt while set, with a note that this file is
+    /// for writing memories. Null = memory feature off.
+    /// </summary>
+    public string? MemoryFilePath
+    {
+        get => _memoryFilePath;
+        set
+        {
+            _memoryFilePath = value;
+            RebuildSystemPrompt();
+        }
+    }
+
+    private IReadOnlyList<string> _memoryFileNames = Array.Empty<string>();
+
+    /// <summary>Existing memory file names — lets the model reuse files instead of creating near-duplicates.</summary>
+    public IReadOnlyList<string> MemoryFileNames
+    {
+        get => _memoryFileNames;
+        set
+        {
+            _memoryFileNames = value?.ToArray() ?? Array.Empty<string>();
+            RebuildSystemPrompt();
+        }
+    }
+
+    private string? _writableRoot;
+
+    /// <summary>The only directory file_write may create files in (prompt context).</summary>
+    public string? WritableRoot
+    {
+        get => _writableRoot;
+        set
+        {
+            _writableRoot = value;
+            RebuildSystemPrompt();
+        }
+    }
+
+    private void RebuildSystemPrompt()
+    {
+        lock (_historyLock)
+        {
+            if (_conversationHistory.Count > 0)
             {
-                if (_conversationHistory.Count > 0)
-                {
-                    _conversationHistory[0].Content = BuildSystemPrompt();
-                }
+                _conversationHistory[0].Content = BuildSystemPrompt();
             }
         }
     }
@@ -179,6 +245,26 @@ public class ConversationManager
         var windowContext = string.IsNullOrEmpty(CurrentWindowTitle) ? "" :
             $"- Active application: \"{CurrentWindowTitle}\" (provided by the system — do not search for it)\n";
 
+        // Only mention file access while the allowlist is non-empty — a
+        // dangling instruction makes the model hallucinate tool calls that
+        // can never succeed.
+        var fileContext = AllowedPaths.Count == 0 ? "" :
+            "- Local file access: the user approved exactly these paths. file_read reads files under them, list_files lists an approved directory; everything else is denied:\n"
+            + string.Join("\n", AllowedPaths.Select(p => $"  - {p}")) + "\n";
+
+        // Memory file + writable area — present whenever the memory feature is
+        // on, independent of the user allowlist (the model must always be able
+        // to reach its own notes).
+        var memoryContext = "";
+        if (!string.IsNullOrEmpty(MemoryFilePath))
+        {
+            memoryContext = $"- Memory: \"{MemoryFilePath}\" is your notes file for the current game — for writing memories (item locations, solutions, mechanics, strategies). Read it before searching for anything you may already know, and append what you learn so you never search twice. Keep one file per game.\n";
+            if (MemoryFileNames.Count > 0)
+                memoryContext += $"- Existing memory files: {string.Join(", ", MemoryFileNames)}\n";
+        }
+        if (!string.IsNullOrEmpty(WritableRoot))
+            memoryContext += $"- Writable area: file_write may only create files under \"{WritableRoot}\" — everything else on disk is read-only.\n";
+
         // Only instruct the model about tts_summary when the tool is actually
         // advertised (see MainForm.ProcessLLMRequestAsync) — a dangling
         // instruction makes the model hallucinate tool calls it can't make.
@@ -186,11 +272,11 @@ public class ConversationManager
             ? "\n- Always include a tts_summary tool call in your final response, after all search/fetch tool results have been processed. Do not call it in the same turn as other tools. Provide a concise, conversational summary suitable for text-to-speech. Omit tables, code, lists, URLs, and detailed data — just the key takeaway in 1-3 sentences."
             : "";
 
-        return $@"You are a gaming assistant.
-- Today's date: {DateTime.Now:yyyy-MM-dd}
-{windowContext}
-- Avoid spoilers. Give hints first. Only provide exact solutions when the user explicitly asks.
-- You may search the web once per response. Use the results to answer — do not search again with a refined query.{ttsInstruction}";
+        return $@"You are the user's in-game assistant. Be terse — answer first, no filler.
+- Today: {DateTime.Now:yyyy-MM-dd}
+{windowContext}{fileContext}{memoryContext}
+- Gaming help: hints before spoilers; exact solutions only when explicitly asked.
+- Correctness: when unsure of a fact, search the web — never guess specifics. If sources conflict or come up empty, say so plainly.{ttsInstruction}";
     }
 
     public int GetTotalCharacterCount()

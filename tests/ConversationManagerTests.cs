@@ -21,6 +21,32 @@ public class ConversationManagerTests
     }
 
     [Fact]
+    public void MemoryContext_AppearsInSystemPrompt()
+    {
+        var manager = CreateManager();
+        manager.Initialize(manager.BuildSystemPrompt());
+        manager.MemoryFilePath = @"C:\Temp\YAOLlm\memory\dying-light-the-beast.md";
+        manager.MemoryFileNames = new[] { "dying-light-the-beast.md", "other-game.md" };
+        manager.WritableRoot = @"C:\Temp\YAOLlm\files";
+
+        var prompt = manager.GetSnapshot()[0].Content ?? "";
+
+        Assert.Contains("dying-light-the-beast.md", prompt);
+        Assert.Contains("writing memories", prompt);
+        Assert.Contains("Existing memory files: dying-light-the-beast.md, other-game.md", prompt);
+        Assert.Contains("file_write may only create files under", prompt);
+    }
+
+    [Fact]
+    public void MemoryContext_AbsentWhenFeatureOff()
+    {
+        var manager = CreateManager();
+        manager.Initialize(manager.BuildSystemPrompt());
+
+        Assert.DoesNotContain("Memory:", manager.GetSnapshot()[0].Content ?? "");
+    }
+
+    [Fact]
     public void AddExchange_AppendsUserAndModel()
     {
         var manager = CreateManager();
