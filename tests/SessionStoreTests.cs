@@ -112,4 +112,51 @@ public class SessionStoreTests : IDisposable
 
         Assert.False(File.Exists(_path));
     }
+
+    // ─── Allowed paths (file allowlist persistence) ───────────────────
+
+    [Fact]
+    public void SaveThenLoadSession_RoundTripsAllowedPaths()
+    {
+        var history = new List<ChatMessage> { new(ChatRole.User, "hi") };
+        var paths = new List<string> { @"C:\approved\folder", @"C:\approved\file.txt" };
+
+        _store.Save(history, paths);
+        var snapshot = _store.LoadSession();
+
+        Assert.NotNull(snapshot);
+        Assert.Equal(paths, snapshot!.AllowedPaths);
+        Assert.Single(snapshot.Messages);
+    }
+
+    [Fact]
+    public void LoadSession_AllowlistOnlySession_ReturnsPathsAndEmptyMessages()
+    {
+        _store.Save(new List<ChatMessage>(), new List<string> { @"C:\approved" });
+
+        var snapshot = _store.LoadSession();
+
+        Assert.NotNull(snapshot);
+        Assert.Empty(snapshot!.Messages);
+        Assert.Single(snapshot.AllowedPaths);
+        Assert.Null(_store.Load()); // no messages → old Load contract holds
+    }
+
+    [Fact]
+    public void Save_WithoutPaths_WritesEmptyAllowlist()
+    {
+        _store.Save(new List<ChatMessage> { new(ChatRole.User, "hi") }, new List<string> { @"C:\x" });
+        _store.Save(new List<ChatMessage> { new(ChatRole.User, "hi") });
+
+        var snapshot = _store.LoadSession();
+
+        Assert.NotNull(snapshot);
+        Assert.Empty(snapshot!.AllowedPaths);
+    }
+
+    [Fact]
+    public void LoadSession_MissingFile_ReturnsNull()
+    {
+        Assert.Null(_store.LoadSession());
+    }
 }

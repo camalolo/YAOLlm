@@ -42,12 +42,20 @@ public class SessionStore
     {
         public string SavedAt { get; set; } = "";
         public List<SessionEntry> Messages { get; set; } = new();
+        public List<string> AllowedPaths { get; set; } = new();
     }
 
+    /// <summary>Full persisted session state: conversation turns + file allowlist.</summary>
+    public sealed record SessionSnapshot(List<ChatMessage> Messages, List<string> AllowedPaths);
+
     /// <summary>
-    /// Writes the full history snapshot. Any IO failure is logged and ignored.
+    /// Writes the full history snapshot (allowlist preserved as passed).
+    /// The single-argument overload writes an empty allowlist — production
+    /// callers always pass both. Any IO failure is logged and ignored.
     /// </summary>
-    public void Save(IReadOnlyList<ChatMessage> history)
+    public void Save(IReadOnlyList<ChatMessage>? history) => Save(history, null);
+
+    public void Save(IReadOnlyList<ChatMessage>? history, IReadOnlyList<string>? allowedPaths)
     {
         if (history == null) return;
         try
@@ -63,6 +71,7 @@ public class SessionStore
                         Content = m.Content,
                         ImageBase64 = m.Image is { Length: > 0 } img ? Convert.ToBase64String(img) : null,
                     }).ToList(),
+                    AllowedPaths = allowedPaths?.ToList() ?? new List<string>(),
                 };
 
                 var tmp = _path + ".tmp";
@@ -77,11 +86,12 @@ public class SessionStore
     }
 
     /// <summary>
-    /// Loads the persisted history. Returns null when no usable session exists
-    /// (missing file, empty conversation, or corrupt content) — the caller
-    /// starts fresh in that case.
+    /// Loads the full persisted state. Returns null when no usable session
+    /// exists (missing file, corrupt content, or nothing worth restoring) —
+    /// the caller starts fresh in that case. Messages may be empty while an
+    /// allowlist exists (and vice versa).
     /// </summary>
-    public List<ChatMessage>? Load()
+    public SessionSnapshot? LoadSession()
     {
         try
         {
@@ -89,12 +99,17 @@ public class SessionStore
             {
                 if (!File.Exists(_path)) return null;
                 var file = JsonSerializer.Deserialize<SessionFile>(File.ReadAllText(_path), JsonOptions);
-                if (file?.Messages is not { Count: > 0 }) return null;
-                return file.Messages.Select(e => new ChatMessage(
+                if (file == null) return null;
+
+                var messages = file.Messages.Select(e => new ChatMessage(
                     e.Role,
                     e.Content,
                     string.IsNullOrEmpty(e.ImageBase64) ? null : Convert.FromBase64String(e.ImageBase64)
                 )).ToList();
+
+                var paths = file.AllowedPaths ?? new List<string>();
+                if (messages.Count == 0 && paths.Count == 0) return null;
+                return new SessionSnapshot(messages, paths);
             }
         }
         catch (Exception ex)
@@ -102,5 +117,15 @@ public class SessionStore
             _logger.Log($"Session load failed: {ex.Message}");
             return null;
         }
+    }
+
+    /// <summary>
+    /// Loads the persisted conversation history. Returns null when no usable
+    /// session exists (missing file, empty conversation, or corrupt content) —
+    /// the caller starts fresh in that case.
+    /// </summary>
+    public List<ChatMessage>? Load()
+    {
+        return LoadSession() is { Messages.Count: > 0 } snapshot ? snapshot.Messages : null;
     }
 }

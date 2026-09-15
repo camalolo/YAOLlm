@@ -197,4 +197,152 @@ public class FileReadServiceTests : IDisposable
         await Assert.ThrowsAnyAsync<OperationCanceledException>(
             () => _service.ReadFileAsync(path, cancellationToken: cts.Token));
     }
+
+    // ─── Allowlist gating ─────────────────────────────────────────────
+
+    [Fact]
+    public async Task AllowlistedDirectory_FileInside_IsReadable()
+    {
+        var path = WriteFile("inside.txt", "secret content");
+        var allowlist = new FileAllowlist();
+        allowlist.Restore(new[] { _dir });
+        var service = new FileReadService(allowlist: allowlist);
+
+        var result = await service.ReadFileAsync(path);
+
+        Assert.Equal("secret content", result);
+    }
+
+    [Fact]
+    public async Task AllowlistedFile_ExactlyThatFile_IsReadable()
+    {
+        var path = WriteFile("single.txt", "content");
+        var allowlist = new FileAllowlist();
+        allowlist.Restore(new[] { path });
+        var service = new FileReadService(allowlist: allowlist);
+
+        Assert.Equal("content", await service.ReadFileAsync(path));
+        Assert.StartsWith("Error: Access denied", await service.ReadFileAsync(WriteFile("outside.txt", "nope")));
+    }
+
+    [Fact]
+    public async Task NoAllowlist_Unrestricted_LegacyBehavior()
+    {
+        var path = WriteFile("legacy.txt", "content");
+
+        Assert.Equal("content", await _service.ReadFileAsync(path));
+    }
+
+    [Fact]
+    public async Task EmptyAllowlist_DeniesReads_WithHelpfulError()
+    {
+        var path = WriteFile("denied.txt", "content");
+        var service = new FileReadService(allowlist: new FileAllowlist());
+
+        var result = await service.ReadFileAsync(path);
+
+        Assert.StartsWith("Error: Access denied", result);
+        Assert.Contains("not approved any files", result);
+    }
+
+    [Fact]
+    public async Task PathOutsideAllowlist_Denied_WithHelpfulError()
+    {
+        var path = WriteFile("denied.txt", "content");
+        var allowlist = new FileAllowlist();
+        allowlist.Restore(new[] { Path.Combine(_dir, "other") });
+        var service = new FileReadService(allowlist: allowlist);
+
+        var result = await service.ReadFileAsync(path);
+
+        Assert.StartsWith("Error: Access denied", result);
+        Assert.Contains("user-approved paths", result);
+    }
+
+    // ─── list_files ───────────────────────────────────────────────────
+
+    [Fact]
+    public async Task ListFilesAsync_ListsDirsFirst_ThenFilesWithSizes()
+    {
+        Directory.CreateDirectory(Path.Combine(_dir, "zsub"));
+        WriteFile("bfile.txt", "12345"); // 5 bytes
+
+        var result = await _service.ListFilesAsync(_dir);
+
+        Assert.Equal("zsub/\nbfile.txt (5 bytes)", result);
+    }
+
+    [Fact]
+    public async Task ListFilesAsync_EmptyDirectory_ReturnsMarker()
+    {
+        var sub = SubDir("empty");
+
+        Assert.Equal("(empty directory)", await _service.ListFilesAsync(sub));
+    }
+
+    [Fact]
+    public async Task ListFilesAsync_MissingDirectory_ReturnsError()
+    {
+        var result = await _service.ListFilesAsync(Path.Combine(_dir, "nope"));
+
+        Assert.StartsWith("Error: Directory not found", result);
+    }
+
+    [Fact]
+    public async Task ListFilesAsync_FilePath_ReturnsError()
+    {
+        var path = WriteFile("afile.txt", "content");
+
+        var result = await _service.ListFilesAsync(path);
+
+        Assert.StartsWith("Error:", result);
+        Assert.Contains("is a file", result);
+    }
+
+    [Fact]
+    public async Task ListFilesAsync_OutsideAllowlist_Denied()
+    {
+        var allowlist = new FileAllowlist();
+        allowlist.Restore(new[] { Path.Combine(_dir, "approved") });
+        var service = new FileReadService(allowlist: allowlist);
+
+        var result = await service.ListFilesAsync(_dir);
+
+        Assert.StartsWith("Error: Access denied", result);
+    }
+
+    [Fact]
+    public async Task ListFilesAsync_InsideAllowlist_Works()
+    {
+        var approved = SubDir("approved");
+        var inner = Directory.CreateDirectory(Path.Combine(approved, "inner"));
+        WriteFile(Path.Combine("approved", "inner", "leaf.txt"), "x");
+        var allowlist = new FileAllowlist();
+        allowlist.Restore(new[] { approved });
+        var service = new FileReadService(allowlist: allowlist);
+
+        var approvedList = await service.ListFilesAsync(approved);
+        Assert.Contains("inner/", approvedList);
+        Assert.Equal("leaf.txt (1 bytes)", await service.ListFilesAsync(inner.FullName));
+    }
+
+    [Fact]
+    public async Task ListFilesAsync_MoreThanCap_TruncatesWithMarker()
+    {
+        var sub = SubDir("many");
+        for (var i = 0; i < FileReadService.MaxListEntries + 10; i++)
+            WriteFile(Path.Combine("many", $"f{i:D3}.txt"), "x");
+
+        var result = await _service.ListFilesAsync(sub);
+
+        Assert.Contains($"more entries not shown", result);
+        Assert.DoesNotContain($"f{FileReadService.MaxListEntries:D3}.txt", result);
+    }
+
+    private string SubDir(string name)
+    {
+        var path = Path.Combine(_dir, name);
+        Directory.CreateDirectory(path);
+        return path;
+    }
 }
