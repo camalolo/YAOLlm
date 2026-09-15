@@ -14,12 +14,17 @@ namespace YAOLlm;
 /// </summary>
 public interface IWebFetchService
 {
-    Task<string> FetchAsync(string url, int maxLength = 15000, CancellationToken cancellationToken = default);
+    /// <summary>
+    /// Fetches the URL and returns its full readable text — no length cap.
+    /// Failures (HTTP errors, bot-blocked / shell pages) come back as strings
+    /// starting with "Error:" so the model reports instead of guessing.
+    /// </summary>
+    Task<string> FetchAsync(string url, CancellationToken cancellationToken = default);
 }
 
 /// <summary>
 /// Fetches a URL and extracts its text content. For HTML responses, strips tags.
-/// For non-HTML (JSON, plain text), returns the raw content. Truncates to maxLength characters.
+/// For non-HTML (JSON, plain text), returns the raw content.
 /// </summary>
 public class WebFetchService : IWebFetchService
 {
@@ -102,7 +107,7 @@ public class WebFetchService : IWebFetchService
         headers.TryAddWithoutValidation("upgrade-insecure-requests", "1");
     }
 
-    public async Task<string> FetchAsync(string url, int maxLength = 15000, CancellationToken cancellationToken = default)
+    public async Task<string> FetchAsync(string url, CancellationToken cancellationToken = default)
     {
         try
         {
@@ -133,7 +138,7 @@ public class WebFetchService : IWebFetchService
             var encoding = GetEncoding(response, contentBytes);
             var rawText = encoding.GetString(contentBytes);
 
-            var result = ExtractContent(rawText, isHtml, maxLength);
+            var result = ExtractContent(rawText, isHtml);
 
             _logger.Log($"[WebFetch] Fetched {url}: {result.Length} chars (type: {contentType})");
             return result;
@@ -203,11 +208,11 @@ public class WebFetchService : IWebFetchService
 
     /// <summary>
     /// Converts raw response text into the tool result handed to the LLM:
-    /// HTML-to-text extraction, a readability gate for bot-blocked pages,
-    /// and length truncation. Internal + static so tests can exercise the
-    /// exact pipeline without network access.
+    /// HTML-to-text extraction plus a readability gate for bot-blocked pages.
+    /// No length cap — the model gets the whole page. Internal + static so
+    /// tests can exercise the exact pipeline without network access.
     /// </summary>
-    internal static string ExtractContent(string rawText, bool isHtml, int maxLength)
+    internal static string ExtractContent(string rawText, bool isHtml)
     {
         var result = isHtml ? HtmlToText(rawText) : rawText;
 
@@ -223,9 +228,6 @@ public class WebFetchService : IWebFetchService
             return $"Error: page returned only {result.Length} chars of readable text (\"{snippet}\"). " +
                    "It is likely bot-blocked, login-walled, or requires JavaScript. Do not guess its contents.";
         }
-
-        if (result.Length > maxLength)
-            result = result[..maxLength] + $"\n\n... [truncated at {maxLength} characters; full page was longer]";
 
         return result;
     }

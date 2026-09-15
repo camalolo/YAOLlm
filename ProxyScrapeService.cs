@@ -3,6 +3,7 @@ using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -18,6 +19,9 @@ namespace YAOLlm;
 /// - never retry 400/401;
 /// - the informational `provider` field is never used;
 /// - empty content is a failure, not a valid answer (unlike search results).
+/// Success responses are screened by DetectErrorPage: HTTP-200 error pages
+/// ("404: Not Found") and near-empty JS shells are converted into failures
+/// so the model never sees them as page content.
 /// Failures return strings starting with "Error:" — the IWebFetchService
 /// convention the web_scrape tool relies on ("report, never guess").
 /// </summary>
@@ -41,7 +45,7 @@ public class ProxyScrapeService : IWebFetchService, IDisposable
         _client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
     }
 
-    public async Task<string> FetchAsync(string url, int maxLength = 15000, CancellationToken cancellationToken = default)
+    public async Task<string> FetchAsync(string url, CancellationToken cancellationToken = default)
     {
         try
         {
@@ -67,9 +71,20 @@ public class ProxyScrapeService : IWebFetchService, IDisposable
                     if (response.IsSuccessStatusCode)
                     {
                         var (title, content) = ParseResponse(body);
+
+                        // Scrape providers return HTTP 200 even for 404s and
+                        // JS shells — the error page's own text arrives as
+                        // "content". Reject those before they reach the model.
+                        var error = DetectErrorPage(title, content);
+                        if (error != null)
+                        {
+                            _logger.Log($"[proxy] Scraped {url}: rejected — {Truncate(error, 140)}");
+                            return error;
+                        }
+
                         var formatted = FormatResult(url, title, content);
                         _logger.Log($"[proxy] Scraped {url}: {content.Length} chars (title: {Truncate(title, 80)})");
-                        return TruncateResult(formatted, maxLength);
+                        return formatted;
                     }
 
                     var status = (int)response.StatusCode;
@@ -150,12 +165,11 @@ public class ProxyScrapeService : IWebFetchService, IDisposable
         return (title, content);
     }
 
-    /// <summary>Formats the page as markdown: bold title heading + full content.</summary>
+    /// <summary>
+    /// Formats the page as markdown: bold title heading + full content.
+    /// </summary>
     private static string FormatResult(string url, string title, string content)
     {
-        if (string.IsNullOrEmpty(content))
-            return $"Error: Scrape returned no content for {url} (possibly bot-blocked or JS-rendered).";
-
         var sb = new StringBuilder();
         if (!string.IsNullOrEmpty(title))
         {
@@ -166,11 +180,48 @@ public class ProxyScrapeService : IWebFetchService, IDisposable
         return sb.ToString().Trim();
     }
 
-    private static string TruncateResult(string result, int maxLength)
+    /// <summary>
+    /// Content shorter than this is a shell page (bot-blocked / login-walled /
+    /// JS-rendered), not a successful scrape — mirrors
+    /// WebFetchService.MinReadableHtmlLength.
+    /// </summary>
+    internal const int MinReadableContentLength = 250;
+
+    /// <summary>
+    /// Error pages are almost always small (stub text + nav chrome). A page
+    /// longer than this whose title merely mentions an error — a real
+    /// "How to fix error 404" guide, say — is kept as content.
+    /// </summary>
+    internal const int MaxErrorPageContentLength = 10000;
+
+    private static readonly Regex ErrorTitleRegex = new(
+        @"\b(403|404|410)\b|\bnot[\s_-]?found\b|\berror\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    /// <summary>
+    /// Detects pages that scraped "successfully" but carry no usable content:
+    /// - error-page titles on short-ish bodies ("404: Not Found - GameSpot",
+    ///   "Page not found | PowerPyx", "Steam Community :: Error");
+    /// - near-empty content (JS-app shells extract to ~180 chars of nav).
+    /// Handing either to the model invites hallucination — return a loud
+    /// Error: string instead. Pure/static for testability; null means the
+    /// page looks like real content.
+    /// </summary>
+    internal static string? DetectErrorPage(string title, string content)
     {
-        if (result.Length <= maxLength)
-            return result;
-        return result[..maxLength] + $"\n\n... [truncated at {maxLength} characters; full page was longer]";
+        if (content.Length < MinReadableContentLength)
+        {
+            return $"Error: page returned only {content.Length} chars of readable text. " +
+                   "It is likely bot-blocked, login-walled, or requires JavaScript. Do not guess its contents.";
+        }
+
+        if (content.Length < MaxErrorPageContentLength && ErrorTitleRegex.IsMatch(title))
+        {
+            return $"Error: the site returned an error page (title: \"{title}\"), not real content — " +
+                   "the URL is likely dead or wrong. Do not guess its contents; try a different source.";
+        }
+
+        return null;
     }
 
     private static TimeSpan? GetRetryAfter(HttpResponseMessage response)

@@ -53,7 +53,7 @@ public class WebFetchServiceTests
         // What Reddit actually returns to a bot: a shell whose only text is "Reddit"
         var html = "<html><head><title>Reddit</title></head><body><div>Reddit</div></body></html>";
 
-        var result = WebFetchService.ExtractContent(html, isHtml: true, maxLength: 15000);
+        var result = WebFetchService.ExtractContent(html, isHtml: true);
 
         Assert.StartsWith("Error:", result);
         Assert.Contains("chars of readable text", result);
@@ -67,20 +67,21 @@ public class WebFetchServiceTests
         // JSON APIs legitimately return short payloads — the gate is HTML-only
         const string json = """{"results": []}""";
 
-        var result = WebFetchService.ExtractContent(json, isHtml: false, maxLength: 15000);
+        var result = WebFetchService.ExtractContent(json, isHtml: false);
 
         Assert.Equal(json, result);
     }
 
     [Fact]
-    public void ExtractContent_LongPage_TruncatesWithMarker()
+    public void ExtractContent_LongPage_ReturnsFullText_NoCap()
     {
-        var html = "<p>" + new string('x', 20000) + "</p>";
+        var article = string.Concat(Enumerable.Repeat("word ", 6000)); // 30k chars
+        var html = $"<article><p>{article}</p></article>";
 
-        var result = WebFetchService.ExtractContent(html, isHtml: true, maxLength: 15000);
+        var result = WebFetchService.ExtractContent(html, isHtml: true);
 
-        Assert.True(result.Length < 20000);
-        Assert.Contains("[truncated at 15000 characters", result);
+        Assert.True(result.Length > 25000);
+        Assert.DoesNotContain("[truncated", result);
     }
 
     [Fact]
@@ -89,7 +90,7 @@ public class WebFetchServiceTests
         var article = string.Concat(Enumerable.Repeat("word ", 100)); // 500 chars — above the gate
         var html = $"<article><p>{article}</p></article>";
 
-        var result = WebFetchService.ExtractContent(html, isHtml: true, maxLength: 15000);
+        var result = WebFetchService.ExtractContent(html, isHtml: true);
 
         Assert.False(result.StartsWith("Error:"), result);
         Assert.Contains("word", result);
