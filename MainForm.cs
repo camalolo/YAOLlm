@@ -39,7 +39,7 @@ public partial class MainForm : Form
     private string? _pushedMemoryPath;
     private bool _pendingPresetSwitch;
     private IntPtr _previousWindowHandle = IntPtr.Zero;
-    private readonly Queue<(string? message, string? imageBase64, string? title)> _messageQueue = new();
+    private readonly Queue<(string? message, string? imageBase64, string? title, string? queuedHtml)> _messageQueue = new();
     private readonly SemaphoreSlim _sendLock = new(1, 1);
     private CancellationTokenSource? _cancellationTokenSource;
     private readonly TtsService _ttsService;
@@ -623,11 +623,12 @@ public partial class MainForm : Form
 
         if (!_sendLock.Wait(0))
         {
+            var queuedHtml = MarkdownHelper.ToHtml(message);
             // Only show the queued bubble the first time; re-queued messages
             // (e.g. lost a race re-acquiring the lock) are already displayed.
             if (!alreadyShown)
-                _bridge?.ChatQueued(MarkdownHelper.ToHtml(message));
-            _messageQueue.Enqueue((message, imageBase64, title));
+                _bridge?.ChatQueued(queuedHtml);
+            _messageQueue.Enqueue((message, imageBase64, title, queuedHtml));
             return;
         }
 
@@ -665,7 +666,13 @@ public partial class MainForm : Form
     private void SendNextQueuedMessage()
     {
         if (_messageQueue.TryDequeue(out var queued))
+        {
+            // Promote the pending bubble into the main transcript now that
+            // this message is actually being answered — keeps the displayed
+            // order correct when messages were typed mid-stream.
+            _bridge?.ChatDequeued(queued.queuedHtml ?? MarkdownHelper.ToHtml(queued.message));
             SendMessage(queued.message, queued.imageBase64, queued.title, alreadyShown: true);
+        }
     }
 
     /// <summary>

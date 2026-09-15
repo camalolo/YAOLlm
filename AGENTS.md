@@ -210,6 +210,7 @@ All messages are JSON. C# → JS via `CoreWebView2.PostWebMessageAsJson`. JS →
 |---|---|---|
 | `chat_message` | `role`, `html` | Complete message (user/model/system/error) |
 | `chat_queued` | `html` | User message queued behind an in-flight request |
+| `chat_dequeued` | `html` | Queued message is being answered — JS moves its pending bubble into the main transcript (order stays correct; done at dequeue, not at response completion) |
 | `chat_stream` | `html` | Streaming chunk |
 | `status` | `status` | Idle/Sending/Receiving/Searching/Fetching |
 | `provider` | `name` | Active provider display name |

@@ -509,11 +509,6 @@
                   self.streamingHtml = '';
                   break;
                 case 'chat_message':
-                  // Move pending messages into main list when stream completes
-                  if (msg.role === 'model' && self.pendingMessages.length > 0) {
-                    self.messages.push(...self.pendingMessages);
-                    self.pendingMessages = [];
-                  }
                   // Clear any pending streaming content before pushing a non-model message
                   // (pre-tool text is committed as a model chat_message before search notifications)
                   if (msg.role !== 'model') {
@@ -533,6 +528,20 @@
                   self.$nextTick(() => self.highlightNew());
                   self.$nextTick(() => self.scheduleScrollToBottom());
                   break;
+                case 'chat_dequeued': {
+                  // A queued message is being answered now: move its pending
+                  // bubble into the main transcript. Doing this at dequeue
+                  // (not at response completion) keeps the order right — the
+                  // in-flight response stays above messages typed later.
+                  var qi = self.pendingMessages.findIndex(function(m) { return m.html === msg.html; });
+                  if (qi >= 0) {
+                    self.messages.push(self.pendingMessages.splice(qi, 1)[0]);
+                  } else {
+                    self.messages.push({role: 'user', html: msg.html, id: self.nextId++});
+                  }
+                  self.$nextTick(() => self.scheduleScrollToBottom());
+                  break;
+                }
                 case 'chat_queued':
                   self.pendingMessages.push({role: 'user', html: msg.html, id: self.nextId++});
                   self.$nextTick(() => self.highlightNew());

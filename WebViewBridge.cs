@@ -136,6 +136,17 @@ public sealed class WebViewBridge
     }
 
     /// <summary>
+    /// Tells the JavaScript UI a previously queued message has been dequeued
+    /// and is now being answered: its pending bubble moves into the main
+    /// transcript, keeping chat order correct (response completes, then the
+    /// queued message it was typed after appears below it).
+    /// </summary>
+    public void ChatDequeued(string html)
+    {
+        Post(new { type = "chat_dequeued", html });
+    }
+
+    /// <summary>
     /// Sends a streaming HTML chunk to the JavaScript UI.
     /// </summary>
     /// <param name="html">HTML fragment to append to the current streaming response.</param>
