@@ -367,3 +367,6 @@ nul
 
 # Plans and tracking docs
 plans/tmp/
+
+# Playwright MCP browser session artifacts (console logs, page snapshots)
+.playwright-mcp/
