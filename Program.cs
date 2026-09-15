@@ -105,7 +105,7 @@ static class Program
         {
             fileAllowlist = new FileAllowlist();
 
-            // file_write + the per-game memory file: writes are restricted to
+            // file_write + the memory file: writes are restricted to
             // the YAOLlm subtree under the system temp dir. FILE_WRITE=off
             // disables the write tools; MEMORY=off keeps file_write but drops
             // the memory file; MEMORY_DIR moves the memory dir (default:

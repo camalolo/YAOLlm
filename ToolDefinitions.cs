@@ -367,7 +367,7 @@ public static class ToolDefinitions
         "file_write",
         "Write a text file inside the assistant's writable area (the YAOLlm folder under the system temp dir — the exact root is given in the system prompt). " +
         "Nothing outside that area can be written. Use it for scratch files, exports, or notes. " +
-        "For game memories use memory_write instead — it picks the right file automatically.",
+        "For game memories use memory_write instead — it always targets the memory file.",
         new
         {
             type = "object",
@@ -394,11 +394,11 @@ public static class ToolDefinitions
     );
 
     /// <summary>
-    /// Memory edit tool — one memory file per game, path resolved server-side
+    /// Memory edit tool — one fixed memory file, path resolved server-side
     /// </summary>
     public static ToolDefinition MemoryWrite => new(
         "memory_write",
-        "Write to your persistent memory file for the current game (the path is in the system prompt; this tool picks it automatically, so you can never split a game's memories across files). " +
+        "Write to your persistent memory file (the path is in the system prompt; this tool always targets that one file). " +
         "Append durable knowledge — item locations, solutions, mechanics, boss strategies, build notes — so you never search for the same thing twice. " +
         "Read the file (file_read) before appending so you don't duplicate what is already known. " +
         "Ops: append (default) adds content at the end; replace swaps one exact 'find' snippet for content (match must be unique — include enough surrounding text); overwrite rewrites the whole file (use sparingly, to reorganize or compact).",
@@ -422,11 +422,6 @@ public static class ToolDefinitions
                 {
                     type = "string",
                     description = "replace only: the exact existing text to replace (must match exactly once)"
-                },
-                game = new
-                {
-                    type = "string",
-                    description = "Optional: target a different game's memory file instead of the current one (use the plain game name)"
                 }
             },
             required = new[] { "content" }

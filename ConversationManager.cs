@@ -174,9 +174,9 @@ public class ConversationManager
     private string? _memoryFilePath;
 
     /// <summary>
-    /// The current game's memory file (file_write/memory_write feature). Always
-    /// present in the system prompt while set, with a note that this file is
-    /// for writing memories. Null = memory feature off.
+    /// The memory file (file_write/memory_write feature). Always present in
+    /// the system prompt while set, with a note that this file is for writing
+    /// memories. Null = memory feature off.
     /// </summary>
     public string? MemoryFilePath
     {
@@ -184,19 +184,6 @@ public class ConversationManager
         set
         {
             _memoryFilePath = value;
-            RebuildSystemPrompt();
-        }
-    }
-
-    private IReadOnlyList<string> _memoryFileNames = Array.Empty<string>();
-
-    /// <summary>Existing memory file names — lets the model reuse files instead of creating near-duplicates.</summary>
-    public IReadOnlyList<string> MemoryFileNames
-    {
-        get => _memoryFileNames;
-        set
-        {
-            _memoryFileNames = value?.ToArray() ?? Array.Empty<string>();
             RebuildSystemPrompt();
         }
     }
@@ -258,9 +245,7 @@ public class ConversationManager
         var memoryContext = "";
         if (!string.IsNullOrEmpty(MemoryFilePath))
         {
-            memoryContext = $"- Memory: \"{MemoryFilePath}\" is your notes file for the current game — for writing memories (item locations, solutions, mechanics, strategies). Read it before searching for anything you may already know, and append what you learn so you never search twice. Keep one file per game.\n";
-            if (MemoryFileNames.Count > 0)
-                memoryContext += $"- Existing memory files: {string.Join(", ", MemoryFileNames)}\n";
+            memoryContext = $"- Memory: \"{MemoryFilePath}\" is your notes file — for writing memories (item locations, solutions, mechanics, strategies). Read it before searching for anything you may already know, and append what you learn so you never search twice.\n";
         }
         if (!string.IsNullOrEmpty(WritableRoot))
             memoryContext += $"- Writable area: file_write may only create files under \"{WritableRoot}\" — everything else on disk is read-only.\n";

@@ -99,8 +99,8 @@ public class FileWriteServiceTests : IDisposable
     {
         var path = _service.CurrentMemoryPath;
 
-        await _service.WriteMemoryAsync("line one", "append", null, null);
-        var result = await _service.WriteMemoryAsync("line two", "append", null, null);
+        await _service.WriteMemoryAsync("line one", "append", null);
+        var result = await _service.WriteMemoryAsync("line two", "append", null);
 
         Assert.StartsWith("Memory appended", result);
         Assert.Equal("line one\nline two", await File.ReadAllTextAsync(path));
@@ -109,15 +109,15 @@ public class FileWriteServiceTests : IDisposable
     [Fact]
     public async Task WriteMemoryAsync_Replace_RequiresUniqueFind()
     {
-        await _service.WriteMemoryAsync("sword is in the cave. shield is in the cave.", "append", null, null);
+        await _service.WriteMemoryAsync("sword is in the cave. shield is in the cave.", "append", null);
 
-        var missing = await _service.WriteMemoryAsync("X", "replace", "not present anywhere", null);
+        var missing = await _service.WriteMemoryAsync("X", "replace", "not present anywhere");
         Assert.StartsWith("Error: 'find' text not found", missing);
 
-        var ambiguous = await _service.WriteMemoryAsync("X", "replace", "in the cave", null);
+        var ambiguous = await _service.WriteMemoryAsync("X", "replace", "in the cave");
         Assert.StartsWith("Error: 'find' matched 2 places", ambiguous);
 
-        var ok = await _service.WriteMemoryAsync("shield is in the temple.", "replace", "shield is in the cave.", null);
+        var ok = await _service.WriteMemoryAsync("shield is in the temple.", "replace", "shield is in the cave.");
         Assert.StartsWith("Memory edited", ok);
         Assert.Contains("sword is in the cave. shield is in the temple.", await File.ReadAllTextAsync(_service.CurrentMemoryPath));
     }
@@ -125,7 +125,7 @@ public class FileWriteServiceTests : IDisposable
     [Fact]
     public async Task WriteMemoryAsync_Replace_WithoutFile_ReturnsCreateHint()
     {
-        var result = await _service.WriteMemoryAsync("X", "replace", "Y", null);
+        var result = await _service.WriteMemoryAsync("X", "replace", "Y");
 
         Assert.StartsWith("Error: The memory file does not exist", result);
     }
@@ -133,24 +133,22 @@ public class FileWriteServiceTests : IDisposable
     [Fact]
     public async Task WriteMemoryAsync_Overwrite_RewritesWholeFile()
     {
-        await _service.WriteMemoryAsync("old", "append", null, null);
+        await _service.WriteMemoryAsync("old", "append", null);
 
-        var result = await _service.WriteMemoryAsync("fresh start", "overwrite", null, null);
+        var result = await _service.WriteMemoryAsync("fresh start", "overwrite", null);
 
         Assert.StartsWith("Memory file rewritten", result);
         Assert.Equal("fresh start", await File.ReadAllTextAsync(_service.CurrentMemoryPath));
     }
 
     [Fact]
-    public async Task WriteMemoryAsync_GameParam_TargetsThatGamesFile()
+    public async Task WriteMemoryAsync_AlwaysTargetsTheFixedMemoryFile()
     {
-        await _service.WriteMemoryAsync("witcher notes", "append", null, "The Witcher 3");
+        await _service.WriteMemoryAsync("notes", "append", null);
 
-        var path = Path.Combine(_memoryDir, "the-witcher-3.md");
-        Assert.True(File.Exists(path));
-        Assert.Equal("witcher notes", await File.ReadAllTextAsync(path));
-        // the current game's file is untouched
-        Assert.False(File.Exists(_service.CurrentMemoryPath));
+        Assert.True(File.Exists(Path.Combine(_memoryDir, "memory.md")));
+        // no slug files are created alongside it
+        Assert.Equal(1, Directory.GetFiles(_memoryDir, "*.md").Length);
     }
 
     [Fact]
@@ -158,38 +156,17 @@ public class FileWriteServiceTests : IDisposable
     {
         var disabled = new FileWriteService(filesRoot: _filesRoot, memoryDir: _memoryDir, memoryEnabled: false);
 
-        var result = await disabled.WriteMemoryAsync("x", "append", null, null);
+        var result = await disabled.WriteMemoryAsync("x", "append", null);
 
         Assert.StartsWith("Error: The memory feature is disabled", result);
     }
 
-    // ─── Slug / path resolution ───────────────────────────────────────
+    // ─── Path resolution ──────────────────────────────────────────────
 
     [Fact]
-    public void Slugify_NormalizesGameNames()
+    public void CurrentMemoryPath_IsFixedMemoryMdInsideMemoryDir()
     {
-        Assert.Equal("dying-light-the-beast", FileWriteService.Slugify("Dying Light: The Beast"));
-        Assert.Equal("general", FileWriteService.Slugify(""));
-        Assert.Equal("general", FileWriteService.Slugify("!!!"));
-        Assert.Equal("cyberpunk-2077", FileWriteService.Slugify("Cyberpunk 2077®"));
-    }
-
-    [Fact]
-    public void Slugify_CapsLength()
-    {
-        var slug = FileWriteService.Slugify(new string('a', 200));
-
-        Assert.True(slug.Length <= 60);
-        Assert.False(slug.EndsWith('-'), $"slug should not end with '-': {slug}");
-    }
-
-    [Fact]
-    public void MemoryPaths_AlwaysInsideMemoryDir()
-    {
-        _service.SetCurrentGame("Some Game: With Weird // Chars");
-
-        Assert.StartsWith(_memoryDir, _service.CurrentMemoryPath, StringComparison.OrdinalIgnoreCase);
-        Assert.EndsWith(".md", _service.CurrentMemoryPath);
+        Assert.Equal(Path.Combine(_memoryDir, "memory.md"), _service.CurrentMemoryPath);
     }
 
     // ─── Deletion (only ever the memory file) ─────────────────────────
@@ -197,7 +174,7 @@ public class FileWriteServiceTests : IDisposable
     [Fact]
     public async Task DeleteCurrentMemoryFile_DeletesOnlyThatFile()
     {
-        await _service.WriteMemoryAsync("remember this", "append", null, null);
+        await _service.WriteMemoryAsync("remember this", "append", null);
         var scratch = Path.Combine(_filesRoot, "scratch.txt");
         await File.WriteAllTextAsync(scratch, "user file");
 
@@ -211,29 +188,6 @@ public class FileWriteServiceTests : IDisposable
         Assert.Contains("does not exist", _service.DeleteCurrentMemoryFile());
     }
 
-    [Fact]
-    public void DeleteCurrentMemoryFile_PathAlwaysInsideMemoryDir()
-    {
-        _service.SetCurrentGame("../../evil");
-
-        var message = _service.DeleteCurrentMemoryFile();
-
-        // slug normalization can't escape the memory dir
-        Assert.StartsWith(_memoryDir, _service.CurrentMemoryPath, StringComparison.OrdinalIgnoreCase);
-        Assert.StartsWith("🧠 Memory file does not exist", message);
-    }
-
-    // ─── Listing ──────────────────────────────────────────────────────
-
-    [Fact]
-    public async Task ListMemoryFiles_ReturnsNames_Sorted()
-    {
-        await _service.WriteMemoryAsync("b", "append", null, "Beta Game");
-        await _service.WriteMemoryAsync("a", "append", null, "Alpha Game");
-
-        Assert.Equal(new[] { "alpha-game.md", "beta-game.md" }, _service.ListMemoryFiles());
-    }
-
     // ─── Read-back via implicit roots ─────────────────────────────────
 
     [Fact]
@@ -243,7 +197,7 @@ public class FileWriteServiceTests : IDisposable
         var reader = new YAOLlm.FileReadService(allowlist: allowlist,
             implicitRoots: new[] { _filesRoot, _memoryDir });
 
-        await _service.WriteMemoryAsync("stored knowledge", "append", null, null);
+        await _service.WriteMemoryAsync("stored knowledge", "append", null);
         var memoryFile = _service.CurrentMemoryPath;
         var scratch = Path.Combine(_filesRoot, "self-written.txt");
         await _service.WriteAsync(scratch, "model output", append: false);
@@ -251,7 +205,7 @@ public class FileWriteServiceTests : IDisposable
         // memory file + self-written file are readable with an empty allowlist
         Assert.Equal("stored knowledge", await reader.ReadFileAsync(memoryFile));
         Assert.Equal("model output", await reader.ReadFileAsync(scratch));
-        Assert.Contains("general.md", await reader.ListFilesAsync(_memoryDir));
+        Assert.Contains("memory.md", await reader.ListFilesAsync(_memoryDir));
 
         // everything else is still denied
         Assert.StartsWith("Error: Access denied", await reader.ReadFileAsync(_baseDir + "\\secret.txt"));

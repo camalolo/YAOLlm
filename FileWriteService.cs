@@ -7,40 +7,34 @@ namespace YAOLlm;
 /// <summary>
 /// Write access for the file_write / memory_write tools. Writes are restricted
 /// to the YAOLlm-owned subtree under the system temp dir (%TEMP%\YAOLlm\):
-/// a general scratch area (files\) and the per-game memory directory (memory\).
+/// a general scratch area (files\) and the memory file (memory\memory.md).
 /// Nothing outside that subtree can ever be created or modified, and this
-/// service is the only thing that may delete a memory file — user-added
+/// service is the only thing that may delete the memory file — user-added
 /// allowlist entries are never touched by deletion.
 /// </summary>
 public interface IFileWriteService
 {
     bool IsEnabled { get; }
 
-    /// <summary>Whether the per-game memory file feature is on.</summary>
+    /// <summary>Whether the memory file feature is on.</summary>
     bool MemoryEnabled { get; }
 
     /// <summary>Directories file_read/list_files may touch without allowlisting (write root + memory dir).</summary>
     IReadOnlyList<string> ImplicitReadRoots { get; }
 
-    /// <summary>The memory file for the current game (prompt + UI).</summary>
+    /// <summary>The memory file (prompt + UI).</summary>
     string CurrentMemoryPath { get; }
-
-    /// <summary>Called when a new active window title is captured.</summary>
-    void SetCurrentGame(string? game);
 
     /// <summary>file_write — writes inside the write root only.</summary>
     Task<string> WriteAsync(string path, string content, bool append, CancellationToken cancellationToken = default);
 
-    /// <summary>memory_write — append / replace (unique find) / overwrite on the per-game memory file.</summary>
-    Task<string> WriteMemoryAsync(string content, string op, string? find, string? game, CancellationToken cancellationToken = default);
-
-    /// <summary>Existing memory file names (for the system prompt), capped.</summary>
-    IReadOnlyList<string> ListMemoryFiles();
+    /// <summary>memory_write — append / replace (unique find) / overwrite on the memory file.</summary>
+    Task<string> WriteMemoryAsync(string content, string op, string? find, CancellationToken cancellationToken = default);
 
     /// <summary>The writable root (file_write constraint, also shown in the system prompt).</summary>
     string WriteRoot { get; }
 
-    /// <summary>Deletes the current game's memory file (never anything else). Returns a user-facing message.</summary>
+    /// <summary>Deletes the memory file (never anything else). Returns a user-facing message.</summary>
     string DeleteCurrentMemoryFile();
 
     /// <summary>Raised after any successful write or delete (possibly off the UI thread).</summary>
@@ -53,12 +47,11 @@ public class FileWriteService : IFileWriteService
     internal const int MaxWriteChars = 200_000;
     /// <summary>memory_write starts nudging compaction past this size.</summary>
     internal const int MemoryWarnChars = 50_000;
-    private const int MaxSlugLength = 60;
-    private const int MaxListedMemoryFiles = 20;
+    /// <summary>The single, fixed memory file name.</summary>
+    internal const string MemoryFileName = "memory.md";
 
     private readonly Logger _logger;
     private readonly object _ioLock = new();
-    private string? _currentGame;
     private static readonly UTF8Encoding Utf8NoBom = new(encoderShouldEmitUTF8Identifier: false);
 
     public bool IsEnabled { get; }
@@ -98,46 +91,10 @@ public class FileWriteService : IFileWriteService
         }
     }
 
-    // ─── Game / memory path resolution ────────────────────────────────
+    // ─── Memory path ─────────────────────────────────────────────────
 
-    public void SetCurrentGame(string? game)
-    {
-        _currentGame = string.IsNullOrWhiteSpace(game) ? null : game.Trim();
-    }
-
-    public string CurrentMemoryPath => MemoryPathFor(_currentGame);
-
-    /// <summary>Resolves a game name to its memory file path (null game → general).</summary>
-    public string MemoryPathFor(string? game)
-    {
-        var slug = Slugify(game);
-        return Path.Combine(MemoryDir, slug + ".md");
-    }
-
-    /// <summary>
-    /// Lowercased, filename-safe slug ("Dying Light: The Beast" →
-    /// "dying-light-the-beast"); empty/unusable names fall back to "general".
-    /// </summary>
-    internal static string Slugify(string? name)
-    {
-        if (string.IsNullOrWhiteSpace(name))
-            return "general";
-
-        var sb = new StringBuilder();
-        foreach (var c in name.Trim().ToLowerInvariant())
-        {
-            if (char.IsLetterOrDigit(c)) sb.Append(c);
-            else if (char.IsWhiteSpace(c) || c is '-' or '_' or '.' or ':') sb.Append('-');
-            // every other char (invalid in file names, punctuation) is dropped
-        }
-
-        var slug = RegexCollapse.Replace(sb.ToString(), "-").Trim('-');
-        if (slug.Length == 0) return "general";
-        if (slug.Length > MaxSlugLength) slug = slug[..MaxSlugLength].TrimEnd('-');
-        return slug;
-    }
-
-    private static readonly Regex RegexCollapse = new(@"-+", RegexOptions.Compiled);
+    /// <summary>The memory file: a single fixed path, independent of the active app.</summary>
+    public string CurrentMemoryPath => Path.Combine(MemoryDir, MemoryFileName);
 
     // ─── file_write ───────────────────────────────────────────────────
 
@@ -189,7 +146,7 @@ public class FileWriteService : IFileWriteService
 
     // ─── memory_write ─────────────────────────────────────────────────
 
-    public async Task<string> WriteMemoryAsync(string content, string op, string? find, string? game, CancellationToken cancellationToken = default)
+    public async Task<string> WriteMemoryAsync(string content, string op, string? find, CancellationToken cancellationToken = default)
     {
         if (!MemoryEnabled)
             return "Error: The memory feature is disabled.";
@@ -197,10 +154,9 @@ public class FileWriteService : IFileWriteService
         if (content.Length > MaxWriteChars)
             return $"Error: content too large ({content.Length:N0} chars, max {MaxWriteChars:N0}).";
 
-        // An explicit game targets that game's memory file; otherwise the
-        // current game (window title). The path is resolved here either way,
-        // so the model can never split a game's memories across files.
-        var path = MemoryPathFor(string.IsNullOrWhiteSpace(game) ? _currentGame : game);
+        // One fixed memory file — resolved here so the model can never write
+        // memories anywhere else.
+        var path = CurrentMemoryPath;
         var operation = (op ?? "append").Trim().ToLowerInvariant();
 
         try
@@ -273,33 +229,12 @@ public class FileWriteService : IFileWriteService
         }
     }
 
-    // ─── Listing / deletion ───────────────────────────────────────────
-
-    public IReadOnlyList<string> ListMemoryFiles()
-    {
-        try
-        {
-            if (!Directory.Exists(MemoryDir))
-                return Array.Empty<string>();
-            return Directory.EnumerateFiles(MemoryDir, "*.md")
-                .Select(Path.GetFileName)
-                .Where(n => n != null)
-                .OrderBy(n => n, StringComparer.OrdinalIgnoreCase)
-                .Take(MaxListedMemoryFiles)
-                .Cast<string>()
-                .ToList();
-        }
-        catch (Exception ex)
-        {
-            _logger.Log($"[memory] listing failed: {ex.Message}");
-            return Array.Empty<string>();
-        }
-    }
+    // ─── Deletion ─────────────────────────────────────────────────────
 
     /// <summary>
-    /// Deletes the current game's memory file. The path is resolved internally
-    /// and must live inside the memory dir — a user-added allowlist entry can
-    /// never reach this code path, so deletion can never apply to it.
+    /// Deletes the memory file. The path is resolved internally and must live
+    /// inside the memory dir — a user-added allowlist entry can never reach
+    /// this code path, so deletion can never apply to it.
     /// </summary>
     public string DeleteCurrentMemoryFile()
     {

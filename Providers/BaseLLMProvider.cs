@@ -465,12 +465,11 @@ public abstract class BaseLLMProvider : ILLMProvider
 
             var op = toolCall.Arguments.TryGetValue("op", out var o) ? o?.ToString() ?? "append" : "append";
             var find = toolCall.Arguments.TryGetValue("find", out var f) ? f?.ToString() : null;
-            var game = toolCall.Arguments.TryGetValue("game", out var g) ? g?.ToString() : null;
 
             LogToolExecution("memory_write");
             RaiseOnStatusChange(new ProviderStatus(ProviderStatusKind.WritingFile,
-                game != null ? $"memory[{game}]" : _fileWriteService!.CurrentMemoryPath));
-            var result = await _fileWriteService!.WriteMemoryAsync(content, op, find, game, cancellationToken);
+                _fileWriteService!.CurrentMemoryPath));
+            var result = await _fileWriteService!.WriteMemoryAsync(content, op, find, cancellationToken);
             LogToolResult("memory_write", result, maxLength: 300);
 
             return new ToolResult(toolCall.Id, result);
