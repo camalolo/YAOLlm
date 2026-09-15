@@ -1,4 +1,4 @@
-﻿using System.Reflection;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Drawing.Imaging;
 using System.Text;
@@ -23,9 +23,9 @@ public partial class MainForm : Form
     private string? _preToolResponse;
     private string? _lastTtsText;
 
-    /// <summary>TTS output toggle â€” disabled on startup; the UI button turns it on.</summary>
+    /// <summary>TTS output toggle — disabled on startup; the UI button turns it on.</summary>
     private bool _ttsEnabled;
-    /// <summary>file tools availability â€” from FILE_READ at startup (default on).</summary>
+    /// <summary>file tools availability — from FILE_READ at startup (default on).</summary>
     private readonly bool _fileReadEnabled;
     /// <summary>User-approved files/directories the file tools may access.</summary>
     private readonly FileAllowlist _fileAllowlist;
@@ -35,7 +35,6 @@ public partial class MainForm : Form
     private readonly IYouTubeCaptionService? _captionService;
     /// <summary>file_write / memory_write service (null or !IsEnabled = disabled).</summary>
     private readonly IFileWriteService? _fileWriteService;
-    /// <summary>The memory file path last pushed to the UI (dedupes pushes).</summary>
     private bool _pendingPresetSwitch;
     private IntPtr _previousWindowHandle = IntPtr.Zero;
     private readonly Queue<(string? message, string? imageBase64, string? title, string? queuedHtml)> _messageQueue = new();
@@ -85,7 +84,7 @@ public partial class MainForm : Form
     /// style set, the hidden form can't take foreground at all. It is removed on
     /// the first user-initiated show (see ToggleVisibility) so the overlay
     /// behaves completely normally afterwards.
-    /// Note: exonerated during the 2026-09-15 WebView2 0x80070578 outage â€” the
+    /// Note: exonerated during the 2026-09-15 WebView2 0x80070578 outage — the
     /// failure reproduced identically with this style removed (minimal app too).
     /// </summary>
     protected override CreateParams CreateParams
@@ -148,7 +147,7 @@ public partial class MainForm : Form
         this.FormClosing += MainForm_FormClosing;
 
         // The overlay starts hidden in the tray, so the Form Load event can
-        // stay unfired for the whole session (it waits for first visibility) â€”
+        // stay unfired for the whole session (it waits for first visibility) —
         // never hang startup work off it. The hotkey is plain Win32 on the
         // form handle (no WebView2 dependency), and WebView2 initializes in
         // the background while the app sits in the tray.
@@ -165,21 +164,21 @@ public partial class MainForm : Form
             var env = await CoreWebView2Environment.CreateAsync(null, userDataFolder);
 
             // WebView2 controller creation and the first child-window show both
-            // briefly ACTIVATE the (still hidden) form â€” stealing focus from
+            // briefly ACTIVATE the (still hidden) form — stealing focus from
             // whatever the user was doing (e.g. a fullscreen game). Watch the
             // foreground for a few seconds after init and hand focus straight
             // back whenever the hidden form grabs it.
             var foregroundBeforeInit = GetForegroundWindow();
 
-            // Force the control's handle on the UI thread â€” controller creation
+            // Force the control's handle on the UI thread — controller creation
             // needs a valid, UI-thread-owned parent HWND.
             var webviewHandle = _webView.Handle;
             if (!IsWindow(webviewHandle))
-                _logger.Log("WebView2 init: warning â€” control handle is not a valid window");
+                _logger.Log("WebView2 init: warning — control handle is not a valid window");
 
             // A relaunch right after a hard kill can race the previous
             // instance's teardown (hotkey, WebView2 browser process,
-            // user-data-folder) â€” controller creation then fails with odd
+            // user-data-folder) — controller creation then fails with odd
             // HRESULTs (e.g. 0x80070578 Invalid window handle). Teardown can
             // take a while, so retry patiently (up to ~30s) before giving up,
             // so the tray app never ends up UI-less after a restart.
@@ -192,13 +191,13 @@ public partial class MainForm : Form
                 }
                 catch (Exception ex) when (attempt < 10)
                 {
-                    _logger.Log($"WebView2 init attempt {attempt} failed: {ex.Message} â€” retrying in 3s");
+                    _logger.Log($"WebView2 init attempt {attempt} failed: {ex.Message} — retrying in 3s");
                     await Task.Delay(3000);
                 }
             }
 
             _ = Task.Run(() => WatchStartupForeground(foregroundBeforeInit, seconds: 5));
-            // Opaque page background â€” do NOT use WebView2 transparency here.
+            // Opaque page background — do NOT use WebView2 transparency here.
             // DefaultBackgroundColor=Transparent + transparent html/body hits a
             // compositing regression in the Evergreen runtime (~152, Sep 2026):
             // partial repaints (text selection, scrolling) composite regions
@@ -265,7 +264,7 @@ public partial class MainForm : Form
                 _ttsEnabled = !_ttsEnabled;
                 // Keeps the system prompt in sync: with TTS off, the model is
                 // no longer told about tts_summary and the tool is no longer
-                // advertised â€” no tokens are spent on a summary never played.
+                // advertised — no tokens are spent on a summary never played.
                 _conversationManager.TtsEnabled = _ttsEnabled;
                 _logger.Log($"TTS toggled {(_ttsEnabled ? "ON" : "OFF")} via UI button.");
                 _bridge.TtsState(_ttsEnabled);
@@ -327,7 +326,7 @@ public partial class MainForm : Form
     /// Watches the foreground for a few seconds after WebView2 init: whenever
     /// the still-hidden form is foreground (WebView2 stole it), focus goes
     /// straight back to <paramref name="target"/>. Bails out permanently once
-    /// the user summons the overlay â€” from then on focus belongs here.
+    /// the user summons the overlay — from then on focus belongs here.
     /// Safety net next to WS_EX_NOACTIVATE (which already prevents the steal).
     /// </summary>
     private void WatchStartupForeground(IntPtr target, int seconds)
@@ -335,11 +334,11 @@ public partial class MainForm : Form
         var deadline = DateTime.UtcNow.AddSeconds(seconds);
         while (DateTime.UtcNow < deadline)
         {
-            if (Visible) return; // user-initiated show â€” focus belongs here now
+            if (Visible) return; // user-initiated show — focus belongs here now
             if (GetForegroundWindow() == Handle)
             {
                 // SetForegroundWindow can return true without the switch
-                // sticking â€” verify and retry a few times.
+                // sticking — verify and retry a few times.
                 for (var attempt = 0; attempt < 3; attempt++)
                 {
                     if (Visible || GetForegroundWindow() != Handle) return;
@@ -387,42 +386,42 @@ public partial class MainForm : Form
                     _statusManager.SetStatus(Status.Searching);
                     _onSearchComplete?.Invoke();
                     var searchLabel = status.ServiceName != null
-                        ? $"ðŸ” Searching {status.ServiceName} for: {status.Detail}"
-                        : $"ðŸ” Searching for: {status.Detail}";
+                        ? $"🔍 Searching {status.ServiceName} for: {status.Detail}"
+                        : $"🔍 Searching for: {status.Detail}";
                     _bridge?.ChatMessage("system", $"<em>{searchLabel}</em>");
                     break;
 
                 case ProviderStatusKind.Fetching:
                     _statusManager.SetStatus(Status.Fetching);
                     _onSearchComplete?.Invoke();
-                    _bridge?.ChatMessage("system", $"<em>ðŸ“¥ Fetching: {status.Detail}</em>");
+                    _bridge?.ChatMessage("system", $"<em>📥 Fetching: {status.Detail}</em>");
                     break;
 
                 case ProviderStatusKind.ReadingFile:
                     _statusManager.SetStatus(Status.Reading);
                     _onSearchComplete?.Invoke();
-                    _bridge?.ChatMessage("system", $"<em>ðŸ“„ Reading: {status.Detail}</em>");
+                    _bridge?.ChatMessage("system", $"<em>📄 Reading: {status.Detail}</em>");
                     break;
 
                 case ProviderStatusKind.Browsing:
                     _statusManager.SetStatus(Status.Browsing);
                     _onSearchComplete?.Invoke();
-                    // Only navigations get an in-chat line â€” per-click/per-type
+                    // Only navigations get an in-chat line — per-click/per-type
                     // messages would flood the transcript during a browsing run.
                     if (!string.IsNullOrEmpty(status.Detail) && status.Detail.Contains("://"))
-                        _bridge?.ChatMessage("system", $"<em>ðŸŒ Browsing: {status.Detail}</em>");
+                        _bridge?.ChatMessage("system", $"<em>🌐 Browsing: {status.Detail}</em>");
                     break;
 
                 case ProviderStatusKind.Captions:
                     _statusManager.SetStatus(Status.Captions);
                     _onSearchComplete?.Invoke();
-                    _bridge?.ChatMessage("system", $"<em>ðŸ’¬ Extracting captions: {status.Detail}</em>");
+                    _bridge?.ChatMessage("system", $"<em>💬 Extracting captions: {status.Detail}</em>");
                     break;
 
                 case ProviderStatusKind.WritingFile:
                     _statusManager.SetStatus(Status.Writing);
                     _onSearchComplete?.Invoke();
-                    _bridge?.ChatMessage("system", $"<em>âœï¸ Writing: {status.Detail}</em>");
+                    _bridge?.ChatMessage("system", $"<em>✍️ Writing: {status.Detail}</em>");
                     break;
 
                 case ProviderStatusKind.Sending:
@@ -442,13 +441,13 @@ public partial class MainForm : Form
         return config?.Trim().ToLowerInvariant() is "off" or "no" or "false" or "0";
     }
 
-    // â”€â”€â”€ File allowlist (user-approved paths for file_read / list_files) â”€â”€
+    // ─── File allowlist (user-approved paths for file_read / list_files) ──
 
     /// <summary>Applies allowlist mutations: system prompt, UI panel, session file.</summary>
     private void OnAllowlistChanged()
     {
         // Rebuilds the system prompt so the model always sees the exact
-        // approved set (empty list â†’ prompt says nothing about file access).
+        // approved set (empty list → prompt says nothing about file access).
         _conversationManager.AllowedPaths = _fileAllowlist.Entries;
         _bridge?.AllowedPaths(_fileAllowlist.Entries);
         _sessionStore.Save(_conversationManager.GetSnapshot(), _fileAllowlist.Entries);
@@ -484,9 +483,9 @@ public partial class MainForm : Form
 
     private void RemoveAllowedPath(string path) => _fileAllowlist.Remove(path);
 
-    // â”€â”€â”€ Memory file (file_write / memory_write) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ─── Memory file (file_write / memory_write) ──────────────────────
 
-    /// <summary>File writes/deletes happen on provider threads â€” refresh the UI.</summary>
+    /// <summary>File writes/deletes happen on provider threads — refresh the UI.</summary>
     private void OnFileWriteChanged()
     {
         if (_fileWriteService is not { IsEnabled: true } writeService) return;
@@ -592,7 +591,7 @@ public partial class MainForm : Form
         }
         catch (ObjectDisposedException)
         {
-            // Request already finished and disposed between our read and cancel â€” nothing to stop.
+            // Request already finished and disposed between our read and cancel — nothing to stop.
         }
     }
 
@@ -648,7 +647,7 @@ public partial class MainForm : Form
         if (_messageQueue.TryDequeue(out var queued))
         {
             // Promote the pending bubble into the main transcript now that
-            // this message is actually being answered â€” keeps the displayed
+            // this message is actually being answered — keeps the displayed
             // order correct when messages were typed mid-stream.
             _bridge?.ChatDequeued(queued.queuedHtml ?? MarkdownHelper.ToHtml(queued.message));
             SendMessage(queued.message, queued.imageBase64, queued.title, alreadyShown: true);
@@ -673,7 +672,7 @@ public partial class MainForm : Form
         oldProvider?.Dispose();
     }
 
-    // â”€â”€â”€ Conversation compaction (opencode-style) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ─── Conversation compaction (opencode-style) ───────────────────────
 
     private async Task CompactConversationAsync()
     {
@@ -685,7 +684,7 @@ public partial class MainForm : Form
 
         if (!_sendLock.Wait(0))
         {
-            _bridge?.Warning("Busy â€” compaction is available once the current request finishes.");
+            _bridge?.Warning("Busy — compaction is available once the current request finishes.");
             return;
         }
 
@@ -695,7 +694,7 @@ public partial class MainForm : Form
         if (turns.Count == 0)
         {
             _sendLock.Release();
-            _bridge?.Warning("Nothing to compact yet â€” the conversation is empty.");
+            _bridge?.Warning("Nothing to compact yet — the conversation is empty.");
             return;
         }
 
@@ -718,7 +717,7 @@ public partial class MainForm : Form
             ApplyPendingPresetSwitchIfQueued();
             var provider = _currentProvider;
             _logger.Log($"Compacting conversation: {turns.Count} turns, {oldCharCount} chars");
-            _bridge?.ChatMessage("system", "<em>ðŸ—œ Compacting conversationâ€¦</em>");
+            _bridge?.ChatMessage("system", "<em>🗜 Compacting conversation…</em>");
 
             var messages = new List<ChatMessage>
             {
@@ -740,7 +739,7 @@ public partial class MainForm : Form
                 if (summary.Length == chunk.Length)
                     _statusManager.SetStatus(Status.Receiving);
 
-                // Slower render cadence than chat â€” the compaction output is
+                // Slower render cadence than chat — the compaction output is
                 // progress feedback, not content to read while streaming.
                 var now = DateTime.UtcNow;
                 if ((now - lastStreamUpdate).TotalMilliseconds >= 200)
@@ -753,24 +752,24 @@ public partial class MainForm : Form
             var result = summary.ToString().Trim();
             if (string.IsNullOrEmpty(result))
             {
-                _bridge?.Warning("Compaction failed â€” the model returned no summary. History unchanged.");
+                _bridge?.Warning("Compaction failed — the model returned no summary. History unchanged.");
                 return;
             }
 
             _conversationManager.Compact("[Compacted conversation]\n\n" + result);
             var newCharCount = _conversationManager.GetTotalCharacterCount();
-            _logger.Log($"Compaction complete: {oldCharCount} â†’ {newCharCount} chars");
+            _logger.Log($"Compaction complete: {oldCharCount} → {newCharCount} chars");
 
-            // Fresh visual slate â€” the live history is now just system + summary.
+            // Fresh visual slate — the live history is now just system + summary.
             _bridge?.Reset();
-            _bridge?.ChatMessage("system", $"<em>ðŸ—œ Context compacted: {oldCharCount:N0} â†’ {newCharCount:N0} chars</em>");
+            _bridge?.ChatMessage("system", $"<em>🗜 Context compacted: {oldCharCount:N0} → {newCharCount:N0} chars</em>");
             _bridge?.ChatMessageFromMarkdown("system", result);
             UpdateHistoryCounter();
         }
         catch (OperationCanceledException)
         {
             _logger.Log("Compaction cancelled by user");
-            _bridge?.Warning("â¹ Compaction cancelled â€” history unchanged.");
+            _bridge?.Warning("⏹ Compaction cancelled — history unchanged.");
         }
         catch (LLMException ex)
         {
@@ -792,7 +791,7 @@ public partial class MainForm : Form
     }
 
     /// <summary>
-    /// Instructions for the summarization pass â€” the summary must let the
+    /// Instructions for the summarization pass — the summary must let the
     /// conversation continue as if the full history were still present.
     /// </summary>
     internal static string BuildCompactionSystemPrompt() => """
@@ -801,18 +800,18 @@ public partial class MainForm : Form
         Cover, in order of importance:
         1. The user's goal(s), constraints, and preferences.
         2. All key facts, decisions, and results established so far.
-        3. All technical specifics â€” code, commands, file paths, URLs, names, IDs, numbers â€” preserved verbatim where they matter.
+        3. All technical specifics — code, commands, file paths, URLs, names, IDs, numbers — preserved verbatim where they matter.
         4. Open questions, unresolved problems, and agreed next steps.
 
         Rules:
         - Preserve all details; omit only pleasantries and repetition.
-        - Do not answer the conversation or add commentary of your own â€” output only the summary.
+        - Do not answer the conversation or add commentary of your own — output only the summary.
         - Write in the same language as the conversation.
         """;
 
     /// <summary>
     /// Renders the conversation turns as a labelled transcript for the
-    /// summarization pass. Attached images can't be embedded â€” they are noted
+    /// summarization pass. Attached images can't be embedded — they are noted
     /// so the summary still accounts for them.
     /// </summary>
     internal static string BuildCompactionTranscript(List<ChatMessage> turns)
@@ -871,10 +870,10 @@ public partial class MainForm : Form
 
             messages.Add(userMessage);
 
-            // tts_summary is advertised only while TTS is enabled â€” otherwise
+            // tts_summary is advertised only while TTS is enabled — otherwise
             // the model still generates (and pays for) a spoken summary that
             // is never played. The file tools are advertised only while the
-            // allowlist is non-empty â€” an empty list can't serve any read, so
+            // allowlist is non-empty — an empty list can't serve any read, so
             // advertising would just burn tokens. With everything off and web
             // search unsupported the list is empty and no tools field is sent.
             var fileToolsEnabled = _fileReadEnabled && (_fileAllowlist.Count > 0 || _fileWriteService is { IsEnabled: true });
@@ -944,16 +943,16 @@ public partial class MainForm : Form
                 // closed mid-generation (proxy drop, upstream reset).
                 if (provider.LastFinishReason == "length")
                 {
-                    _bridge?.Warning("âš ï¸ Response was cut off â€” the model hit its output token limit. Say \"continue\" for the rest.");
+                    _bridge?.Warning("⚠️ Response was cut off — the model hit its output token limit. Say \"continue\" for the rest.");
                 }
                 else if (!provider.LastStreamEndedCleanly && !string.IsNullOrEmpty(combinedResponse))
                 {
-                    _bridge?.Warning("âš ï¸ Connection closed mid-response â€” the answer may be incomplete.");
+                    _bridge?.Warning("⚠️ Connection closed mid-response — the answer may be incomplete.");
                 }
             }
             else if (!string.IsNullOrEmpty(_lastTtsText))
             {
-                var ttsMessage = $"ðŸ”Š The model used TTS to say: {_lastTtsText}";
+                var ttsMessage = $"🔊 The model used TTS to say: {_lastTtsText}";
                 _bridge?.ChatMessageFromMarkdown("model", ttsMessage);
                 _conversationManager.AddExchange(userMessage, ttsMessage);
                 UpdateHistoryCounter();
@@ -961,7 +960,7 @@ public partial class MainForm : Form
             else
             {
                 _bridge?.Warning("The model returned no response.");
-                // Empty exchanges are not persisted â€” keeps history clean for a retry.
+                // Empty exchanges are not persisted — keeps history clean for a retry.
             }
         }
         catch (OperationCanceledException)
@@ -976,37 +975,37 @@ public partial class MainForm : Form
                 var historyText = partial;
                 if (!string.IsNullOrEmpty(searchSummaries))
                     historyText += "\n\n---\n\n*Search results received before stop:*\n\n" + searchSummaries;
-                historyText += "\n\nâ¹ *[Response stopped by user]*";
+                historyText += "\n\n⏹ *[Response stopped by user]*";
                 _conversationManager.AddExchange(userMessage, historyText);
                 UpdateHistoryCounter();
 
                 if (!string.IsNullOrEmpty(_preToolResponse))
                 {
                     if (searchCount > 0)
-                        _bridge?.Warning($"â¹ Stopped â€” {searchCount} search(es) completed.");
+                        _bridge?.Warning($"⏹ Stopped — {searchCount} search(es) completed.");
                     else
-                        _bridge?.Warning("â¹ Stopped.");
+                        _bridge?.Warning("⏹ Stopped.");
                 }
                 else
                 {
                     var displayText = partial;
                     if (searchCount > 0)
-                        displayText += $"\n\nâ¹ *Stopped â€” {searchCount} search(es) completed.*";
+                        displayText += $"\n\n⏹ *Stopped — {searchCount} search(es) completed.*";
                     else
-                        displayText += "\n\nâ¹ *[Response stopped by user]*";
+                        displayText += "\n\n⏹ *[Response stopped by user]*";
                     _bridge?.ChatMessageFromMarkdown("model", displayText);
                 }
             }
             else
             {
-                _bridge?.Warning("â¹ Stopped.");
+                _bridge?.Warning("⏹ Stopped.");
             }
         }
         catch (LLMException ex)
         {
             _logger.Log($"LLM Error: {ex.Message} (StatusCode={ex.StatusCode}, Details={ex.Details})");
             _bridge?.Error($"{ex.UserMessage}");
-            // Failed exchanges are not persisted â€” keeps history clean for a retry.
+            // Failed exchanges are not persisted — keeps history clean for a retry.
         }
         catch (Exception ex)
         {
@@ -1070,10 +1069,10 @@ public partial class MainForm : Form
     /// <summary>
     /// Rehydrates the previous session (session resume): conversation turns
     /// plus the persisted file allowlist. The persisted system prompt is
-    /// discarded â€” the new session rebuilds it fresh (current date, TTS
+    /// discarded — the new session rebuilds it fresh (current date, TTS
     /// state, window title handling, current allowlist); only real
     /// conversation turns resume. The allowlist is restored even when the
-    /// previous chat was empty â€” it is session state, not chat history.
+    /// previous chat was empty — it is session state, not chat history.
     /// </summary>
     private void RestoreSession()
     {
@@ -1088,7 +1087,7 @@ public partial class MainForm : Form
 
             if (saved.AllowedPaths.Count > 0)
             {
-                // Silent bulk restore â€” the Changed handler isn't attached
+                // Silent bulk restore — the Changed handler isn't attached
                 // yet, and the prompt is updated directly.
                 _fileAllowlist.Restore(saved.AllowedPaths);
                 _conversationManager.AllowedPaths = _fileAllowlist.Entries;
@@ -1113,7 +1112,7 @@ public partial class MainForm : Form
 
     /// <summary>
     /// Replays restored conversation turns into the freshly-loaded UI. Can only
-    /// run after NavigationCompleted â€” web messages posted before the page's
+    /// run after NavigationCompleted — web messages posted before the page's
     /// bridge listener attaches are dropped.
     /// </summary>
     private void ReplayRestoredSession()
@@ -1180,7 +1179,7 @@ public partial class MainForm : Form
     }
 
     /// <summary>
-    /// Removes WS_EX_NOACTIVATE on the first user-initiated show â€” from then on
+    /// Removes WS_EX_NOACTIVATE on the first user-initiated show — from then on
     /// the overlay is a normal activatable window (clicks, Activate() work).
     /// A live ExStyle change doesn't recreate the handle, so WebView2 is safe.
     /// </summary>
@@ -1222,7 +1221,7 @@ public partial class MainForm : Form
         stream.CopyTo(ms);
         var bytes = ms.ToArray();
 
-        // Skip the write when the file on disk is already identical â€” avoids
+        // Skip the write when the file on disk is already identical — avoids
         // pointless disk churn (and WebView2 cache invalidation) on every start.
         try
         {
