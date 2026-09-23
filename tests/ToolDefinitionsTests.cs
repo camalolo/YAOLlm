@@ -1,10 +1,38 @@
 using System.Linq;
+using System.Text.Json;
 using Xunit;
 
 namespace YAOLlm.Tests;
 
 public class ToolDefinitionsTests
 {
+    [Fact]
+    public void WebSearch_OffersOptionalSpoilerFreeInfoParam()
+    {
+        var json = JsonSerializer.Serialize(ToolDefinitions.WebSearch.Parameters);
+        using var doc = JsonDocument.Parse(json);
+        var props = doc.RootElement.GetProperty("properties");
+
+        Assert.True(props.TryGetProperty("info", out var info));
+        Assert.Contains("spoiler", info.GetProperty("description").GetString(), StringComparison.OrdinalIgnoreCase);
+        // info stays optional — only query is required
+        Assert.Equal(new[] { "query" },
+            doc.RootElement.GetProperty("required").EnumerateArray().Select(e => e.GetString()));
+    }
+
+    [Fact]
+    public void WebScrape_OffersOptionalSpoilerFreeInfoParam()
+    {
+        var json = JsonSerializer.Serialize(ToolDefinitions.WebScrape.Parameters);
+        using var doc = JsonDocument.Parse(json);
+        var props = doc.RootElement.GetProperty("properties");
+
+        Assert.True(props.TryGetProperty("info", out var info));
+        Assert.Contains("spoiler", info.GetProperty("description").GetString(), StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(new[] { "url" },
+            doc.RootElement.GetProperty("required").EnumerateArray().Select(e => e.GetString()));
+    }
+
     [Fact]
     public void BuildTools_TtsOffAndNoWebSearch_SendsOnlyFileTools()
     {

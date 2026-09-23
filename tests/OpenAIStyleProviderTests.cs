@@ -24,6 +24,7 @@ internal class TestOpenAIStyleProvider : OpenAIStyleProvider
     public static Dictionary<string, object?> DeserializeArgs(string json) => DeserializeArguments(json);
     public static string? TtsText(ToolCall call) => ExtractTtsText(call);
     public static int IntArg(Dictionary<string, object?> args, string key, int fallback) => GetIntArg(args, key, fallback);
+    public static string? InfoLabel(Dictionary<string, object?> args, string fallbackKey) => GetInfoLabel(args, fallbackKey);
     public static string DetectMime(byte[] data) => DetectImageMimeType(data);
 
     // TryParseStreamChunk returns a protected nested type, so expose the
@@ -177,6 +178,48 @@ public class OpenAIStyleProviderTests
     public void GetIntArg_MissingKey_ReturnsDefault()
     {
         Assert.Equal(9, TestOpenAIStyleProvider.IntArg(new Dictionary<string, object?>(), "missing", 9));
+    }
+
+    [Fact]
+    public void GetInfoLabel_InfoSet_HidesRawParam()
+    {
+        // The real query must not leak into the chat line when the model sets info
+        var args = TestOpenAIStyleProvider.DeserializeArgs(
+            """{"query":"jon snow fate episode 9","info":"checking show wiki (spoiler-free)"}""");
+
+        Assert.Equal("checking show wiki (spoiler-free)", TestOpenAIStyleProvider.InfoLabel(args, "query"));
+    }
+
+    [Fact]
+    public void GetInfoLabel_MissingInfo_FallsBackToRawParam()
+    {
+        var args = TestOpenAIStyleProvider.DeserializeArgs("""{"url":"https://example.com/page"}""");
+
+        Assert.Equal("https://example.com/page", TestOpenAIStyleProvider.InfoLabel(args, "url"));
+    }
+
+    [Fact]
+    public void GetInfoLabel_BlankInfo_FallsBackToRawParam()
+    {
+        var args = TestOpenAIStyleProvider.DeserializeArgs("""{"query":"who dies in the finale","info":"   "}""");
+
+        Assert.Equal("who dies in the finale", TestOpenAIStyleProvider.InfoLabel(args, "query"));
+    }
+
+    [Fact]
+    public void GetInfoLabel_TrimsInfo()
+    {
+        var args = TestOpenAIStyleProvider.DeserializeArgs("""{"query":"x","info":"  looking something up  "}""");
+
+        Assert.Equal("looking something up", TestOpenAIStyleProvider.InfoLabel(args, "query"));
+    }
+
+    [Fact]
+    public void GetInfoLabel_NothingPresent_ReturnsNull()
+    {
+        var args = TestOpenAIStyleProvider.DeserializeArgs("{}");
+
+        Assert.Null(TestOpenAIStyleProvider.InfoLabel(args, "query"));
     }
 
     [Fact]

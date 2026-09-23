@@ -20,6 +20,14 @@ public static class ToolDefinitions
                 {
                     type = "string",
                     description = "The search query to look up"
+                },
+                info = new
+                {
+                    type = "string",
+                    description = "Optional short label shown to the user in the chat instead of the raw query. " +
+                                  "Use it when the query itself could reveal a spoiler (e.g. a plot twist the user asked to avoid) " +
+                                  "or anything private — give a neutral description like 'checking plot details without spoilers'. " +
+                                  "The query is still used for the search itself."
                 }
             },
             required = new[] { "query" }
@@ -42,6 +50,13 @@ public static class ToolDefinitions
                 {
                     type = "string",
                     description = "The absolute URL to fetch"
+                },
+                info = new
+                {
+                    type = "string",
+                    description = "Optional short label shown to the user in the chat instead of the raw URL. " +
+                                  "Use it when the URL itself could reveal a spoiler (e.g. a wiki page named after a plot twist) — " +
+                                  "give a neutral description. The URL is still fetched."
                 }
             },
             required = new[] { "url" }

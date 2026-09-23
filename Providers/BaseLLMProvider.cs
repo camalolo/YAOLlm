@@ -519,6 +519,23 @@ public abstract class BaseLLMProvider : ILLMProvider
         catch { return defaultValue; }
     }
 
+    /// <summary>
+    /// Picks the chat-transcript label for a tool call: the optional spoiler-free
+    /// "info" argument when the model supplied one, otherwise the real parameter
+    /// (e.g. "query"/"url"). Keeps the raw argument out of the chat while the log
+    /// and the tool execution still see it.
+    /// </summary>
+    protected static string? GetInfoLabel(Dictionary<string, object?> args, string fallbackKey)
+    {
+        if (args.TryGetValue("info", out var info) && info is not null)
+        {
+            var label = info.ToString();
+            if (!string.IsNullOrWhiteSpace(label))
+                return label.Trim();
+        }
+        return args.TryGetValue(fallbackKey, out var fallback) ? fallback?.ToString() : null;
+    }
+
     // ─── Shared conversion helpers ────────────────────────────────────
 
     /// <summary>

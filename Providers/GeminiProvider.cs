@@ -186,14 +186,15 @@ public class GeminiProvider : BaseLLMProvider
                 ToolResult result;
                 if (toolCall.Name == "web_search" && _searchService != null)
                 {
-                    var query = toolCall.Arguments.TryGetValue("query", out var q) ? q?.ToString() : null;
+                    // "info", when present, replaces the raw query in the chat line (spoiler-free display)
+                    var query = GetInfoLabel(toolCall.Arguments, "query");
                     if (!string.IsNullOrEmpty(query))
                         RaiseOnStatusChange(new ProviderStatus(ProviderStatusKind.Searching, query, _searchService.Name));
                     result = await ExecuteWebSearchToolAsync(toolCall, cancellationToken);
                 }
                 else if (toolCall.Name == "web_scrape" && _webFetchService != null)
                 {
-                    var fetchUrl = toolCall.Arguments.TryGetValue("url", out var u) ? u?.ToString() : null;
+                    var fetchUrl = GetInfoLabel(toolCall.Arguments, "url");
                     if (!string.IsNullOrEmpty(fetchUrl))
                         RaiseOnStatusChange(new ProviderStatus(ProviderStatusKind.Fetching, fetchUrl));
                     result = await ExecuteWebScrapeToolAsync(toolCall, cancellationToken);

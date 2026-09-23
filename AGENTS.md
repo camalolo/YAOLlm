@@ -90,8 +90,8 @@ Implements the entire streaming loop: SSE parsing (`TryParseStreamChunk`), DSML 
 Providers raise structured `ProviderStatus` records (`StatusManager.cs`) — not strings:
 
 - `Sending` — provider is (back to) sending
-- `Searching` — `Detail` = query, `ServiceName` = search backend
-- `Fetching` — `Detail` = URL
+- `Searching` — `Detail` = query, `ServiceName` = search backend. `web_search`/`web_scrape` accept an optional `info` argument (spoiler-free display label): when the model sets it, it replaces the raw query/URL in the chat line, while the raw value still goes to the log and the actual search/fetch (`BaseLLMProvider.GetInfoLabel`)
+- `Fetching` — `Detail` = URL (replaced by `info` when the model supplies one, see above)
 - `ReadingFile` — `Detail` = file path (file_read / list_files)
 - `Browsing` — `Detail` = URL for navigations, else the action label; MainForm only renders an in-chat line when the detail contains `://` (per-click lines would flood the transcript)
 - `Captions` — `Detail` = video URL; MainForm renders a `💬 Extracting captions:` line
