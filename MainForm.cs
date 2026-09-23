@@ -74,6 +74,47 @@ public partial class MainForm : Form
     private const int GWL_EXSTYLE = -20;
     private const long WS_EX_NOACTIVATE = 0x08000000;
 
+    // --- WebView2 process-priority boost (see BoostWebViewProcessPriority) ---
+    private const uint TH32CS_SNAPPROCESS = 0x00000002;
+    private const uint HIGH_PRIORITY_CLASS = 0x00000080;
+    private const uint PROCESS_SET_INFORMATION = 0x0200;
+    private const uint PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
+    private static readonly IntPtr INVALID_HANDLE_VALUE = new(-1);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr CreateToolhelp32Snapshot(uint dwFlags, uint th32ProcessID);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+    private static extern bool Process32FirstW(IntPtr hSnapshot, ref PROCESSENTRY32W lppe);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+    private static extern bool Process32NextW(IntPtr hSnapshot, ref PROCESSENTRY32W lppe);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr OpenProcess(uint dwDesiredAccess, bool bInheritHandle, uint dwProcessId);
+
+    [DllImport("kernel32.dll")]
+    private static extern bool SetPriorityClass(IntPtr hProcess, uint dwPriorityClass);
+
+    [DllImport("kernel32.dll")]
+    private static extern bool CloseHandle(IntPtr hObject);
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct PROCESSENTRY32W
+    {
+        public uint dwSize;
+        public uint cntUsage;
+        public uint th32ProcessID;
+        public IntPtr th32DefaultHeapID;
+        public uint th32ModuleID;
+        public uint cntThreads;
+        public int th32ParentProcessID;
+        public int pcPriClassBase;
+        public uint dwFlags;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)]
+        public string szExeFile;
+    }
+
     /// <summary>False until the first user-initiated show removes WS_EX_NOACTIVATE.</summary>
     private bool _activationUnlocked;
 
@@ -161,7 +202,20 @@ public partial class MainForm : Form
             {
             var userDataFolder = Path.Combine(Path.GetTempPath(), "YAOLlm", "WebView2");
             Directory.CreateDirectory(userDataFolder);
-            var env = await CoreWebView2Environment.CreateAsync(null, userDataFolder);
+            // Disable the Evergreen runtime's startup phone-home (component
+            // updates, variations/field-trials, sync, SafeBrowsing). With
+            // runtime 153 + the user's PPPoE/IPv6 change (2026-09-18) those
+            // network stalls delayed first navigation of the fully-local UI
+            // by 112s — the overlay sat empty for minutes (harness measured:
+            // default 112.5s vs flags 9.1s cold). The page and all scripts
+            // are vendored; the runtime itself needs no network.
+            var envOptions = new CoreWebView2EnvironmentOptions
+            {
+                AdditionalBrowserArguments =
+                    "--disable-component-update --disable-background-networking " +
+                    "--disable-sync --no-first-run --no-default-browser-check",
+            };
+            var env = await CoreWebView2Environment.CreateAsync(null, userDataFolder, envOptions);
 
             // WebView2 controller creation and the first child-window show both
             // briefly ACTIVATE the (still hidden) form — stealing focus from
@@ -290,6 +344,9 @@ public partial class MainForm : Form
                     else
                         _webView.Visible = true;
                     _logger.Log("WebView2: Navigation completed, sending initial state.");
+                    // Children (renderer/GPU/utility) all exist by now — raise
+                    // the tree so the initial load isn't starved on a busy CPU.
+                    BoostWebViewProcessPriority();
                     _bridge?.Provider(_presetManager.ActivePreset.DisplayName ?? _presetManager.ActivePreset.ToString());
                     _bridge?.Status("Idle");
                     _bridge?.TtsState(_ttsEnabled);
@@ -1173,8 +1230,90 @@ public partial class MainForm : Form
 
         if (this.Visible)
         {
+            // Re-boost on every show: under a 100%-CPU machine (heavy user
+            // computations) the multi-process WebView2 tree gets starved and
+            // the overlay hangs for minutes (2026-09-18 incident). Chromium
+            // also re-manages renderer priorities when windows hide, so the
+            // boost is re-applied at exactly the moment responsiveness matters.
+            BoostWebViewProcessPriority();
             this.Activate();
             _bridge?.FocusInput();
+        }
+    }
+
+    /// <summary>
+    /// Raises all msedgewebview2 processes belonging to this app's WebView2
+    /// tree to HIGH priority class. Called on overlay show and after the first
+    /// navigation. The tree is found by ancestry (browser main process is a
+    /// direct child of this process; renderer/GPU/utility spawn under it) —
+    /// no command-line parsing, no WMI dependency. Best-effort: failures are
+    /// logged and ignored.
+    /// </summary>
+    private void BoostWebViewProcessPriority()
+    {
+        try
+        {
+            var entries = new List<(uint pid, uint ppid, string name)>();
+            var snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+            if (snap == INVALID_HANDLE_VALUE)
+                return;
+            try
+            {
+                var pe = new PROCESSENTRY32W { dwSize = (uint)Marshal.SizeOf<PROCESSENTRY32W>() };
+                if (Process32FirstW(snap, ref pe))
+                {
+                    do
+                        entries.Add((pe.th32ProcessID, (uint)pe.th32ParentProcessID, pe.szExeFile));
+                    while (Process32NextW(snap, ref pe));
+                }
+            }
+            finally
+            {
+                CloseHandle(snap);
+            }
+
+            var ours = (uint)Environment.ProcessId;
+            var isWebview = entries.Where(e => e.name == "msedgewebview2.exe")
+                .Select(e => e.pid).ToHashSet();
+            var childrenByParent = entries.GroupBy(e => e.ppid)
+                .ToDictionary(g => g.Key, g => g.Select(e => e.pid).ToList());
+
+            // Descendant walk from the browser main process (direct child).
+            var toBoost = new HashSet<uint>();
+            var queue = new Queue<uint>(entries
+                .Where(e => e.ppid == ours && isWebview.Contains(e.pid))
+                .Select(e => e.pid));
+            while (queue.Count > 0)
+            {
+                var pid = queue.Dequeue();
+                if (!toBoost.Add(pid))
+                    continue;
+                if (childrenByParent.TryGetValue(pid, out var kids))
+                    foreach (var kid in kids)
+                        queue.Enqueue(kid);
+            }
+
+            foreach (var pid in toBoost)
+            {
+                var h = OpenProcess(PROCESS_SET_INFORMATION | PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
+                if (h == INVALID_HANDLE_VALUE || h == IntPtr.Zero)
+                    continue;
+                try
+                {
+                    SetPriorityClass(h, HIGH_PRIORITY_CLASS);
+                }
+                finally
+                {
+                    CloseHandle(h);
+                }
+            }
+
+            if (toBoost.Count > 0)
+                _logger.Log($"WebView2 priority boosted to High for {toBoost.Count} process(es).");
+        }
+        catch (Exception ex)
+        {
+            _logger.Log($"WebView2 priority boost failed: {ex.Message}");
         }
     }
 
