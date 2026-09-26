@@ -34,6 +34,32 @@ public class ToolDefinitionsTests
     }
 
     [Fact]
+    public void BrowseNavigate_OffersOptionalSpoilerFreeInfoParam()
+    {
+        var json = JsonSerializer.Serialize(ToolDefinitions.BrowseNavigate.Parameters);
+        using var doc = JsonDocument.Parse(json);
+        var props = doc.RootElement.GetProperty("properties");
+
+        Assert.True(props.TryGetProperty("info", out var info));
+        Assert.Contains("spoiler", info.GetProperty("description").GetString(), StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(new[] { "url" },
+            doc.RootElement.GetProperty("required").EnumerateArray().Select(e => e.GetString()));
+    }
+
+    [Fact]
+    public void YouTubeCaptions_OffersOptionalSpoilerFreeInfoParam()
+    {
+        var json = JsonSerializer.Serialize(ToolDefinitions.YouTubeCaptions.Parameters);
+        using var doc = JsonDocument.Parse(json);
+        var props = doc.RootElement.GetProperty("properties");
+
+        Assert.True(props.TryGetProperty("info", out var info));
+        Assert.Contains("spoiler", info.GetProperty("description").GetString(), StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(new[] { "url" },
+            doc.RootElement.GetProperty("required").EnumerateArray().Select(e => e.GetString()));
+    }
+
+    [Fact]
     public void BuildTools_TtsOffAndNoWebSearch_SendsOnlyFileTools()
     {
         var tools = ToolDefinitions.BuildTools(supportsWebSearch: false, ttsEnabled: false);

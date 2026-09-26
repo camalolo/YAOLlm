@@ -354,12 +354,15 @@ public abstract class BaseLLMProvider : ILLMProvider
     {
         try
         {
-            // Status label: the URL for navigations, otherwise the tool name —
-            // MainForm surfaces URLs as an in-chat system line.
-            var detail = toolCall.Arguments.TryGetValue("url", out var u) ? u?.ToString() : null;
+            // Status label: the URL for navigations (replaced by the optional
+            // spoiler-free "info" argument when the model sets one), otherwise
+            // the tool name — MainForm surfaces URLs as an in-chat system line.
+            // ServiceName carries the tool name so MainForm can still render a
+            // navigation line when the detail is a label instead of a URL.
+            var detail = toolCall.Arguments.TryGetValue("url", out var u) ? GetInfoLabel(toolCall.Arguments, "url") : null;
             if (string.IsNullOrEmpty(detail))
                 detail = toolCall.Name["browse_".Length..].Replace('_', ' ');
-            RaiseOnStatusChange(new ProviderStatus(ProviderStatusKind.Browsing, detail));
+            RaiseOnStatusChange(new ProviderStatus(ProviderStatusKind.Browsing, detail, toolCall.Name));
 
             var argumentsJson = JsonSerializer.Serialize(toolCall.Arguments);
             var content = await _browserService!.InvokeAsync(toolCall.Name, argumentsJson, cancellationToken);
@@ -398,7 +401,8 @@ public abstract class BaseLLMProvider : ILLMProvider
             var timestamps = GetBoolArg(toolCall.Arguments, "timestamps", false);
 
             LogToolExecution("youtube_captions");
-            RaiseOnStatusChange(new ProviderStatus(ProviderStatusKind.Captions, url));
+            // "info", when present, replaces the raw video URL in the chat line (spoiler-free display)
+            RaiseOnStatusChange(new ProviderStatus(ProviderStatusKind.Captions, GetInfoLabel(toolCall.Arguments, "url")));
             var content = await _captionService!.GetCaptionsAsync(url, language, timestamps, cancellationToken);
             // Transcripts can be tens of KB — truncate in the log (the LLM
             // still gets the full content) to keep yaollm.log readable.

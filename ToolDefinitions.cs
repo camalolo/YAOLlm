@@ -162,7 +162,14 @@ public static class ToolDefinitions
             type = "object",
             properties = new
             {
-                url = new { type = "string", description = "The URL to navigate to" }
+                url = new { type = "string", description = "The URL to navigate to" },
+                info = new
+                {
+                    type = "string",
+                    description = "Optional short label shown to the user in the chat instead of the raw URL. " +
+                                  "Use it when the URL itself could reveal a spoiler (e.g. a wiki page named after a plot twist) — " +
+                                  "give a neutral description. The URL is still navigated to."
+                }
             },
             required = new[] { "url" }
         }
@@ -369,6 +376,12 @@ public static class ToolDefinitions
                 {
                     type = "boolean",
                     description = "Optional. When true, each transcript line is prefixed with its timestamp."
+                },
+                info = new
+                {
+                    type = "string",
+                    description = "Optional short label shown to the user in the chat instead of the raw video URL. " +
+                                  "Use it when the URL/title could reveal a spoiler — give a neutral description. The video is still fetched."
                 }
             },
             required = new[] { "url" }

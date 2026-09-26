@@ -465,7 +465,12 @@ public partial class MainForm : Form
                     _onSearchComplete?.Invoke();
                     // Only navigations get an in-chat line — per-click/per-type
                     // messages would flood the transcript during a browsing run.
-                    if (!string.IsNullOrEmpty(status.Detail) && status.Detail.Contains("://"))
+                    // A navigation surfaces either as the raw URL (contains "://")
+                    // or, when the model set a spoiler-free "info" label, as that
+                    // label (ServiceName marks the call as browse_navigate).
+                    var isNavigation = !string.IsNullOrEmpty(status.Detail) &&
+                        (status.Detail.Contains("://") || status.ServiceName == "browse_navigate");
+                    if (isNavigation)
                         _bridge?.ChatMessage("system", $"<em>🌐 Browsing: {status.Detail}</em>");
                     break;
 
