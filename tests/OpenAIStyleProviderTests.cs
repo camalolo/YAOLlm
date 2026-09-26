@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
+using YAOLlm;
 using YAOLlm.Providers;
 using Xunit;
 
@@ -19,6 +20,7 @@ internal class TestOpenAIStyleProvider : OpenAIStyleProvider
 
     public string FilterDsmlChunkPublic(string chunk) => FilterDsmlChunk(chunk);
     public void ResetDsmlBufferPublic() => ResetDsmlBuffer();
+    public List<object> BuildMessagesPublic(List<ChatMessage> history, byte[]? image) => BuildMessages(history, image);
 
     public static string StripDsml(string input) => StripDsmlTags(input);
     public static Dictionary<string, object?> DeserializeArgs(string json) => DeserializeArguments(json);
@@ -230,6 +232,45 @@ public class OpenAIStyleProviderTests
         Assert.Equal("image/gif", TestOpenAIStyleProvider.DetectMime(new byte[] { 0x47, 0x49, 0x46, 0x38 }));
         Assert.Equal("image/webp", TestOpenAIStyleProvider.DetectMime(new byte[] { 0x52, 0x49, 0x46, 0x46, 0x00, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50 }));
         Assert.Equal("image/jpeg", TestOpenAIStyleProvider.DetectMime(new byte[] { 0x00, 0x01 }));
+    }
+
+    [Fact]
+    public void BuildMessages_WithImage_LastUserMessageBecomesMultimodal()
+    {
+        // Screenshots on OpenAI-style profiles (including deepseek — the
+        // profile only affects reasoning params): the last user message must
+        // serialize as OpenAI multimodal content — text part + image_url part
+        // with a data URI — while every other message stays a plain string.
+        var provider = new TestOpenAIStyleProvider();
+        byte[] png = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x01];
+        var history = new List<ChatMessage>
+        {
+            new(ChatRole.System, "system prompt"),
+            new(ChatRole.User, "what is this?", png),
+        };
+
+        var json = System.Text.Json.JsonSerializer.Serialize(provider.BuildMessagesPublic(history, png));
+
+        Assert.Contains("\"image_url\"", json);
+        Assert.Contains($"data:image/png;base64,{Convert.ToBase64String(png)}", json);
+        Assert.Contains("\"what is this?\"", json);
+        // Non-image messages are plain strings, not content arrays.
+        Assert.Contains("\"content\":\"system prompt\"", json);
+    }
+
+    [Fact]
+    public void BuildMessages_WithoutImage_AllMessagesArePlainStrings()
+    {
+        var provider = new TestOpenAIStyleProvider();
+        var history = new List<ChatMessage>
+        {
+            new(ChatRole.User, "just text"),
+        };
+
+        var json = System.Text.Json.JsonSerializer.Serialize(provider.BuildMessagesPublic(history, null));
+
+        Assert.DoesNotContain("image_url", json);
+        Assert.Contains("\"content\":\"just text\"", json);
     }
 
     [Theory]
