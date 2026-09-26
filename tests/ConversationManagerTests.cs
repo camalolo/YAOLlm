@@ -45,6 +45,44 @@ public class ConversationManagerTests
     }
 
     [Fact]
+    public void SystemPrompt_SetsSpoilerFreePlayfulPersona()
+    {
+        var manager = CreateManager();
+        var prompt = manager.BuildSystemPrompt();
+
+        // Persona + default hint mode + experience-enhancement framing
+        Assert.Contains("spoiler-free", prompt, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("playful", prompt, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("enhance the experience", prompt, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("tone", prompt, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("lore", prompt, StringComparison.OrdinalIgnoreCase);
+        // Lore flavour is bounded — atmosphere must not foreshadow
+        Assert.Contains("foreshadow", prompt, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void SystemPrompt_GatesFullSolutionsBehindExplicitAsk()
+    {
+        var manager = CreateManager();
+        var prompt = manager.BuildSystemPrompt();
+
+        // The solution gate must demand an explicit ask, not just any help request
+        Assert.Contains("ONLY", prompt, StringComparison.Ordinal);
+        Assert.Contains("give me the solution", prompt, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void SystemPrompt_TellsModelToUseInfoParamForToolCalls()
+    {
+        var manager = CreateManager();
+        var prompt = manager.BuildSystemPrompt();
+
+        // Reinforcement of the spoiler-free display label (tool schemas alone aren't enough)
+        Assert.Contains("\"info\"", prompt, StringComparison.Ordinal);
+        Assert.Contains("web_search", prompt, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void AddExchange_AppendsUserAndModel()
     {
         var manager = CreateManager();
