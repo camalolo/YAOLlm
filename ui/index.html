@@ -60,6 +60,15 @@
     .msg-content p { margin: 0.4em 0; line-height: 1.6; }
     .msg-content ul { list-style: disc; padding-left: 1.5em; margin: 0.4em 0; }
     .msg-content ol { list-style: decimal; padding-left: 1.5em; margin: 0.4em 0; }
+    /* Markdig's advanced extensions parse single-letter/roman markers ("F.",
+       "a.", "I.") as ordered lists and emit the marker as an ordinal start +
+       a type attribute ("F." → <ol type="A" start="6">). The decimal default
+       above would override the type attribute and display "F." as "6." — map
+       each type back to its marker style so the list renders as typed. */
+    .msg-content ol[type="a"] { list-style: lower-alpha; }
+    .msg-content ol[type="A"] { list-style: upper-alpha; }
+    .msg-content ol[type="i"] { list-style: lower-roman; }
+    .msg-content ol[type="I"] { list-style: upper-roman; }
     .msg-content li { margin: 0.2em 0; line-height: 1.5; }
     .msg-content pre {
       background: rgba(255, 255, 255, 0.1);
