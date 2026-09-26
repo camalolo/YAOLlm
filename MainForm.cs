@@ -37,6 +37,12 @@ public partial class MainForm : Form
     private readonly IFileWriteService? _fileWriteService;
     private bool _pendingPresetSwitch;
     private IntPtr _previousWindowHandle = IntPtr.Zero;
+    /// <summary>
+    /// The overlay was shown over a window that exactly covered a monitor
+    /// (fullscreen game). Only when that window got minimized — true exclusive
+    /// fullscreen — does the hide path restore it (RestoreFullscreenGameOnHide).
+    /// </summary>
+    private bool _showOverFullscreenWindow;
     private readonly Queue<(string? message, string? imageBase64, string? title, string? queuedHtml)> _messageQueue = new();
     private readonly SemaphoreSlim _sendLock = new(1, 1);
     private CancellationTokenSource? _cancellationTokenSource;
@@ -64,6 +70,40 @@ public partial class MainForm : Form
 
     [DllImport("user32.dll")]
     private static extern bool SetForegroundWindow(IntPtr hWnd);
+
+    private const int SW_RESTORE = 9;
+
+    [DllImport("user32.dll")]
+    private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
+    [DllImport("user32.dll")]
+    private static extern bool IsIconic(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    private static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
+
+    private const uint MONITOR_DEFAULTTONEAREST = 2;
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr MonitorFromWindow(IntPtr hwnd, uint dwFlags);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern bool GetMonitorInfoW(IntPtr hMonitor, ref MONITORINFO lpmi);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct RECT
+    {
+        public int Left, Top, Right, Bottom;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MONITORINFO
+    {
+        public uint cbSize;
+        public RECT rcMonitor;
+        public RECT rcWork;
+        public uint dwFlags;
+    }
 
     [DllImport("user32.dll")]
     private static extern long GetWindowLong(IntPtr hWnd, int nIndex);
@@ -1229,6 +1269,9 @@ public partial class MainForm : Form
         if (!this.Visible)
         {
             _previousWindowHandle = GetForegroundWindow();
+            _showOverFullscreenWindow = _previousWindowHandle != IntPtr.Zero
+                && _previousWindowHandle != Handle
+                && CoversEntireMonitor(_previousWindowHandle);
             UnlockActivation();
         }
         this.Visible = !this.Visible;
@@ -1243,6 +1286,59 @@ public partial class MainForm : Form
             BoostWebViewProcessPriority();
             this.Activate();
             _bridge?.FocusInput();
+        }
+        else
+        {
+            RestoreFullscreenGameOnHide();
+        }
+    }
+
+    /// <summary>
+    /// True when the window's rectangle exactly covers an entire monitor — the
+    /// classic fullscreen-window test. Matches both true exclusive fullscreen
+    /// and borderless windowed; the hide path tells the two apart via IsIconic
+    /// (only true exclusive fullscreen gets minimized by Windows when another
+    /// window takes focus — activating anything forces the game out of FSE).
+    /// </summary>
+    private static bool CoversEntireMonitor(IntPtr hwnd)
+    {
+        if (hwnd == IntPtr.Zero || !GetWindowRect(hwnd, out var wr))
+            return false;
+        var hMonitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        if (hMonitor == IntPtr.Zero)
+            return false;
+        var mi = new MONITORINFO { cbSize = (uint)Marshal.SizeOf<MONITORINFO>() };
+        if (!GetMonitorInfoW(hMonitor, ref mi))
+            return false;
+        return wr.Left == mi.rcMonitor.Left && wr.Top == mi.rcMonitor.Top
+            && wr.Right == mi.rcMonitor.Right && wr.Bottom == mi.rcMonitor.Bottom;
+    }
+
+    /// <summary>
+    /// Called after the overlay hides. If it was shown over a fullscreen game
+    /// that Windows minimized (exclusive fullscreen: showing/activating the
+    /// overlay forces the game out of FSE), bring the game straight back so
+    /// the hotkey round-trip is overlay → game instead of overlay → desktop →
+    /// manual alt-tab. Borderless games are never minimized, so the IsIconic
+    /// check makes this a no-op for them and for normal desktop use; a game
+    /// the user already restored by hand is not touched either.
+    /// </summary>
+    private void RestoreFullscreenGameOnHide()
+    {
+        if (!_showOverFullscreenWindow)
+            return;
+        _showOverFullscreenWindow = false;
+        try
+        {
+            var hwnd = _previousWindowHandle;
+            if (hwnd == IntPtr.Zero || hwnd == Handle || !IsWindow(hwnd) || !IsIconic(hwnd))
+                return;
+            ShowWindow(hwnd, SW_RESTORE);
+            SetForegroundWindow(hwnd);
+        }
+        catch (Exception ex)
+        {
+            _logger.Log($"Fullscreen game restore failed: {ex.Message}");
         }
     }
 
@@ -1336,7 +1432,11 @@ public partial class MainForm : Form
         _logger.Log("Overlay activation unlocked for user-initiated show.");
     }
 
-    private void HideOverlay() => this.Visible = false;
+    private void HideOverlay()
+    {
+        this.Visible = false;
+        RestoreFullscreenGameOnHide();
+    }
 
     private static string WriteHtmlToTempFile()
     {
