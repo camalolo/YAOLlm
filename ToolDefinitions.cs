@@ -96,8 +96,9 @@ public static class ToolDefinitions
         "Read a text file from the local system (read-only; files cannot be modified). " +
         "Access is restricted: only files that the user explicitly approved — files inside the approved paths — can be read; anything else is rejected. " +
         "Use this when the user refers to a file within the approved paths — configs, logs, source code, documents. " +
-        "Returns plain text, up to ~15000 characters. For large files, call it again with start_line/end_line " +
-        "(1-based, inclusive) to read specific sections. Binary files are rejected.",
+        "Returns plain text, up to ~15000 characters. For large files, do NOT read everything: pass grep to get only the matching lines " +
+        "(numbered, so you can read around them afterwards with start_line/end_line), or use start_line/end_line (1-based, inclusive) " +
+        "for a specific section. Binary files are rejected.",
         new
         {
             type = "object",
@@ -111,12 +112,29 @@ public static class ToolDefinitions
                 start_line = new
                 {
                     type = "integer",
-                    description = "Optional first line to read (1-based). Defaults to the beginning of the file."
+                    description = "Optional first line to read (1-based). Defaults to the beginning of the file. With grep: first line of the search range."
                 },
                 end_line = new
                 {
                     type = "integer",
-                    description = "Optional last line to read (inclusive). Defaults to the end of the file."
+                    description = "Optional last line to read (inclusive). Defaults to the end of the file. With grep: last line of the search range."
+                },
+                grep = new
+                {
+                    type = "string",
+                    description = "Optional: return only lines containing this text (case-insensitive) instead of the whole file — " +
+                                  "much cheaper for large files. Matches are returned as '42: line text' with their 1-based line numbers; " +
+                                  "read the surrounding section afterwards with start_line/end_line."
+                },
+                regex = new
+                {
+                    type = "boolean",
+                    description = "Optional. When true, grep is treated as a case-insensitive regular expression instead of plain text."
+                },
+                context = new
+                {
+                    type = "integer",
+                    description = "Optional lines of context shown around each grep match (0-10, default 0)."
                 }
             },
             required = new[] { "path" }
@@ -395,6 +413,7 @@ public static class ToolDefinitions
         "file_write",
         "Write a text file inside the assistant's writable area (the YAOLlm folder under the system temp dir — the exact root is given in the system prompt). " +
         "Nothing outside that area can be written. Use it for scratch files, exports, or notes. " +
+        "Editing an existing file: pass find (an exact snippet occurring exactly once) to replace just that snippet with content instead of rewriting the whole file — far cheaper for large files. " +
         "For game memories use memory_write instead — it always targets the memory file.",
         new
         {
@@ -409,12 +428,18 @@ public static class ToolDefinitions
                 content = new
                 {
                     type = "string",
-                    description = "Full text to write (UTF-8)"
+                    description = "Full text to write (UTF-8); with find: the replacement text for the matched snippet"
                 },
                 append = new
                 {
                     type = "boolean",
                     description = "Optional. When true, content is appended instead of overwriting."
+                },
+                find = new
+                {
+                    type = "string",
+                    description = "Optional exact existing text to replace with content (must match exactly once; " +
+                                  "read the file first and copy the text precisely, whitespace matters). Cannot be combined with append."
                 }
             },
             required = new[] { "path", "content" }

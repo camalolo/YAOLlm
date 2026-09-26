@@ -92,6 +92,85 @@ public class FileWriteServiceTests : IDisposable
         Assert.Equal("žluťoučký", await File.ReadAllTextAsync(path));
     }
 
+    // ─── file_write: find/replace (token-saving snippet edits) ────────
+
+    [Fact]
+    public async Task WriteAsync_Find_ReplacesSingleOccurrence()
+    {
+        var path = Path.Combine(_filesRoot, "notes.md");
+        await _service.WriteAsync(path, "sword: cave\nshield: temple\npotion: town", append: false);
+
+        var result = await _service.WriteAsync(path, "shield: tower", append: false,
+            find: "shield: temple");
+
+        Assert.StartsWith("Replaced 1 occurrence", result);
+        Assert.Equal("sword: cave\nshield: tower\npotion: town", await File.ReadAllTextAsync(path));
+    }
+
+    [Fact]
+    public async Task WriteAsync_Find_ZeroOrMultipleMatches_AreRejected()
+    {
+        var path = Path.Combine(_filesRoot, "multi.md");
+        await _service.WriteAsync(path, "alpha beta gamma alpha beta", append: false);
+
+        var missing = await _service.WriteAsync(path, "X", append: false, find: "not present");
+        Assert.StartsWith("Error: 'find' text not found", missing);
+
+        var ambiguous = await _service.WriteAsync(path, "X", append: false, find: "alpha beta");
+        Assert.StartsWith("Error: 'find' matched 2 places", ambiguous);
+
+        // File untouched by both failed edits
+        Assert.Equal("alpha beta gamma alpha beta", await File.ReadAllTextAsync(path));
+    }
+
+    [Fact]
+    public async Task WriteAsync_Find_WithoutExistingFile_ReturnsError()
+    {
+        var path = Path.Combine(_filesRoot, "ghost.md");
+
+        var result = await _service.WriteAsync(path, "X", append: false, find: "anything");
+
+        Assert.StartsWith("Error: File not found", result);
+        Assert.False(File.Exists(path));
+    }
+
+    [Fact]
+    public async Task WriteAsync_Find_CombinedWithAppend_IsRejected()
+    {
+        var path = Path.Combine(_filesRoot, "combo.md");
+        await _service.WriteAsync(path, "existing", append: false);
+
+        var result = await _service.WriteAsync(path, "X", append: true, find: "existing");
+
+        Assert.StartsWith("Error: use either find", result);
+        Assert.Equal("existing", await File.ReadAllTextAsync(path));
+    }
+
+    [Fact]
+    public async Task WriteAsync_Find_OutsideRoot_StillRejected()
+    {
+        var outside = Path.Combine(_baseDir, "outside.txt");
+        await File.WriteAllTextAsync(outside, "target text");
+
+        var result = await _service.WriteAsync(outside, "X", append: false, find: "target");
+
+        Assert.StartsWith("Error:", result);
+        Assert.Contains("outside the writable area", result);
+        Assert.Equal("target text", await File.ReadAllTextAsync(outside));
+    }
+
+    [Fact]
+    public async Task WriteAsync_Find_EmptyContent_DeletesTheSnippet()
+    {
+        var path = Path.Combine(_filesRoot, "delete.md");
+        await _service.WriteAsync(path, "keep this\nremove me\nkeep that", append: false);
+
+        var result = await _service.WriteAsync(path, "", append: false, find: "remove me\n");
+
+        Assert.StartsWith("Replaced 1 occurrence", result);
+        Assert.Equal("keep this\nkeep that", await File.ReadAllTextAsync(path));
+    }
+
     // ─── memory_write ─────────────────────────────────────────────────
 
     [Fact]

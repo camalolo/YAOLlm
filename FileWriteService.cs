@@ -25,8 +25,11 @@ public interface IFileWriteService
     /// <summary>The memory file (prompt + UI).</summary>
     string CurrentMemoryPath { get; }
 
-    /// <summary>file_write — writes inside the write root only.</summary>
-    Task<string> WriteAsync(string path, string content, bool append, CancellationToken cancellationToken = default);
+    /// <summary>file_write — writes inside the write root only. With
+    /// <paramref name="find"/>, replaces one unique exact snippet instead of
+    /// rewriting the whole file (token-saving edits).</summary>
+    Task<string> WriteAsync(string path, string content, bool append, string? find = null,
+        CancellationToken cancellationToken = default);
 
     /// <summary>memory_write — append / replace (unique find) / overwrite on the memory file.</summary>
     Task<string> WriteMemoryAsync(string content, string op, string? find, CancellationToken cancellationToken = default);
@@ -98,7 +101,8 @@ public class FileWriteService : IFileWriteService
 
     // ─── file_write ───────────────────────────────────────────────────
 
-    public async Task<string> WriteAsync(string path, string content, bool append, CancellationToken cancellationToken = default)
+    public async Task<string> WriteAsync(string path, string content, bool append, string? find = null,
+        CancellationToken cancellationToken = default)
     {
         var resolved = FileReadService.ResolvePath(path);
         if (resolved.Error != null)
@@ -112,12 +116,38 @@ public class FileWriteService : IFileWriteService
         if (content.Length > MaxWriteChars)
             return $"Error: content too large ({content.Length:N0} chars, max {MaxWriteChars:N0}).";
 
+        if (!string.IsNullOrEmpty(find) && append)
+            return "Error: use either find (replace a snippet) or append, not both.";
+
         var linkError = CheckReparsePoint(fullPath);
         if (linkError != null)
             return linkError;
 
+        var isReplace = !string.IsNullOrEmpty(find);
         try
         {
+            if (isReplace)
+            {
+                // Snippet edit: swap one unique exact occurrence of 'find' for
+                // content — the model edits a large file without resending it.
+                if (!File.Exists(fullPath))
+                    return $"Error: File not found: {fullPath} — find/replace edits an existing file (use a plain write to create one).";
+
+                string existingText;
+                lock (_ioLock)
+                {
+                    existingText = File.ReadAllText(fullPath);
+                }
+
+                var count = CountOccurrences(existingText, find!);
+                if (count == 0)
+                    return "Error: 'find' text not found — read the file first (file_read) and copy the exact text (whitespace matters).";
+                if (count > 1)
+                    return $"Error: 'find' matched {count} places — include more surrounding text so the match is unique.";
+
+                content = existingText.Replace(find!, content, StringComparison.Ordinal);
+            }
+
             lock (_ioLock)
             {
                 Directory.CreateDirectory(Path.GetDirectoryName(fullPath)!);
@@ -134,7 +164,9 @@ public class FileWriteService : IFileWriteService
 
             await File.WriteAllTextAsync(fullPath, content, encoding, cancellationToken);
             Changed?.Invoke();
-            return $"Wrote {content.Length:N0} chars to {fullPath}";
+            return isReplace
+                ? $"Replaced 1 occurrence in {fullPath} (file now {new FileInfo(fullPath).Length:N0} bytes)"
+                : $"Wrote {content.Length:N0} chars to {fullPath}";
         }
         catch (OperationCanceledException) { throw; }
         catch (Exception ex)

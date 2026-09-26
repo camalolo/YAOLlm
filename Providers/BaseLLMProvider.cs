@@ -299,9 +299,15 @@ public abstract class BaseLLMProvider : ILLMProvider
 
             var startLine = GetIntArg(toolCall.Arguments, "start_line", 0);
             var endLine = GetIntArg(toolCall.Arguments, "end_line", 0);
+            var grep = toolCall.Arguments.TryGetValue("grep", out var g) ? g?.ToString() : null;
+            var grepRegex = GetBoolArg(toolCall.Arguments, "regex", false);
+            var grepContext = GetIntArg(toolCall.Arguments, "context", 0);
 
             LogToolExecution("file_read");
-            var content = await _fileReadService!.ReadFileAsync(path, startLine, endLine, cancellationToken: cancellationToken);
+            var content = await _fileReadService!.ReadFileAsync(path, startLine, endLine,
+                cancellationToken: cancellationToken,
+                grep: string.IsNullOrWhiteSpace(grep) ? null : grep,
+                regex: grepRegex, context: grepContext);
             // Full file contents can be large — truncate in the log (the LLM
             // still gets the full content) to keep yaollm.log readable.
             LogToolResult("file_read", content, maxLength: 500);
@@ -437,10 +443,12 @@ public abstract class BaseLLMProvider : ILLMProvider
             }
 
             var append = GetBoolArg(toolCall.Arguments, "append", false);
+            var find = toolCall.Arguments.TryGetValue("find", out var f) ? f?.ToString() : null;
 
             LogToolExecution("file_write");
             RaiseOnStatusChange(new ProviderStatus(ProviderStatusKind.WritingFile, path));
-            var result = await _fileWriteService!.WriteAsync(path, content, append, cancellationToken);
+            var result = await _fileWriteService!.WriteAsync(path, content, append,
+                string.IsNullOrEmpty(find) ? null : find, cancellationToken);
             LogToolResult("file_write", result, maxLength: 300);
 
             return new ToolResult(toolCall.Id, result);

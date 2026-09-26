@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.RegularExpressions;
 
 namespace YAOLlm;
 
@@ -7,9 +8,12 @@ public interface IFileReadService
     /// <summary>
     /// Reads a text file and returns its content, or an "Error: ..." string
     /// for expected failures (missing file, binary content, bad arguments).
+    /// When <paramref name="grep"/> is set, only matching lines (prefixed with
+    /// their 1-based line numbers) are returned instead of the whole content.
     /// </summary>
     Task<string> ReadFileAsync(string path, int startLine = 0, int endLine = 0,
-        int maxLength = 15000, CancellationToken cancellationToken = default);
+        int maxLength = 15000, string? grep = null, bool regex = false, int context = 0,
+        CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Lists the immediate contents (subdirectories and files) of a directory
@@ -23,7 +27,9 @@ public interface IFileReadService
 /// Read-only local file access for the file_read/list_files tools. Files are
 /// opened with FileAccess.Read only — no modification is possible by
 /// construction. Content is truncated at maxLength (with a marker) so a huge
-/// log file can't blow up the context window.
+/// log file can't blow up the context window. An optional grep narrows the
+/// result to matching lines (with line numbers) so the model doesn't have to
+/// pull the whole file into context.
 ///
 /// When an allowlist is supplied, access is restricted to user-approved
 /// files/directories (see FileAllowlist); a null allowlist means unrestricted
@@ -36,6 +42,12 @@ public class FileReadService : IFileReadService
 
     /// <summary>Maximum entries returned by one list_files call (protects the context window).</summary>
     internal const int MaxListEntries = 500;
+
+    /// <summary>Maximum matching lines returned by one grep (protects the context window).</summary>
+    internal const int MaxGrepMatches = 200;
+
+    /// <summary>Upper bound for the grep context parameter (context lines around each match).</summary>
+    internal const int MaxGrepContext = 10;
 
     private readonly Logger _logger;
     private readonly FileAllowlist? _allowlist;
@@ -59,7 +71,8 @@ public class FileReadService : IFileReadService
     }
 
     public async Task<string> ReadFileAsync(string path, int startLine = 0, int endLine = 0,
-        int maxLength = 15000, CancellationToken cancellationToken = default)
+        int maxLength = 15000, string? grep = null, bool regex = false, int context = 0,
+        CancellationToken cancellationToken = default)
     {
         var resolved = ResolvePath(path);
         if (resolved.Error != null)
@@ -81,6 +94,31 @@ public class FileReadService : IFileReadService
             return "Error: start_line/end_line must be >= 0";
         if (startLine > 0 && endLine > 0 && startLine > endLine)
             return $"Error: start_line ({startLine}) is after end_line ({endLine})";
+        if (context < 0)
+            return "Error: context must be >= 0";
+        context = Math.Min(context, MaxGrepContext);
+
+        // Validate the regex before touching the file so a bad pattern fails
+        // fast with a clear message instead of mid-stream.
+        Regex? regexMatcher = null;
+        if (grep != null)
+        {
+            grep = grep.Trim();
+            if (grep.Length == 0)
+                return "Error: grep parameter is empty";
+            if (regex)
+            {
+                try
+                {
+                    regexMatcher = new Regex(grep, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant,
+                        TimeSpan.FromMilliseconds(250));
+                }
+                catch (ArgumentException ex)
+                {
+                    return $"Error: Invalid grep regex: {ex.Message}";
+                }
+            }
+        }
 
         try
         {
@@ -88,7 +126,9 @@ public class FileReadService : IFileReadService
             if (await IsProbablyBinaryAsync(fullPath, cancellationToken))
                 return $"Error: {fullPath} looks like a binary file — file_read only returns text content.";
 
-            return await ReadTextAsync(fullPath, startLine, endLine, maxLength, cancellationToken);
+            return grep != null
+                ? await GrepTextAsync(fullPath, grep, regexMatcher, context, startLine, endLine, maxLength, cancellationToken)
+                : await ReadTextAsync(fullPath, startLine, endLine, maxLength, cancellationToken);
         }
         catch (OperationCanceledException)
         {
@@ -292,6 +332,129 @@ public class FileReadService : IFileReadService
                 + ". Call file_read again with start_line to read further sections.]");
         }
 
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// Grep mode: returns only the lines matching the pattern, each prefixed
+    /// with its 1-based line number ("42: text") so the model can re-read a
+    /// section with start_line/end_line without pulling the whole file into
+    /// context. Plain patterns are matched case-insensitively (models rarely
+    /// know the file's casing); a compiled <paramref name="regex"/> overrides
+    /// the substring matcher when supplied.
+    ///
+    /// Line numbers honor the startLine/endLine window (search is confined to
+    /// it, numbering stays absolute). contextLines adds surrounding lines;
+    /// adjacent/overlapping windows merge, disjoint ones get a "--" separator
+    /// like grep. Memory stays bounded: non-matching lines are only kept in a
+    /// ring of contextLines entries, and scanning stops at MaxGrepMatches
+    /// matches or maxLength emitted characters.
+    /// </summary>
+    private static async Task<string> GrepTextAsync(string path, string pattern, Regex? regex,
+        int contextLines, int startLine, int endLine, int maxLength, CancellationToken ct)
+    {
+        bool Matches(string line)
+        {
+            if (regex != null)
+            {
+                try { return regex.IsMatch(line); }
+                catch (RegexMatchTimeoutException) { return false; }
+            }
+            return line.Contains(pattern, StringComparison.OrdinalIgnoreCase);
+        }
+
+        var sb = new StringBuilder();
+        var before = new Queue<(int Num, string Text)>();   // ring of context-before lines
+        var truncated = false;
+        var capped = false;
+        int lineNumber = 0;
+        int lastEmitted = 0;      // last line number written into sb
+        int pendingAfter = 0;     // context-after lines still owed for the open window
+        int totalMatches = 0;     // every match seen (even unemitted)
+        int emittedMatches = 0;
+
+        // Returns false when the character cap was reached.
+        bool Emit(int num, string text)
+        {
+            if (sb.Length > 0)
+                sb.Append('\n');
+            sb.Append(num).Append(": ").Append(text);
+            lastEmitted = num;
+            return sb.Length < maxLength;
+        }
+
+        await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+        using var reader = new StreamReader(stream);
+
+        while (await reader.ReadLineAsync(ct) is { } line)
+        {
+            lineNumber++;
+            if (startLine > 0 && lineNumber < startLine)
+                continue;
+            if (endLine > 0 && lineNumber > endLine)
+                break;
+
+            if (!Matches(line))
+            {
+                if (pendingAfter > 0)
+                {
+                    // Still inside the previous match's after-context.
+                    pendingAfter--;
+                    if (!Emit(lineNumber, line)) { truncated = true; break; }
+                }
+                else
+                {
+                    before.Enqueue((lineNumber, line));
+                    while (before.Count > contextLines)
+                        before.Dequeue();
+                }
+                continue;
+            }
+
+            totalMatches++;
+            if (emittedMatches >= MaxGrepMatches)
+            {
+                capped = true;
+                break;
+            }
+            emittedMatches++;
+
+            // Separator between disjoint windows — only in context mode, like
+            // real grep (bare match lists are never separated).
+            if (contextLines > 0 && pendingAfter == 0 && lastEmitted > 0
+                && lineNumber - contextLines > lastEmitted + 1)
+                sb.Append("\n--");
+            if (sb.Length >= maxLength) { truncated = true; break; }
+
+            // Context-before: ring entries the previous window didn't emit
+            // (after-context lines are already in sb).
+            foreach (var (num, text) in before)
+            {
+                if (num <= lastEmitted)
+                    continue;
+                if (!Emit(num, text)) { truncated = true; break; }
+            }
+            if (truncated)
+                break;
+
+            if (!Emit(lineNumber, line)) { truncated = true; break; }
+            pendingAfter = contextLines;
+            before.Clear();
+        }
+
+        if (totalMatches == 0)
+            return $"(no matches for '{pattern}')";
+
+        var footer = $"[{totalMatches} match{(totalMatches == 1 ? "" : "es")} for '{pattern}'";
+        if (capped)
+            footer += $" — showing the first {MaxGrepMatches}; narrow the pattern";
+        if (truncated)
+            footer += $" — truncated at {maxLength} characters; use a more specific pattern or context=0";
+        footer += "]";
+        if (truncated || capped)
+            footer += "\nLine numbers are 1-based — read the surrounding section with file_read + start_line/end_line.";
+
+        sb.Append("\n").Append(footer);
         return sb.ToString();
     }
 }

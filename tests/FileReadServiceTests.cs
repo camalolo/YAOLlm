@@ -198,6 +198,159 @@ public class FileReadServiceTests : IDisposable
             () => _service.ReadFileAsync(path, cancellationToken: cts.Token));
     }
 
+    // ─── grep ─────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task Grep_ReturnsOnlyMatchingLines_WithAbsoluteLineNumbers()
+    {
+        var path = WriteFile("code.txt",
+            "using System;\nvar x = 1;\n// TODO fix\nvar y = 2;\n// TODO later");
+
+        var result = await _service.ReadFileAsync(path, grep: "todo");
+
+        Assert.Equal("3: // TODO fix\n5: // TODO later\n[2 matches for 'todo']", result);
+    }
+
+    [Fact]
+    public async Task Grep_IsCaseInsensitive_ByDefault()
+    {
+        var path = WriteFile("case.txt", "ERROR boom\nfine\nerror again");
+
+        var result = await _service.ReadFileAsync(path, grep: "error");
+
+        Assert.Contains("1: ERROR boom", result);
+        Assert.Contains("3: error again", result);
+        Assert.DoesNotContain("2: fine", result);
+    }
+
+    [Fact]
+    public async Task Grep_NoMatches_ReturnsCheapMarker()
+    {
+        var path = WriteFile("none.txt", "a\nb\nc");
+
+        var result = await _service.ReadFileAsync(path, grep: "zzz");
+
+        Assert.Equal("(no matches for 'zzz')", result);
+    }
+
+    [Fact]
+    public async Task Grep_WithoutContext_NeverSeparatesMatches()
+    {
+        var path = WriteFile("gap.txt", "M1\nx\ny\nz\nM2");
+
+        var result = await _service.ReadFileAsync(path, grep: "M", context: 0);
+
+        Assert.Equal("1: M1\n5: M2\n[2 matches for 'M']", result);
+    }
+
+    [Fact]
+    public async Task Grep_Context_DisjointWindows_GetSeparator()
+    {
+        var path = WriteFile("gap.txt", "a\nM1\nb\nc\nd\nM2\ne");
+
+        // Window 1 = lines 1-3, window 2 = lines 5-7; line 4 is the gap.
+        var result = await _service.ReadFileAsync(path, grep: "M", context: 1);
+
+        Assert.Equal("1: a\n2: M1\n3: b\n--\n5: d\n6: M2\n7: e\n[2 matches for 'M']", result);
+    }
+
+    [Fact]
+    public async Task Grep_Context_OverlappingWindows_Merge()
+    {
+        var path = WriteFile("merge.txt", "a\nM1\nb\nc\nM2\nd");
+
+        // Window 1 = lines 1-3, window 2 = lines 3-5 — overlap at line 3.
+        var result = await _service.ReadFileAsync(path, grep: "M", context: 1);
+
+        Assert.Equal("1: a\n2: M1\n3: b\n4: c\n5: M2\n6: d\n[2 matches for 'M']", result);
+    }
+
+    [Fact]
+    public async Task Grep_RegexMode_MatchesPattern()
+    {
+        var path = WriteFile("rx.txt", "code=404\nok\ncode=500\nplain 200");
+
+        var result = await _service.ReadFileAsync(path, grep: @"code=\d{3}", regex: true);
+
+        Assert.Contains("1: code=404", result);
+        Assert.Contains("3: code=500", result);
+        Assert.DoesNotContain("plain 200", result);
+    }
+
+    [Fact]
+    public async Task Grep_InvalidRegex_ReturnsError()
+    {
+        var path = WriteFile("bad.txt", "content");
+
+        var result = await _service.ReadFileAsync(path, grep: "([unclosed", regex: true);
+
+        Assert.StartsWith("Error: Invalid grep regex", result);
+    }
+
+    [Fact]
+    public async Task Grep_EmptyPattern_ReturnsError()
+    {
+        var path = WriteFile("empty.txt", "content");
+
+        Assert.StartsWith("Error: grep parameter is empty",
+            await _service.ReadFileAsync(path, grep: "   "));
+    }
+
+    [Fact]
+    public async Task Grep_RespectsLineRange_KeepsAbsoluteNumbers()
+    {
+        var path = WriteFile("range.txt", string.Join("\n",
+            Enumerable.Range(1, 20).Select(i => $"item {i} hit={i % 2}")));
+
+        // Search only lines 5-15; numbers stay absolute.
+        var result = await _service.ReadFileAsync(path, grep: "hit=0", startLine: 5, endLine: 15);
+
+        Assert.Contains("6: item 6 hit=0", result);
+        Assert.Contains("14: item 14 hit=0", result);
+        Assert.DoesNotContain("2: item 2", result);
+        Assert.DoesNotContain("16: item 16", result);
+    }
+
+    [Fact]
+    public async Task Grep_CharCap_TruncatesWithMarker()
+    {
+        var lines = Enumerable.Range(1, 500).Select(i => $"line {i} needle").ToList();
+        var path = WriteFile("big.txt", string.Join("\n", lines));
+
+        var result = await _service.ReadFileAsync(path, grep: "needle", maxLength: 400);
+
+        Assert.True(result.Length < 700);
+        Assert.Contains("truncated at 400 characters", result);
+        Assert.Contains("more specific pattern", result);
+    }
+
+    [Fact]
+    public async Task Grep_MatchCap_StopsAt200_WithMarker()
+    {
+        var lines = Enumerable.Range(1, 250).Select(i => $"hit {i}").ToList();
+        var path = WriteFile("many.txt", string.Join("\n", lines));
+
+        var result = await _service.ReadFileAsync(path, grep: "hit");
+
+        Assert.Contains("201 matches for 'hit'", result);
+        Assert.Contains($"showing the first {FileReadService.MaxGrepMatches}", result);
+        Assert.Contains($"200: hit 200", result);
+        Assert.DoesNotContain("201: hit 201", result);
+    }
+
+    [Fact]
+    public async Task Grep_LongFile_SkipsWithoutStoringEverything()
+    {
+        // 20k non-matching lines then one match — must not blow up.
+        var lines = new List<string>(Enumerable.Range(1, 20_000).Select(i => $"filler {i}"))
+            .Append("the one match").ToList();
+        var path = WriteFile("huge.txt", string.Join("\n", lines));
+
+        var result = await _service.ReadFileAsync(path, grep: "the one match");
+
+        Assert.Contains($"20001: the one match", result);
+    }
+
     // ─── Allowlist gating ─────────────────────────────────────────────
 
     [Fact]
