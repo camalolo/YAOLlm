@@ -435,7 +435,7 @@ public abstract class OpenAIStyleProvider : BaseLLMProvider
             {
                 var listPath = toolCall.Arguments.TryGetValue("path", out var lp) ? lp?.ToString() : null;
                 if (!string.IsNullOrEmpty(listPath))
-                    RaiseOnStatusChange(new ProviderStatus(ProviderStatusKind.ReadingFile, listPath));
+                    RaiseOnStatusChange(new ProviderStatus(ProviderStatusKind.ReadingFile, listPath, "list_files"));
                 toolResults.Add(await ExecuteFileListToolAsync(toolCall, cancellationToken));
             }
             else if (toolCall.Name != null && toolCall.Name.StartsWith("browse_") && _browserService != null)

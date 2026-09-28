@@ -92,7 +92,7 @@ Providers raise structured `ProviderStatus` records (`StatusManager.cs`) — not
 - `Sending` — provider is (back to) sending
 - `Searching` — `Detail` = query, `ServiceName` = search backend. `web_search`/`web_scrape` accept an optional `info` argument (spoiler-free display label): when the model sets it, it replaces the raw query/URL in the chat line, while the raw value still goes to the log and the actual search/fetch (`BaseLLMProvider.GetInfoLabel`)
 - `Fetching` — `Detail` = URL (replaced by `info` when the model supplies one, see above)
-- `ReadingFile` — `Detail` = file path (file_read / list_files)
+- `ReadingFile` — `Detail` = file path (file_read / list_files; `ServiceName` = `list_files` makes MainForm render `📁 Listing:` instead of `📄 Reading:`)
 - `Browsing` — `Detail` = URL for navigations (replaced by the optional `info` label when the model sets one; `ServiceName` then carries `browse_navigate`), else the action label; MainForm only renders an in-chat line when the detail contains `://` or ServiceName is `browse_navigate` (per-click lines would flood the transcript)
 - `Captions` — `Detail` = video URL (replaced by `info` when the model supplies one); MainForm renders a `💬 Extracting captions:` line
 - `WritingFile` — `Detail` = target path; MainForm renders a `✍️ Writing:` line

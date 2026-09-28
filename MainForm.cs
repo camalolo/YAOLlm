@@ -497,7 +497,12 @@ public partial class MainForm : Form
                 case ProviderStatusKind.ReadingFile:
                     _statusManager.SetStatus(Status.Reading);
                     _onSearchComplete?.Invoke();
-                    _bridge?.ChatMessage("system", $"<em>📄 Reading: {status.Detail}</em>");
+                    // list_files gets its own verb — it lists a directory
+                    // rather than reading a file's contents.
+                    var fileLine = status.ServiceName == "list_files"
+                        ? $"<em>📁 Listing: {status.Detail}</em>"
+                        : $"<em>📄 Reading: {status.Detail}</em>";
+                    _bridge?.ChatMessage("system", fileLine);
                     break;
 
                 case ProviderStatusKind.Browsing:

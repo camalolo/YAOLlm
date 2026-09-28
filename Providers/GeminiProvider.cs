@@ -210,7 +210,7 @@ public class GeminiProvider : BaseLLMProvider
                 {
                     var listPath = toolCall.Arguments.TryGetValue("path", out var lp) ? lp?.ToString() : null;
                     if (!string.IsNullOrEmpty(listPath))
-                        RaiseOnStatusChange(new ProviderStatus(ProviderStatusKind.ReadingFile, listPath));
+                        RaiseOnStatusChange(new ProviderStatus(ProviderStatusKind.ReadingFile, listPath, "list_files"));
                     result = await ExecuteFileListToolAsync(toolCall, cancellationToken);
                 }
                 else if (!string.IsNullOrEmpty(toolCall.Name) && toolCall.Name.StartsWith("browse_") && _browserService != null)

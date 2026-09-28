@@ -27,7 +27,8 @@ public enum ProviderStatusKind
     /// <summary>A URL fetch is starting. <see cref="ProviderStatus.Detail"/> = URL.</summary>
     Fetching,
 
-    /// <summary>A local file read is starting. <see cref="ProviderStatus.Detail"/> = file path.</summary>
+    /// <summary>A local file read is starting. <see cref="ProviderStatus.Detail"/> = file path;
+    /// <see cref="ProviderStatus.ServiceName"/> = "list_files" for directory listings.</summary>
     ReadingFile,
 
     /// <summary>A browse_* tool call is starting. <see cref="ProviderStatus.Detail"/> = short action label (URL for navigations).</summary>
